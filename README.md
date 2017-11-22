@@ -1,2 +1,2 @@
-# gbioinf
-various utility scripts and other tools for (my) Genomics/Bioinformatics work
+# gscripts
+This is my eclectic bunch of utility scripts I have been using for my bioinformatics work.
