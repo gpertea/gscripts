@@ -1,0 +1,335 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+
+my $usage = q/Filter SAM output of Bowtie2 for various conditions.
+Optionally can perform vector cleaning (-c option) by trimming and
+discarding reads with local vector alignments (assumes bowtie was 
+run using --local against a vector reference database)
+  Usage:
+  bowtie2 -a --local .. | sam_flt [-U] [-t <#hits>|-T|-a <score_dist>] 
+     [-r <minreadlen>] [-p <minpid>] [-l <minovl>[%] ] \
+     [-f <min_frag_len>[,<max_frag_len>]] [-L] [-c <clean&trim.fq>] [-I] \
+     [-m <max_clip>] [-e <max_dist>[FR|RF]] [-v <max_overhang>] [-S] > filtered.sam
+  
+Options:
+ -c ("cleaning") perform read trimming based on local alignments (removing the
+    aligned regions) and write trimmed or unaligned reads in <clean&trim.fq>
+ -e for paired reads which do not map concordantly on the same reference, 
+    discard mappings farther than <max_dist> from either ends of the reference; 
+    if <max_dist> is followed by FR or RF, the orientation of mates is also 
+    considered and <max_dist> is measured from the end or start of the read,
+    respectively
+ -S for paired reads, discard pairs with both mates mapped on the same reference
+ -f for paired reads mapped on the same reference, discard paired alignments 
+    mapped closer than <min_frag_len> and, if given, farther than <max_frag_len>;
+    if followed by FR or RF, also discards pairs mapped in the "wrong" orientation
+ -I for -c option, write a "cleaning" report in <clean&trim.fq>.info
+ -l alignment length must be at least <minovl> bases (or this percent of
+      read length if '%' character is used)
+ -m discard alignments with soft clipping greater than <max_clip>
+ -p alignments with percent identity lower than <minpid> are discarded
+ -r alignments of reads shorter than <minreadlen> are discarded
+    (default 30) 
+ -t only top scoring <#hits> alignments for each read are kept
+ -T all best scoring alignments will be kept (all that have the same top score)
+ -a keep any alignments within score distance of <score_dist> from best score
+ -U keep SAM records of unmapped reads
+ -v maximum length of unmatched overhangs for each read (like <max_clip> 
+    but without counting bases falling outside the reference boundaries)
+
+/;
+umask 0002;
+getopts('USIf:b:Ta:t:r:l:p:e:m:v:c:w:') || die($usage."\n");
+#my $outfile=$Getopt::Std::opt_o;
+my $minlen=$Getopt::Std::opt_r || 30;
+my $minfraglen=$Getopt::Std::opt_f;
+my $frag_ori;
+if ($minfraglen && $minfraglen=~s/\d+([FfRr][RrFf])$//) {
+  $frag_ori=lc($1);
+   die("Error at -e option value, only RF or FR suffixes are recognized!\n")
+       if ($frag_ori ne 'fr' && $frag_ori ne 'rf');
+}
+
+my $maxfraglen;
+if ($minfraglen=~m/^\d+[\,\;\~\-\.](\d+)$/) {
+ $maxfraglen=$1;
+ die("Error at -f option (invalid range)!\n") if ($maxfraglen<$minfraglen);
+}
+
+my $minovl=$Getopt::Std::opt_l; #could be percentage if it ends with '%'
+my $movlperc=0; #percentage was used
+$movlperc=1 if ($minovl=~s/\%$//);
+my $maxclip=$Getopt::Std::opt_m;
+my $maxovh=$Getopt::Std::opt_v;
+my $minpid=$Getopt::Std::opt_p; #computed from edit distance
+my $maxhits=$Getopt::Std::opt_t;
+my $topScoreOnly=$Getopt::Std::opt_T;
+my $maxScoreDist=$Getopt::Std::opt_a; # keep all best score alignments within $maxScoreDist from best score
+
+my $max_edist=$Getopt::Std::opt_e;
+my $max_edist_ori;
+if ($max_edist && $max_edist=~s/\d+([FfRr][RrFf])$//) {
+  $max_edist_ori=lc($1);
+  die("Error at -e option value, only RF or FR suffixes are recognized!\n")
+       if ($max_edist_ori ne 'fr' && $max_edist_ori ne 'rf');
+}
+my $outClean=$Getopt::Std::opt_c; # trimming/cleaning functionality
+my $clnInfo=$Getopt::Std::opt_I;
+my $keepUnmapped=$Getopt::Std::opt_U;
+$keepUnmapped=1 if $outClean;
+
+if ($outClean) {
+  open(OUTF, '>'.$outClean) || die("Error creating output file $outClean\n");
+  #select(OUTF);
+  if ($clnInfo) {
+     open(CLNFO, '>'.$outClean.'.info') || die("Error creating output file $outClean.info\n");
+     }
+  } else  { $clnInfo=''; }
+  
+# --
+my %refs; # refname => reflen
+my ($qname, $hitcount, $qSeq, $qQual); #data for current read
+my @qTrims; # for -c, list of [trimSeq, trimQuals, hit_info] mappings 
+              # that passed the filters for the current read and qualifies for trimming/cleaning
+my $qTrash;
+my $prevScore=-9999;
+my $maxReadScore=-9999;
+while (<>) {
+  my $line=$_;
+  #check for header:
+  if (m/^@[A-Z][A-Z]\t/) {
+    print $_;
+    #keep refseq length
+    if (m/^\@SQ\tSN:(\S+)\tLN:(\d+)/) {
+     $refs{$1}=$2;
+     }
+    next;
+  }
+ chomp;
+ my ($rname, $flags, $refname, $pos, $mapq, $cigarstr, 
+     $rnext, $pnext, $tlen, $seq, $quals, $tags)=split(/\t/, $_, 12);
+ my @mytags; #list of novel SAM tags to be added to the SAM record
+ next unless length($tags)>5;
+ $flags=int($flags);
+ my $sflag = $flags & 0xc0;
+ my $isrev = ($flags & 0x10) != 0;
+ my $materev = ($flags & 0x20) != 0;
+ my $frag_idx=0;
+ if ($sflag == 0x40) {
+    $rname.='/1';
+    $frag_idx=1;
+ } elsif ($sflag == 0x80) {
+    $rname.='/2';
+    $frag_idx=2;
+ }
+ 
+ if ($rname ne $qname) {
+  $hitcount=0;
+  $prevScore=-9999;
+  if ($outClean && $qname) {
+    writeClean($qname, $qTrash, \@qTrims);
+    @qTrims=();
+    }
+  $qname = $rname;
+  ($qSeq, $qQual) = $isrev ? (reverseComplement($seq), reverse($quals)) : ($seq, $quals);
+  $qTrash='';
+ }
+
+ if ($maxhits && $hitcount>=$maxhits) {
+   next;
+ }
+
+ my $unmapped = (($flags & 4)!=0);
+ my $unmapped_mate = (($flags & 8)!=0);
+ my $mapped_both=$frag_idx && !$unmapped && !$unmapped_mate;
+ $rnext=$rname if $rnext eq '=';
+ my $mapped_pair = ($mapped_both && ($rnext eq $rname));
+
+ next if $mapped_pair && ( ($minfraglen && abs($tlen)<$minfraglen) 
+     || ($maxfraglen && abs($tlen)>$maxfraglen) ) ;
+
+ if ($unmapped) {
+   #writeClean() will write it
+   next unless $keepUnmapped;
+   print $line;
+   push(@qTrims, [$qSeq, $qQual, '']) if ($outClean); #passes as is
+   next;
+  }
+ 
+ if ($frag_ori && $mapped_pair) {
+   next unless ($isrev xor $materev); #must be mapped on opposite strands
+   if ($frag_ori eq 'fr') { #FR
+     next if ($isrev ? ($pnext>$pos) : ($pnext<$pos) );
+   }
+   else { # RF
+     next if ($isrev ? ($pnext<$pos) : ($pnext>$pos) ); 
+   }
+ }
+
+ my ($alnScore) = ( $tags=~m/\bAS:i:(\d+)/ );
+ next if ($topScoreOnly && $alnScore<$prevScore && $hitcount>0);
+ $maxReadScore=$alnScore if ($prevScore==-9999);
+ next if ($maxScoreDist && $maxReadScore-$alnScore > $maxScoreDist);
+ $prevScore=$alnScore;
+
+ my ($edist) = ( $tags=~m/\bNM:i:(\d+)/ );
+ if ($edist==0 && $tags=~m/\bnM:i:(\d+)/) {
+   $edist=$1;
+   $edist+=$_ foreach ($cigarstr=~m/(\d+)[ID]/g);
+ }
+
+ 
+ 
+ my $rlen=length($qSeq); #too short?
+ 
+ if ($rlen<$minlen) {
+   push(@qTrims, [$qSeq, $qQual, '']) if ($outClean); #trashed
+   $qTrash='L';
+   next;
+ }
+ 
+ my @cigar=($cigarstr=~m/(\d+[A-Z])/g);
+ my $refovl=0;
+ 
+ my $strand=$isrev ? '-' : '+';
+
+ my ($clipL, $clipR)=(0,0);
+ $clipL=int($cigar[0]) if (substr($cigar[0],-1) eq 'S');
+ $clipR=int($cigar[-1]) if (substr($cigar[-1],-1) eq 'S');
+ # ovhL and ovhR - L and R refer to the location of aln on *reference*
+ # these will be adjusted later for alignments extending beyond ref boundary
+ my ($ovhL, $ovhR) = ($clipL, $clipR); 
+ #but clipL and clipR to refer to the fwd strand of the *read*
+ ($clipL, $clipR) = ($clipR, $clipL) if $isrev;
+
+ chomp($line);
+
+ my $reflen=$refs{$refname} 
+   || die("Error: couldn't get reference length for $refname\n$line\n");
+
+ $refovl+=$_ foreach (grep(/\d+[NDXM=]/, @cigar) ); #aln length on ref
+ my $ovlen = $rlen-$clipL-$clipR; #aln length on read
+ # Note: 0 based coords for rL, rR, refL and refR !
+ # rL and rR are aln coordinates on the forward strand of the read
+ my $rL = $clipL;
+ my $rR = $rL+$ovlen-1;
+ #refL - refR :alignment coords on the reference (fwd strand)
+ my $refL = $pos-1;
+ my $refR = $refL + $refovl-1;
+ my $ovperc=($ovlen*100.00)/$rlen;
+ my $sovperc=sprintf("%.2f",$ovperc);
+ $sovperc=~s/\.?0+$//;
+ push(@mytags, 'YV:Z:'.$sovperc.'%') unless $line=~m/\bYV:Z:/;
+ my ($pseq, $pquals)= ($clipL>$clipR) ? (substr($qSeq, 0, $clipL),substr($qQual, 0, $clipL)) : 
+                                    ( $clipR ? (substr($qSeq, -$clipR), substr($qQual, -$clipR)) :
+                                      ('', '') ) ;
+
+
+ my $pid=(($ovlen-$edist)*100.00)/$ovlen;
+ 
+
+ push(@qTrims, [$pseq, $pquals, 
+      sprintf('%d-%d(%s):%s(%d-%d)|%.2f',$rL+1, $rR+1, $strand, $refname, $refL+1, $refR+1, $pid)])
+      if ($outClean);
+ if ($max_edist) {
+   if ($max_edist_ori) {
+     my $ori_dist;
+     if ($max_edist_ori eq 'fr') { #FR
+        #check only distance from the end of the read to the ref end on that side
+        $ori_dist = $isrev ? $refL : $reflen-$refR;
+      }
+     else { # RF
+        #check only distance from the start of the read to the ref end on that side
+        $ori_dist = $isrev ? $reflen-$refR : $refL;
+     }
+     next if $ori_dist>$max_edist;
+   }
+   else {
+     next if ($refL>$max_edist && $reflen-$refR>$max_edist);
+   }
+ }
+ 
+
+ if ($minovl) {
+  if ($movlperc) {     
+     next if $ovperc<$minovl;
+   }
+   else {
+    next if $ovlen<$minovl;
+   }
+ }
+ next if $maxclip && ($clipL>$maxclip || $clipR>$maxclip);
+ next if ($minpid && $pid<$minpid);
+ my $spid=sprintf("%.2f",$pid);
+ $spid=~s/\.?0+$//;
+ push(@mytags, 'YI:Z:'.$spid) unless $line=~m/\bYI:Z:/;
+ if ($maxovh) {
+   #ovhL/R are really non-matching regions at the end of the read
+   #exclude parts that fall off the edge of the reference
+   if ($ovhL>$refL) {
+     # the read hangs over the left end of reference
+     push(@mytags, 'YH:Z:XL'.($ovhL-$refL));
+     $ovhL=$refL;
+   }
+   if ($ovhR>$reflen-$refR) {
+     # the read hangs over the right end of ref
+     push(@mytags, 'YH:Z:XR'.($ovhR-($reflen-$refR)));
+     $ovhR = $reflen-$refR;
+   }
+   
+   next if ($ovhR>$maxovh || $ovhL>$maxovh);
+ }
+ 
+ print $line;
+ print "\t".join("\t",@mytags) if @mytags>0;
+ print "\n";
+ $hitcount++;
+ #if ($outClean && !$qTrash) {
+   #see how can we trim this read based on this alignment
+ $qTrash='V' if ($ovperc>=80) || (length($pseq)<$minlen);
+   #next;
+ #}
+} #for each SAM line
+# --
+if ($outClean) {
+ if ($qname) {
+    writeClean($qname, $qTrash, \@qTrims);
+    @qTrims=();
+    }
+ close(OUTF);
+ if ($clnInfo) {
+  close(CLNFO);
+  }
+ }
+
+#************ Subroutines **************
+
+sub reverseComplement {
+  my $s=reverse($_[0]);
+  $s =~ tr/AaCcTtGgUuMmRrWwSsYyKkVvHhDdBb/TtGgAaCcAaKkYyWwSsRrMmBbDdHhVv/;
+  return $s;
+ }
+
+sub writeClean {
+ my ($rname, $trash, $rd)=@_;
+ my $tcode = $trash || '.';
+ die("Error at processing $rname, no trim data found!\n") unless @$rd>0;
+ my @rdata;
+ if (@$rd > 1) {
+    @rdata = sort { length($main::a->[0])<=>length($main::b->[0]) } @$rd;
+ }
+ else {
+   @rdata = @$rd;
+ }
+ my ($seq, $quals, $info)=@{$rdata[0]};
+ if ($clnInfo && ($trash || $info)) {
+    $info='.' unless $info;
+    print CLNFO join("\t",$rname, $tcode, length($seq), $info)."\n";
+ }
+ if ($trash) {
+   return;
+ }
+ print OUTF '@'.$rname.' '.$info."\n";
+ print OUTF "$seq\n+\n$quals\n";
+}
