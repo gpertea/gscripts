@@ -1,0 +1,75 @@
+#!/usr/bin/perl
+use strict;
+use FindBin;
+
+umask 0002;
+#$ENV{'PATH'}=$FindBin::Bin.':'.$ENV{'PATH'};
+
+my $usage=q{ gridx slice processing script for running a blastp search
+ on the grid (given a large multi-fasta query file). Cannot be used by itself!
+ 
+Usage:
+ 
+gridx [gridx_opts] -i <qfile> grid_blastp.psx <blastdb> <blastp_opts>
+ 
+ <blastp_opts> should at least specify the -num_threads option, but should NOT
+           include -query and -db options as these will be set by gridx
+ <qfile>   is a multi-fasta file to be sliced and searched against <blastdb> 
+ <blastdb> should be the full path to the blast database
+ (created by makeblastdb)
+ 
+ The output will be found as ./gridx-*/wrk_*/<slice_file>.blout files.
+ 
+ Usage example (using 10 grid CPUs with 1000 sequences per slice):
+ 
+ cd /scratch0/gpertea/test/
+ 
+ gridx -p 10 -m your_e-mail -n 1000 -i all.faa grid_blastp.psx \
+  /scratch0/gpertea/test/proteindb.faa \
+  -evalue 10e-15 -word_size 6 -task blastp-fast
+  
+};
+
+#============== 
+# 1 is the name of the fasta sequence input file
+# 2 is the # of sequences in ${1}
+# 3 is the slice no. being processed by sx
+# 4 is 0 if not the last file, 1 if the last file
+# 5 is the # of sequences skipped initially
+# 6 is the # of sequences to be processed (-1 = ALL)
+# 7 user parameter
+#     1        2        3         4          5       6    
+my ($file, $numseqs, $slice_num, $last, $skipped, $total, $bldbpath, @blopts)=@ARGV;
+
+
+die "\n$usage" unless $bldbpath;
+#die "\n$usage\nCannot find $bldbpath!\n" unless -f $bldbpath;
+
+my $log_file='log_std';
+my $err_file='err_log';
+open(STDERR, '>>'.$err_file);
+open(STDOUT, '>>'.$log_file);
+
+my $bl_res=$file.".blout";
+my $cmd="blastp ".join(' ',@blopts)." -query $file -db $bldbpath -out $bl_res ".
+"-outfmt '6 qseqid qlen qstart qend sseqid slen sstart send ppos bitscore evalue frames salltitles'";
+my $slno=sprintf("slice:%09d",$slice_num);
+print STDERR ">>$slno: $cmd\n";
+&runCmd($cmd, $bl_res);
+
+print STDERR "<<$slno: done.\n";
+
+unlink($file);
+exit 0;
+
+sub runCmd {
+my ($docmd, @todel) = @_;
+my $errmsg = `($docmd) 2>&1`;
+my $exitcode=$?;
+if ($exitcode || ($errmsg=~/Error|Segmentation|Fail|Invalid|Cannot/si)) {
+  print STDERR "!Error at:\n$docmd\n";
+  print STDERR "Exit code: $exitcode, message:\n$errmsg\n";
+  unlink(@todel);
+  exit(1);
+  }
+}
