@@ -4,9 +4,9 @@ use Getopt::Std;
 use FindBin;use lib $FindBin::Bin;
 
 my $usage = q/Usage:
- gff_get.pl [-T|-I|-C|-E] [-m <minlen>] [-K] <gff_data_stream..>
+ gff2tab.pl [-T|-I|-C|-E] [-m <minlen>] [-K] <gff_data_stream..>
  Extract feature coordinates from given GFF data stream.
- Output this tabulated fomat:
+ Output has this tab delimited fomat:
  
  <chr> <feature> <start> <end> <strand> <transcript_info>
  

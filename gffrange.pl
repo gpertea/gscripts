@@ -2,18 +2,20 @@
 use strict;
 use Getopt::Std;
 my $usage=q{
- A simple GFF/GTF filter by genomic location.
+ A basic GFF/GTF filter by genomic location.
+
  Usage:
    ... | gffrange [-C] seqname:start-end[strand]
+   
  The program expects a GFF or GTF formatted stream at stdin
- and outputs only the features found in the provided interval.
+ and outputs only the features found to overlap the provided interval.
  The strand character (+ or -) is optional.
  
- E.g.
- zcat genomic.gff.gz | gffrance chr8:21736219-21749705+ > c8r.gff
+ Example:
+   zcat genomic.gff.gz | gffrange.pl chr8:21736219-21749705+ > c8r.gff
  
  Use the -C option to restrict the output to only features fully "contained"
- in the given location (no boundary crossing).
+ in the given region (excluding those just partially intersecting the region).
  };
 
 getopts('C') || die "$usage\n";
