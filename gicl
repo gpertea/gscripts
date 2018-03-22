@@ -8,9 +8,9 @@ use Mailer;
 
 my $usage = qq/ Usage: 
  gicl <fasta_db> [-d <refDb>] [-g condor|sge|smp] [-c {<num_CPUs>]
-     [-m <user>] [-l <min_overlap>] [-v <max_overhang>] [-R <refprefix>]
-     [-p <pid>] [-n slicesize] [-M] [-L <local_wrk_dir>] [-S] [-K] [-X] 
-     [-I] [-C] [-W <pairwise_script.psx>] [-D]
+     [-m <user>] [-l <min_overlap>] [-v <max_overhang>] [-R|-r <refprefix>]
+     [-p <pid>] [-n slicesize] [-M] [-D] [-L <local_wrk_dir>] [-S] [-K] [-X] 
+     [-I] [-C] [-W <pairwise_script.psx>] 
  Options:
      -c : use the specified number of CPUs on local machine
           (or on a grid if -g option was given); default 1
@@ -24,8 +24,8 @@ my $usage = qq/ Usage:
      -v maximum length of unmatched overhangs (default 30)
      -R instead of full assembly, perform "containment clustering" 
         with nrcl followed by assembly-on-Reference using mblaor;
-        <refprefix> is the "full length" sequence name prefix 
-        as used in the input files;
+     -r same as -R but <refprefix> is the "full length" sequence name prefix 
+        as used in the input files for "reference" sequences;
      -L special grid worker mode - assumed local copies exist for
         the given files in the provided <local_wrk_dir>, which will be
         used to prefix <fasta_db> and <refDb> unless they are given
@@ -33,7 +33,7 @@ my $usage = qq/ Usage:
      -I do not rebuild database indices
      -K skip the pairwise searches, directly run the assembly program
         on previously obtained overlaps
-     -M ignore lower-case masking in <fasta_db> sequences
+     -M apply dust filter to every sequence during clustering
      -S merge the pairwise search results without sorting them (enforces -X
         so no assembly will be performed)
      -W use custom script <pairwise_script.psx> for the distributed 
@@ -61,8 +61,9 @@ my $dbfile=shift(@ARGV);
 
 umask 0002;
 
-getopts('DJMISKZXSW:R:L:r:d:c:m:n:p:l:v:g:') || die "$usage\nError at getopts!\n";
+getopts('YDJMISKZXSW:RL:r:d:c:m:n:p:l:v:g:') || die "$usage\nError at getopts!\n";
 my $debug=$Getopt::Std::opt_D;
+my $domasking=$Getopt::Std::opt_M || '';
 my $localdirbase=$Getopt::Std::opt_L;
 $localdirbase=~s/\/+$//;
 my $gridx=$Getopt::Std::opt_g || 'smp'; #use gridx instead; must be 'smp', 'sge' or 'condor'
@@ -88,12 +89,12 @@ my $maxovh=$Getopt::Std::opt_v || 30;
 #$maxovh+=10 if $clustprog eq 'lclust';
 my $minovl=$Getopt::Std::opt_l || 40;
 my $pid=$Getopt::Std::opt_p || 96;
-$pid=96 if $pid<90;
+#$pid=96 if $pid<90;
 $minovl=40 if $minovl==0;
 my $no_zmerge=$Getopt::Std::opt_Z;
 my $onlysearch=$Getopt::Std::opt_X;
 my $startdate=getDate();
-my $nomasking=$Getopt::Std::opt_M ? 'M':'';
+#my $nomasking=$Getopt::Std::opt_M ? 'M':'';
 my $useDb=$Getopt::Std::opt_d;
 my $useDbname;
 if ($useDb) {
@@ -105,7 +106,8 @@ if ($useDb) {
 }
 
 my $psx_clust=$Getopt::Std::opt_W || 'gicl_mgbl.psx';
-my $refprefix = $Getopt::Std::opt_R || $Getopt::Std::opt_r;
+my $refprefix = $Getopt::Std::opt_r;
+my $refasm= $Getopt::Std::opt_R || $refprefix;
 die "$psx_clust not available in PATH!\n" 
    unless ($psx_clust=&checkCmd($psx_clust));
 
@@ -174,11 +176,11 @@ my $numseqs = $Getopt::Std::opt_n || 1000;
 system('/bin/rm -rf cluster_[1-9]*') unless $Getopt::Std::opt_J;
 # ---psx user parameter format:   <db>:<minpid>:<maxovh>:<minovl>:<flags>
 #  where <flags> are one or more letters of: 
-#      D=no self-clustering, M = no masking, G = gap info
+#      D=no self-clustering, M = dust masking, G = gap info
 my $dbflag=$useDb?'D':'';
 my $paramdb=$useDb? $useDb : $dbfullpath;
 my $gapinfo='G'; #always save gap info
-$psxparam=join(':', ($paramdb,$pid,$maxovh,$minovl,$nomasking.$gapinfo.$dbflag));
+$psxparam=join(':', ($paramdb,$pid,$maxovh,$minovl,$domasking.$gapinfo.$dbflag));
 $cmd=$psxcmd." -n $numseqs -i $dbfile -d cluster -C '$psxparam' -c '$psx_clust'";
 $cmd.=' -D' if $debug && $gridx;
 &flog("  Launching distributed clustering: \n $cmd");
@@ -241,17 +243,22 @@ if ($onlysearch || ($useDb && !$refprefix)) {
 
 ASSEMBLE:
 &set_step('assemble');
-if ($refprefix) {
+if ($refasm) {
   $acefile.='.aor.ace';
   my $lytfile= $rbasename.'.nrcl.lyt'; 
   #$cmd="bzip2 -cd ${hitsort}_*.bz2 | nrcl OVHANG=$maxovh -o $rbasename.nrcls -y $lytfile";
   $cmd="gzip -cd ${hitsort}_*.gz | nrcl OVHANG=$maxovh -o $rbasename.nrcls -y $lytfile";
-  $refprefix=~s/\|$//;
-  $cmd.=" -p '$refprefix'";
+  if ($refprefix) {
+    $refprefix=~s/\|$//;
+    $cmd.=" -p '$refprefix'";
+  }  
   system($cmd)
     && &MErrExit("Error at command: $cmd");
   #now assemble using aor
-  $cmd = "mblaor $lytfile -d $dbfileidx -c $maxovh -p '$refprefix' -o $acefile";
+  $cmd = "mblaor $lytfile -d $dbfileidx -c $maxovh -o $acefile";
+  if ($refprefix) {
+    $cmd.=" -p '$refprefix'";
+  }
   system($cmd)
     && &MErrExit("Error at assembly command: $cmd");
   }
@@ -300,11 +307,9 @@ END { #to be executed on exit
       if $step_log;
    my $host=$ENV{'HOST'} || $ENV{'HOSTNAME'};
    my $msg = $no_error ? qq/$FindBin::Script ($dbfile) finished on machine $host
-                 in $wrkdir, without a detectable error.
-                 / :
+                 in $wrkdir, without a detectable error.\n/ :
                  qq/$FindBin::Script ($dbfile) encountered an error at step $cur_step
-                 Working directory was $wrkdir.                 
-                 /;
+                 Working directory was $wrkdir.\n/;
    unless ($no_error) { #an abnormal termination
      &flog("\nProcess terminated with an error, at step '$cur_step'!");
      &send_mail({to=>$mailuser, subj=>"$FindBin::Script ($dbfile) error at $cur_step!",

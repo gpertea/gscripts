@@ -31,12 +31,11 @@ my ($file, $numpass, $slice_num, $last, $skipped, $total, $userparams)=@ARGV;
 #        G = show gaps
 my ($searchdb,$pid,$maxovh,$minovl, $xflags)=split(/:/,$userparams);
 my $mgblast_res=$file.'.tab';
-my $nomasking = $xflags=~/M/;
+my $masking = $xflags=~/M/;
 my $gapinfo = $xflags=~/G/;
 my $otherDb = $xflags=~/D/;
 
-#$pid=94 unless $pid>50;
-$pid=96 unless $pid>90;
+#$pid=96 unless $pid>90;
 #$minovl=40 unless $minovl;
 $minovl=32 unless $minovl;
 my $log_file='log_std';
@@ -49,7 +48,7 @@ print STDERR '<'.join('> <',@ARGV)."> toskip='$toskip', pid='$pid'\n";
 #= mgblast weakness - when some query seqs are entirely masked
 #= or what's left is just low complexity, it will abort the search
 #= so let's filter the input in advance
-unless ($nomasking) {
+if ($masking) {
  my $renfile=$file.'_cpy';
  rename($file, $renfile) || die "Cannot rename '$file' to '$renfile'!\n";
  local $/="\n>";
@@ -94,7 +93,8 @@ unless ($nomasking) {
 my $cmd="mgblast -i $file -d $searchdb -p $pid -W22 -X12 ". 
    "-JF -v9000000 -b9000000 -C$minovl -H$maxovh ";
 $cmd.=$gapinfo ? ' -D5 ':' -D4 ';
-$cmd.= ($nomasking) ? ' -FF -UF '  : ' -UT -F "m D" ';
+#$cmd.= ($nomasking) ? ' -FF -UF '  : ' -UT -F "m D" ';
+$cmd.= ' -FF -UF ';
 unless ($otherDb) {
  $cmd.=' -KT ';
  $cmd.= " -k $toskip " if $toskip>0; 
