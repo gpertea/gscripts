@@ -263,6 +263,7 @@ if ($refasm) {
     && &MErrExit("Error at assembly command: $cmd");
   }
 else { # straight-forward, all vs all assembly
+ my $finfo=$acefile;
  $acefile.='.ace';
  #$cmd="bzip2 -cd ${hitsort}_*.bz2 | mblasm -d $dbfileidx -c $maxovh -o $acefile";
  $cmd="gzip -cd ${hitsort}_*.gz | mblasm -d $dbfileidx -c $maxovh -o $acefile";
