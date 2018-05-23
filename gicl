@@ -261,7 +261,7 @@ if ($refasm) {
   }
   system($cmd)
     && &MErrExit("Error at assembly command: $cmd");
-  }
+ }
 else { # straight-forward, all vs all assembly
  my $finfo=$acefile;
  $acefile.='.ace';
