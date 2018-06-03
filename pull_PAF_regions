@@ -1,0 +1,77 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+my $usage = q/Usage:
+pull_PAF_regions [-b <indexed.bam> [-w out.fasta]] \
+               [-A] [-o <outfile>] <indexed.fasta> [<mappings.paf>]
+ 
+ Extract either sub-sequences or SAM alignments (if -b option is given)
+ based on the mappings found in PAF input <mappings.paf>
+ 
+ PAF input is expected at stdin or as the first non-option argument.
+ Requirements:
+ <indexed.fasta> must have been indexed with 'samtools faidx'
+ <indexed.bam>, if provided, must have been sorted and indexed 
+     with 'samtools index'
+ seqmanip script is expected to be found in shell's PATH
+ 
+/;
+umask 0002;
+getopts('Ab:w:o:') || die($usage."\n");
+my $outfile=$Getopt::Std::opt_o;
+my $bfasta=$Getopt::Std::opt_w; #for -b option, write the FASTA file as well
+my $append=$Getopt::Std::opt_A;
+$outfile='' if $outfile eq '-';
+#if ($outfile) {
+#  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+#  select(OUTF);
+#}
+#my $allfa="/home/gpertea/work/klebsiella/pilon/all41_pilon.fa";
+my $allfa=shift(@ARGV);
+die("$usage\nError: no FASTA file provided!\n") unless $allfa;
+die("Error: FASTA file $allfa not found!\n") unless -f $allfa;
+die("$usage\nError: FASTA file index $allfa.fai not present!\n") unless -f $allfa.'.fai';
+my $bam=$Getopt::Std::opt_b;
+if ($bam) {
+  die("Error: BAM file $bam not found!\n") unless -f $bam;
+  die("$usage\nError: BAM index $bam.bai not present!\n") unless -f $bam.'.bai';
+}
+
+my $outfasta;
+my $wfa; #boolean: write fasta?
+if ($bam) {
+  $outfasta=$bfasta;
+  $wfa=1 if $bfasta;
+  unlink($outfile) if ($outfile && !$append);
+  if ($outfile) {
+    $outfile=' >> '.$outfile;
+  }
+}
+else { #only write FASTA
+  $outfasta=$outfile;
+  $wfa=1;
+  #unlink($outfasta) if ($outfasta && !$append);
+}
+
+if ($outfasta) {
+   unlink($outfasta) if !$append;
+   $outfasta=' >> '.$outfasta;
+}
+
+while(<>) {
+    my $l=$_;
+    chomp;
+    my @t=split(/\t/);
+    my $b=$t[7]+1;
+    my $r=$t[4];
+    $r='' if $r eq '+';
+    #print STDERR "running: seqmanip -r '$t[5]:$b-$t[8]$r' $allfa >> to_msa.mfa\n";
+    if ($bam) {
+      system("samtools view $bam '$t[5]:$b-$t[8]'".$outfile);
+    }
+    if ($wfa) {
+     #FASTA extraction
+     system("seqmanip -r '$t[5]:$b-$t[8]$r' $allfa ".$outfasta);
+    }
+}
+

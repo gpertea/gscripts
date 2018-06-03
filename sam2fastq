@@ -1,0 +1,191 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+
+my $usage = q/Convert SAM records to FASTQ records, 
+using various filtering conditions.
+Usage:
+  sam2fastq [-p <minpid>] [-l <minovl>[%]] [-v <max_overhang>]
+  [-m <max_clip>] [-S]
+  
+  Options:
+  -m discard alignments with soft clipping greater than <max_clip>
+  -p alignments with percent identity lower than <minpid> are discarded
+  -v maximum length of unmatched overhangs for each read (like <max_clip> 
+     but without counting bases falling outside the reference boundaries)
+  -l alignment length must be at least <minovl> bases (or this percent of
+     read length if '%' character is used)
+  -S do not discard secondary alignments (using tp tag)
+/;
+
+umask 0002;
+getopts('Sl:p:v:m:o:') || die($usage."\n");
+
+#my $minlen=$Getopt::Std::opt_r || 30;
+my $minovl=$Getopt::Std::opt_l; #could be percentage if it ends with '%'
+my $outfile=$Getopt::Std::opt_o;
+$outfile='' if $outfile eq '-';
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+  }
+
+my $movlperc=0; #percentage was used
+$movlperc=1 if ($minovl=~s/\%$//);
+my $maxclip=$Getopt::Std::opt_m;
+my $maxovh=$Getopt::Std::opt_v;
+my $minpid=$Getopt::Std::opt_p; #computed from edit distance
+my $keepSA=$Getopt::Std::opt_S;
+my %refs; #keep track of refs length
+my %reads;
+my ($qname, $hitcount, $qSeq, $qQual); #data for current read
+
+while (<>) {
+  my $line=$_;
+  chomp($line);
+  #check for header:
+  if (m/^@[A-Z][A-Z]\t/) {
+    print $_;
+    #keep refseq length
+    if (m/^\@SQ\tSN:(\S+)\tLN:(\d+)/) {
+     $refs{$1}=$2;
+     }
+    next;
+  }
+ chomp;
+ my ($rname, $flags, $refname, $pos, $mapq, $cigarstr, 
+     $rnext, $pnext, $tlen, $seq, $quals, $tags)=split(/\t/, $_, 12);
+ my @mytags; #list of novel SAM tags to be added to the SAM record
+ next unless length($tags)>5;
+ $flags=int($flags);
+ my $sflag = $flags & 0xc0;
+ my $isrev = ($flags & 0x10) != 0;
+ my $materev = ($flags & 0x20) != 0;
+ my $frag_idx=0;
+ if ($sflag == 0x40) {
+    $rname.='/1';
+    $frag_idx=1;
+ } elsif ($sflag == 0x80) {
+    $rname.='/2';
+    $frag_idx=2;
+ }
+ my $unmapped = (($flags & 4)!=0);
+ my $unmapped_mate = (($flags & 8)!=0);
+ next if $unmapped;
+ my ($alnType) = ( $tags=~m/\btp:A:([PSIi])/ );
+ unless ($keepSA) {
+  next if ($alnType && $alnType ne 'P');
+ }
+ my $rrdata=$reads{$rname};
+ my @rdata=('', '', 0);
+ @rdata=(@$rrdata) if $rrdata;
+ next if ($rdata[2]); # already written !
+ my $revseq=$isrev;
+ if (length($seq)<5) {  
+   if ($rdata[0]) {
+     $seq=$rdata[0];
+     $quals=$rdata[1];
+     $revseq=0;
+     print STDERR "Sequence data missing: ignoring $rname alignment\n";
+     next;
+    }
+ }
+ if ($rname ne $qname) {
+  #flush if $qname ?
+  $qname = $rname;
+  ($qSeq, $qQual) = $revseq ? (reverseComplement($seq), reverse($quals)) : ($seq, $quals);
+ }
+
+ $rnext=$rname if $rnext eq '=';
+  
+ my ($alnScore) = ( $tags=~m/\bAS:i:(\d+)/ );
+ my ($edist) = ( $tags=~m/\bNM:i:(\d+)/ );
+ if (length($edist)==0) {
+   die("Error: edit distance tag missing for line:\n$line\n");
+ }
+ 
+ my $rlen=length($qSeq); #too short?
+ my @cigar=($cigarstr=~m/(\d+[A-Z])/g);
+ my $refovl=0;
+ 
+ my $strand=$isrev ? '-' : '+';
+
+ my ($clipL, $clipR)=(0,0);
+ $clipL=int($cigar[0]) if (substr($cigar[0],-1) eq 'S');
+ $clipR=int($cigar[-1]) if (substr($cigar[-1],-1) eq 'S');
+ # ovhL and ovhR - L and R refer to the location of aln on *reference*
+ # these will be adjusted later for alignments extending beyond ref boundary
+ my ($ovhL, $ovhR) = ($clipL, $clipR); 
+ #but clipL and clipR to refer to the fwd strand of the *read*
+ ($clipL, $clipR) = ($clipR, $clipL) if $isrev;
+
+ chomp($line);
+
+ my $reflen=$refs{$refname};
+ #   || die("Error: couldn't get reference length for $refname\n$line\n");
+
+ $refovl+=$_ foreach (grep(/\d+[NDXM=]/, @cigar) ); #aln length on ref
+ my $ovlen = $rlen-$clipL-$clipR; #aln length on read
+ # Note: 0 based coords for rL, rR, refL and refR !
+ # rL and rR are aln coordinates on the forward strand of the read
+ my $rL = $clipL;
+ my $rR = $rL+$ovlen-1;
+ #refL - refR :alignment coords on the reference (fwd strand)
+ my $refL = $pos-1;
+ my $refR = $refL + $refovl-1;
+ my $ovperc=($ovlen*100.00)/$rlen;
+ my $sovperc=sprintf("%.2f",$ovperc);
+ $sovperc=~s/\.?0+$//;
+ #push(@mytags, 'YV:Z:'.$sovperc.'%') unless $line=~m/\bYV:Z:/;
+ #my ($pseq, $pquals)= ($clipL>$clipR) ? (substr($qSeq, 0, $clipL),substr($qQual, 0, $clipL)) : 
+ #                                   ( $clipR ? (substr($qSeq, -$clipR), substr($qQual, -$clipR)) :
+ #                                     ('', '') ) ;
+ my $pid=(($ovlen-$edist)*100.00)/$ovlen;
+
+ if ($minovl) {
+  if ($movlperc) {     
+     next if $ovperc<$minovl;
+   }
+   else {
+    next if $ovlen<$minovl;
+   }
+ }
+ next if $maxclip && ($clipL>$maxclip || $clipR>$maxclip);
+ next if ($minpid && $pid<$minpid);
+ my $spid=sprintf("%.2f", $pid);
+ $spid=~s/\.?0+$//;
+ #push(@mytags, 'YI:Z:'.$spid) unless $line=~m/\bYI:Z:/;
+ if ($maxovh) {
+   #ovhL/R are really non-matching regions at the end of the read
+   #exclude parts that fall off the edge of the reference
+   if ($ovhL>$refL) {
+     # the read hangs over the left end of reference
+     #push(@mytags, 'YH:Z:XL'.($ovhL-$refL));
+     $ovhL=$refL;
+   }
+   if ($reflen) {
+     if ($ovhR>$reflen-$refR) {
+       # the read hangs over the right end of reference!
+       #push(@mytags, 'YH:Z:XR'.($ovhR-($reflen-$refR)));
+       $ovhR = $reflen-$refR;
+     }
+   }
+   next if ($ovhR>$maxovh || $ovhL>$maxovh);
+ }
+ ## if we made it here, we write the sequence
+ $reads{$rname}=[$qSeq, $qQual, 1];
+ print '@'.$qname."\n$qSeq\n+\n$qQual\n";
+}
+
+if ($outfile) {
+ select(STDOUT);
+ close(OUTF);
+}
+
+#----------------------- subs ----------------------
+
+sub reverseComplement {
+  my $s=reverse($_[0]);
+  $s =~ tr/AaCcTtGgUuMmRrWwSsYyKkVvHhDdBb/TtGgAaCcAaKkYyWwSsRrMmBbDdHhVv/;
+  return $s;
+ }
