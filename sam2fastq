@@ -45,7 +45,8 @@ while (<>) {
   chomp($line);
   #check for header:
   if (m/^@[A-Z][A-Z]\t/) {
-    print $_;
+    ## header line
+    #print $_;
     #keep refseq length
     if (m/^\@SQ\tSN:(\S+)\tLN:(\d+)/) {
      $refs{$1}=$2;
@@ -172,9 +173,10 @@ while (<>) {
    }
    next if ($ovhR>$maxovh || $ovhL>$maxovh);
  }
+ my $infostr="$cigarstr pid=$spid\% clip=$clipL,$clipR cov=$sovperc\%";
  ## if we made it here, we write the sequence
  $reads{$rname}=[$qSeq, $qQual, 1];
- print '@'.$qname."\n$qSeq\n+\n$qQual\n";
+ print '@'.$qname." $infostr\n$qSeq\n+\n$qQual\n";
 }
 
 if ($outfile) {

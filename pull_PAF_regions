@@ -2,10 +2,10 @@
 use strict;
 use Getopt::Std;
 my $usage = q/Usage:
-pull_PAF_regions [-b <indexed.bam> [-w out.fasta]] \
-               [-A] [-o <outfile>] <indexed.fasta> [<mappings.paf>]
+pull_PAF_regions [-b <indexed.bam>] [-w <out.fasta>] [-r <indexed.fasta>] \
+               [-A] [-o <outfile>] [<mappings.paf>]
  
- Extract either sub-sequences or SAM alignments (if -b option is given)
+ Extract sub-sequences as FASTA and\/or SAM alignments (if -b option is given)
  based on the mappings found in PAF input <mappings.paf>
  
  PAF input is expected at stdin or as the first non-option argument.
@@ -17,21 +17,29 @@ pull_PAF_regions [-b <indexed.bam> [-w out.fasta]] \
  
 /;
 umask 0002;
-getopts('Ab:w:o:') || die($usage."\n");
+getopts('Ab:r:w:o:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
 my $bfasta=$Getopt::Std::opt_w; #for -b option, write the FASTA file as well
+                                #requires -r as well
 my $append=$Getopt::Std::opt_A;
 $outfile='' if $outfile eq '-';
 #if ($outfile) {
 #  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
 #  select(OUTF);
 #}
-#my $allfa="/home/gpertea/work/klebsiella/pilon/all41_pilon.fa";
-my $allfa=shift(@ARGV);
-die("$usage\nError: no FASTA file provided!\n") unless $allfa;
-die("Error: FASTA file $allfa not found!\n") unless -f $allfa;
-die("$usage\nError: FASTA file index $allfa.fai not present!\n") unless -f $allfa.'.fai';
+#my $ref_fa="/home/gpertea/work/klebsiella/pilon/all41_pilon.fa";
+my $ref_fa=$Getopt::Std::opt_r;
 my $bam=$Getopt::Std::opt_b;
+if ($bfasta && !$bam) {
+  die("$usage\nError: option -w requires -b !\n");
+}
+if (!$bam || $bfasta) {
+  die("$usage\nError: no FASTA file provided!\n") unless $ref_fa;
+}
+if ($ref_fa) {
+  die("Error: FASTA file $ref_fa not found!\n") unless -f $ref_fa;
+  die("$usage\nError: FASTA file index $ref_fa.fai not present!\n") unless -f $ref_fa.'.fai';
+}
 if ($bam) {
   die("Error: BAM file $bam not found!\n") unless -f $bam;
   die("$usage\nError: BAM index $bam.bai not present!\n") unless -f $bam.'.bai';
@@ -65,13 +73,13 @@ while(<>) {
     my $b=$t[7]+1;
     my $r=$t[4];
     $r='' if $r eq '+';
-    #print STDERR "running: seqmanip -r '$t[5]:$b-$t[8]$r' $allfa >> to_msa.mfa\n";
+    #print STDERR "running: seqmanip -r '$t[5]:$b-$t[8]$r' $ref_fa >> to_msa.mfa\n";
     if ($bam) {
-      system("samtools view $bam '$t[5]:$b-$t[8]'".$outfile);
+      system("samtools view -h $bam '$t[5]:$b-$t[8]'".$outfile);
     }
     if ($wfa) {
      #FASTA extraction
-     system("seqmanip -r '$t[5]:$b-$t[8]$r' $allfa ".$outfasta);
+     system("seqmanip -r '$t[5]:$b-$t[8]$r' $ref_fa ".$outfasta);
     }
 }
 
