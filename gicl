@@ -95,13 +95,14 @@ my $no_zmerge=$Getopt::Std::opt_Z;
 my $onlysearch=$Getopt::Std::opt_X;
 my $startdate=getDate();
 #my $nomasking=$Getopt::Std::opt_M ? 'M':'';
-my $useDb=$Getopt::Std::opt_d;
-my $useDbname;
-if ($useDb) {
- $useDbname=&getFName($useDb);
- $useDb=&getFullPath($useDb);
+my $refDb=$Getopt::Std::opt_d;
+my ($refDbname, $refDbidx);
+if ($refDb) {
+ $refDbname=&getFName($refDb);
+ $refDb=&getFullPath($refDb);
+ $refDbidx=$refDb.'.cidx';
  unless ($localdirbase) {
-  die "Error: cannot locate the specified db: $useDb" unless -s $useDb;
+  die "Error: cannot locate the specified db: $refDb" unless -s $refDb;
   }
 }
 
@@ -130,7 +131,7 @@ open(STDERR, ">$err_log") || &MErrExit("Failed to redirect STDERR to $err_log");
 $no_error=0;
 $usemail=1 && $mailuser;
 
-my $clusterfile=$dbfname.($useDb ? '_'.$useDbname :'_cl').'.ace';
+my $clusterfile=$dbfname.($refDb ? '_'.$refDbname :'_cl').'.ace';
 
 my ($cmd, $psxparam);
 $Getopt::Std::opt_I=1 if $Getopt::Std::opt_K || $localdirbase;
@@ -140,24 +141,24 @@ my $dbfileidx=$dbfullpath.'.cidx';
 #
 # rebuild indices (unless specifically told not to do so)
 unless ($Getopt::Std::opt_I) {
- my $toindex = $useDb ? $useDb : $dbfile ;
+ my $toindex = $refDb ? $refDb : $dbfile ;
  &flog("-= Rebuilding $toindex indices =-");
  $cmd="formatdb -p F -o F -i $toindex";
  # just in case, rebuild the cdbfasta index
  system($cmd) &&
    &MErrExit("Error at '$cmd'");
  # -- also make sure the cdb index for the main file is created 
- if ($useDb) {
-    system("cdbfasta $useDb") && 
-     &MErrExit("Error at cdbfasta $useDb");
-    }
+ if ($refDb) {
+    system("cdbfasta $refDb") && 
+     &MErrExit("Error at cdbfasta $refDb");
+ }
  system("cdbfasta $dbfile") && 
     &MErrExit("Error at cdbfasta $dbfile");
- }
+}
 
 #========= compress & merge sort the cluster results
-my $hitsort = $dbfname.'_'.($useDb ? $useDbname.'_tabhits' : 'cl_tabhits');
-my $rbasename = $dbfname.'_'.($useDb ? $useDbname : 'self');
+my $hitsort = $dbfname.'_'.($refDb ? $refDbname.'_tabhits' : 'cl_tabhits');
+my $rbasename = $dbfname.'_'.($refDb ? $refDbname : 'self');
 my $acefile = $rbasename;
 
 if ($Getopt::Std::opt_J) {
@@ -177,13 +178,13 @@ system('/bin/rm -rf cluster_[1-9]*') unless $Getopt::Std::opt_J;
 # ---psx user parameter format:   <db>:<minpid>:<maxovh>:<minovl>:<flags>
 #  where <flags> are one or more letters of: 
 #      D=no self-clustering, M = dust masking, G = gap info
-my $dbflag=$useDb?'D':'';
-my $paramdb=$useDb? $useDb : $dbfullpath;
+my $dbflag=$refDb?'D':'';
+my $paramdb=$refDb? $refDb : $dbfullpath;
 my $gapinfo='G'; #always save gap info
 $psxparam=join(':', ($paramdb,$pid,$maxovh,$minovl,$domasking.$gapinfo.$dbflag));
 $cmd=$psxcmd." -n $numseqs -i $dbfile -d cluster -C '$psxparam' -c '$psx_clust'";
 $cmd.=' -D' if $debug && $gridx;
-&flog("  Launching distributed clustering: \n $cmd");
+&flog("Running clustering: $cmd");
 system($cmd)
    && &MErrExit("Error at '$cmd'\n");
 &end_step();
@@ -222,6 +223,7 @@ else { #can merge all directly
 }
 #$cmd="mgmerge -b $nosort -o $hitsort -s 1600 zdir_*.bz2";
 $cmd="mgmerge $nosort -o $hitsort -s 1600 zdir_*.gz";
+&flog("Running: $cmd");
 system($cmd)
       && &MErrExit("Error at final sort:\n $cmd");
 unless($debug) {
@@ -233,8 +235,11 @@ unless($debug) {
      }
   }
 }
-goto THEEND if $nosort;
-if ($onlysearch || ($useDb && !$refprefix)) {
+if ($nosort) {
+  &flog("No sorting was requested, terminating..\n");
+  goto THEEND;
+}
+if ($onlysearch || ($refDb && !$refasm)) {
   &flog("Exit requested after pairwise searches and sorting") if $onlysearch;
   # &flog($exit_msg);
   # generate the clustering singleton list here?
@@ -259,6 +264,10 @@ if ($refasm) {
   if ($refprefix) {
     $cmd.=" -p '$refprefix'";
   }
+  if ($refDb) {
+    $cmd.=" -r '$refDbidx'";
+  }
+  &flog("Running assembly: $cmd");
   system($cmd)
     && &MErrExit("Error at assembly command: $cmd");
  }
@@ -267,7 +276,7 @@ else { # straight-forward, all vs all assembly
  $acefile.='.ace';
  #$cmd="bzip2 -cd ${hitsort}_*.bz2 | mblasm -d $dbfileidx -c $maxovh -o $acefile";
  $cmd="gzip -cd ${hitsort}_*.gz | mblasm -d $dbfileidx -c $maxovh -o $acefile";
- &flog("Running assembly command: $cmd\n");
+ &flog("Running assembly command: $cmd");
  system($cmd)
     && &MErrExit("Error at assembly command: $cmd");
 }

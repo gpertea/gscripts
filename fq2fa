@@ -10,16 +10,19 @@ my $usage = q/Usage:
  The input can be 'stdin' or '-' to specify streaming at stdin.
 /;
 umask 0002;
-getopts('q:o:') || die($usage."\n");
+getopts('q:o:P:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
 my $wqual=$Getopt::Std::opt_q;
 $outfile='' if $outfile eq '-';
-my $PHRED_BASE=64;
+
+my $PHRED_BASE=$Getopt::Std::opt_P || 32;
 
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
 }
+
+die($usage."Error: no input fastq given ! (use - for stdin)\n") unless @ARGV;
 
 foreach my $f (@ARGV) {
   next if ($f eq '-' || lc($f) eq 'stdin');
@@ -66,14 +69,14 @@ foreach my $f (@ARGV) {
       my @qls=unpack("A70" x (int(($slen-1)/70)+1),$rquals);
       print QUAL ">$rname\n";
       foreach my $ql (@qls) {
-          my $qlen=length($ql);
-          foreach my $i (0..$qlen-1) {
-            my $qv=ord(substr($ql, $i, 1));
-            $qv=' '.$qv if $i;
-            print QUAL $qv;
-          }
+        my $qlen=length($ql);
+        foreach my $i (0..$qlen-1) {
+          my $qv=ord(substr($ql, $i, 1))-$PHRED_BASE;
+          $qv=' '.$qv if $i;
+          print QUAL $qv;
+        }
+        print QUAL "\n";
       }
-      print QUAL "\n";
     }
   }
   close($fh) unless $f eq '-';
