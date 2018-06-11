@@ -3,19 +3,26 @@ use strict;
 use Getopt::Std;
 
 my $usage = q/Usage:
- ace2fasta.pl -o <contigs_fasta> [-c <components_file>] <acefile>
+ ace2fasta.pl [-o <contigs_fasta>] [-p <prefix>] [-c <components_file>] <ACE>
+
+ In the output FASTA contigs will be renamed with the prefix 
+ <prefix>_ctg# if -p <prefix> option was provided.
 /;
 umask 0002;
-getopts('o:c:') || die($usage."\n");
-my $outfile=$Getopt::Std::opt_o || 
-  die("$usage\nMust specify output file name!\n");
-open(CFASTA, '>'.$outfile) || die("Error creating file $outfile!\n");
+getopts('o:c:p:') || die($usage."\n");
+my $outfile=$Getopt::Std::opt_o;
+$outfile='' if $outfile eq '-';
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+}
+my $prefix=$Getopt::Std::opt_p;
 my $lnkfile=$Getopt::Std::opt_c;
 if ($lnkfile) {
  open(COMP, '>'.$lnkfile) || die("Error creating file $lnkfile!\n");
  }
 
-my $ctg; #current contig
+my $ctg; #current contig name
 my $ctgseq; #current contig sequence
 my $ctglen; #current contig seq length
 my $numseqs;
@@ -30,6 +37,11 @@ while (<>) {
    undef %seqs;
    undef @ctgcomp;
    my $ctgdup=++$ctgnames{$c};
+   if ($prefix) {
+     my ($cn)=($c=~m/(\d+)$/);
+     die("Error: could not parse contig # from contig name: $c\n") unless $cn>0;
+     $c=$prefix.'_ctg'.sprintf('%04d',$cn);
+   }
    #$c='ASM_'.$c;
    $c.='.'.($ctgdup-1) if ($ctgdup>1);
    ($ctg, $ctglen, $numseqs)=($c, $l, $n);
@@ -71,14 +83,18 @@ while (<>) {
 
 writeCtg() if $ctg;
 
-close(CFASTA);
+if ($outfile) {
+ select(STDOUT);
+ close(OUTF);
+}
+
 close(COMP) if $lnkfile;
 
 sub writeCtg {
- print CFASTA ">$ctg $numseqs\n";
- $ctgseq=~tr/-*\n\r//d;
- # $ctglen=length($ctgseq);
- print CFASTA join("\n", (unpack('(A72)*',$ctgseq)))."\n";
+ #write FASTA formatted
+ print ">$ctg $numseqs\n";
+ $ctgseq=~tr/-*\n\r//d; #removing gaps, if any!
+ print join("\n", (unpack('(A72)*',$ctgseq)))."\n";
  if ($lnkfile) {
    print COMP ">$ctg $numseqs $ctglen\n";
    foreach my $seqname (@ctgcomp) {

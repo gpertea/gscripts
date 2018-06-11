@@ -28,7 +28,7 @@ $outfile='' if $outfile eq '-';
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
-  }
+}
 
 my $movlperc=0; #percentage was used
 $movlperc=1 if ($minovl=~s/\%$//);

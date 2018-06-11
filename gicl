@@ -6,7 +6,7 @@ use FindBin;
 use lib $FindBin::Bin;
 use Mailer;
 
-my $usage = qq/ Usage: 
+my $usage = qq/ Usage:
  gicl <fasta_db> [-d <refDb>] [-g condor|sge|smp] [-c {<num_CPUs>]
      [-m <user>] [-l <min_overlap>] [-v <max_overhang>] [-R|-r <refprefix>]
      [-p <pid>] [-n slicesize] [-M] [-D] [-L <local_wrk_dir>] [-S] [-K] [-X] 
