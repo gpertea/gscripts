@@ -2,8 +2,8 @@
 use strict;
 use Getopt::Std;
 my $usage = q/Usage:
-pull_PAF_regions [-b <indexed.bam>] [-w <out.fasta>] [-r <indexed.fasta>] \
-               [-A] [-o <outfile>] [<mappings.paf>]
+pull_PAF_regions  [-r <indexed.fasta>] [-x <extraBases>] [-o <outfile>] \
+               [-A] [-b <indexed.bam>] [-C] [-w <out.fasta>] [<mappings.paf>]
  
  Extract sub-sequences as FASTA and\/or SAM alignments (if -b option is given)
  based on the mappings found in PAF input <mappings.paf>
@@ -15,10 +15,18 @@ pull_PAF_regions [-b <indexed.bam>] [-w <out.fasta>] [-r <indexed.fasta>] \
      with 'samtools index'
  seqmanip script is expected to be found in shell's PATH
  
+ Options: 
+   -A append to output files instead of overwriting them
+   -x expand the regions read from the PAF file by <extraBases> bases 
+      in both directions (so each region's length will be increased by
+      2*<extraBases>)
+   -C for the -b option, use samtools to generate the consensus sequence
+      for the PAF region(s) as the final output (-o); requires -r also
 /;
 umask 0002;
-getopts('Ab:r:w:o:') || die($usage."\n");
+getopts('CAx:b:r:w:o:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
+my $callcons=$Getopt::Std::opt_C;
 my $bfasta=$Getopt::Std::opt_w; #for -b option, write the FASTA file as well
                                 #requires -r as well
 my $append=$Getopt::Std::opt_A;
@@ -33,6 +41,11 @@ my $bam=$Getopt::Std::opt_b;
 if ($bfasta && !$bam) {
   die("$usage\nError: option -w requires -b !\n");
 }
+
+if ($callcons) {
+  die("${usage}Error: option -C requires -b and -r!\n") unless $bam && $ref_fa;
+}
+
 if (!$bam || $bfasta) {
   die("$usage\nError: no FASTA file provided!\n") unless $ref_fa;
 }
@@ -45,11 +58,14 @@ if ($bam) {
   die("$usage\nError: BAM index $bam.bai not present!\n") unless -f $bam.'.bai';
 }
 
+
+my $xBases=$Getopt::Std::opt_x;
+
 my $outfasta;
 my $wfa; #boolean: write fasta?
 if ($bam) {
   $outfasta=$bfasta;
-  $wfa=1 if $bfasta;
+  $wfa=1 if $bfasta || $callcons;
   unlink($outfile) if ($outfile && !$append);
   if ($outfile) {
     $outfile=' >> '.$outfile;
@@ -70,16 +86,27 @@ while(<>) {
     my $l=$_;
     chomp;
     my @t=split(/\t/);
-    my $b=$t[7]+1;
+    my ($rstart, $rend)=($t[7]+1-$xBases, $t[8]+$xBases);
+    $rstart=1 if $rstart<1;
+    $rend=$t[6] if $rend>$t[6];
     my $r=$t[4];
     $r='' if $r eq '+';
-    #print STDERR "running: seqmanip -r '$t[5]:$b-$t[8]$r' $ref_fa >> to_msa.mfa\n";
-    if ($bam) {
-      system("samtools view -h $bam '$t[5]:$b-$t[8]'".$outfile);
-    }
-    if ($wfa) {
-     #FASTA extraction
-     system("seqmanip -r '$t[5]:$b-$t[8]$r' $ref_fa ".$outfasta);
+    if ($callcons) {
+      my $g='rtmp';
+      my $cmd="samtools mpileup -ABuf $ref_fa -r '$t[5]:$rstart-$rend' $bam| ".
+      "bcftools call --ploidy 1 -c -Oz -o $g.mpileup.vcf.gz";
+      system($cmd) && die("Error at running: $cmd\n");
+      system("tabix $g.mpileup.vcf.gz");
+      system("samtools faidx $ref_fa '$t[5]:$rstart-$rend' | ".
+       " bcftools consensus $g.mpileup.vcf.gz $outfasta");
+    } else {
+      if ($bam) {
+        system("samtools view -h $bam '$t[5]:$rstart-$rend'".$outfile);
+      }
+      if ($wfa) {
+       #FASTA extraction
+       system("seqmanip -r '$t[5]:$rstart-${rend}$r' $ref_fa ".$outfasta);
+      }
     }
 }
 
