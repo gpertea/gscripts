@@ -1,0 +1,61 @@
+#!/bin/env perl
+use strict;
+use Getopt::Std;
+use FindBin;use lib $FindBin::Bin;
+
+my $usage = q/Usage:
+ colstat [-d <delim>] [-s <skip>] [-n] -f<columns> file..
+ Reports sum, min, max and mean values for specific column(s) in the input.
+ Options:
+  -d  : columns are delimited by <delim> (regular expression format); 
+        default is the tab character ("\t")
+  -f  : provide a list of column numbers to report values for
+  -s  : skip the initial <skip> lines in the input file
+  -n  : ignore non-numeric or empty fields
+/;
+umask 0002;
+getopts('nd:s:f:o:') || die($usage."\n");
+my $outfile=$Getopt::Std::opt_o;
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+}
+#my $cmd=shift(@ARGV) || die("$usage\n"); 
+my $bN=2**63;
+my $delim=$Getopt::Std::opt_d || "\t";
+
+my $cols=$Getopt::Std::opt_f || die("${usage}Error: -f option is required!\n");
+my $lskip=$Getopt::Std::opt_s;
+#$lskip-- if $lskip>0;
+my $ncheck=$Getopt::Std::opt_n;
+my @f=($cols=~m/(\d+)/g);
+my @out; #list of [colidx, count, sum, min, max]
+foreach my $c (@f) {
+  push(@out, [$c, 0, 0, $bN, -$bN]);
+}
+
+while (<>) {
+  next if $. < $lskip;
+  my @t=split($delim);
+  foreach my $d (@out) {
+   my $v=@t[$$d[0]-1];
+   next if $ncheck && $v!~m/[\-\d\.\+\-E]+/i;
+   $$d[1]++;
+   $$d[2]+=$v;
+   $$d[3]=$v if $v<$$d[3];
+   $$d[4]=$v if $v>$$d[4];
+  }
+}
+#print results:
+foreach my $d (@out) {
+ my $avg=$$d[2]/$$d[1];
+ print "Column $$d[0]: $$d[1] values\tsum=$$d[2]\tmin=$$d[3]\tmax=$$d[4]\tavg=$avg\n";
+}
+
+# --
+if ($outfile) {
+  select(STDOUT);
+  close(OUTF);
+}
+
+
