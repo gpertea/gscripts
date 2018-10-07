@@ -2,18 +2,26 @@
 #
 #pipe a multi-fasta into this and get the sequence size for each fasta record
 #
+use strict;
+use Getopt::Std;
+use Digest::MD5 qw(md5_hex);
 my $usage=q/
-  Reports the sequence length for each record in a multi fasta file
+  Reports the FASTA sequence length for each record in a multi-FASTA file
   The output line format is (tab delimited):
-  <seq_name> <seq_len> [<seq_description>]
-
+     <seq_name> <seq_len> [<MD5>|<seq_description>]
+  ..where <seq_description> is the rest of the text following
+  the sequence name in the defline, if any
+  Options:
+    -S  print a basic summary of the sequences found
+    -M  print MD5 checksum instead of the sequence description
   Use '-S' to get a summary of the sequences read.
   /;
 die $usage."\n" if ($ARGV[0]=~m/^\-+h/);
-my $summary=$ARGV[0] eq '-S';
-shift(@ARGV) if $summary;
+getopts('SM') || die($usage."\n");
+my $summary=$Getopt::Std::opt_S;
+my $checksum=$Getopt::Std::opt_M;
 local $/="\n>";
-my ($minlen, $min, $max, $maxlen, $total, $avg, $std);
+my ($minlen, $min, $max, $maxlen, $total, $totlc, $avg, $std);
 $minlen=2000000000;
 my @v; #
 while (<>) {
@@ -24,19 +32,26 @@ while (<>) {
  $ann=$nr[0] if (@nr>1);
  $seq =~ tr/\t \n\r//d;
  my $len=length($seq);
- my @l=($seqname, $len);
- push(@l,$ann) if $ann;
+ my $lc=($seq=~tr/a-z//);
+ my @ol=($seqname, $len);
+ if ($checksum) {
+   my $md5=md5_hex(uc($seq));
+   push(@ol, $md5);
+ } else {
+   push(@ol,$ann) if $ann;
+ }
  push(@v, $len);
  $total+=$len;
+ $totlc+=$lc;
  ($minlen, $min)=($len, $seqname) if ($len<$minlen);
  ($maxlen, $max)=($len, $seqname) if ($len>$maxlen);
- print join("\t",@l), "\n";
+ print join("\t", @ol)."\n";
 }
 my $numseqs=@v;
 if ($summary) {
- #TODO: calculate variance
- print STDERR "Total $total bases in $numseqs sequences.\n";
- print STDERR "Max length: $maxlen (sequence $max)\n";
- print STDERR "Min length: $minlen (sequence $min)\n";
- print STDERR "Average   : ".int($total/$numseqs)."\n";
- }
+  #TODO: calculate variance
+  print STDERR "Total $total bases in $numseqs sequences ($totlc lowercase).\n";
+  print STDERR "Max length: $maxlen (sequence $max)\n";
+  print STDERR "Min length: $minlen (sequence $min)\n";
+  print STDERR "Average   : ".int($total/$numseqs)."\n";
+}
