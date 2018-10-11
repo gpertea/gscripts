@@ -18,11 +18,12 @@ die("${usage}Error: cannot find PAF file $paf !\n") unless -f $paf;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
-  }
+}
 # --
 
 my $cdsonly=$Getopt::Std::opt_C;
 my $fbed='gff_liftover.bed';
+my %bed; # tid~exon# => [chr, exon_start, exon_end, strand, num_exons]
 open(BED, ">$fbed") || die("Error creating file gff_liftover.bed\n");
 my @exons;
 my ($lstrand, $ltid, $lchr); #last (previous) values
@@ -55,47 +56,61 @@ flushBED();
 close(BED);
 my $pcmd="paftools.js liftover $paf $fbed";
 open(MAP, "$pcmd|") || die("Error opening pipe $pcmd|\n");
-open(BED, $fbed) || die("Error opening $fbed for reading!\n");
-my $bedline=<BED>;
-my @exd; #list of [$start, $end] for exons of $ltid
-my ($lnumexons, $lstatus);
+#                                        0       1       2          3
+my %mt; #remapped transcripts: $ltid->[ chr, strand,  exoncount, \@exd]
+#where @exd = list of [$chr, $start, $end, $orig_eno, $flags] = remapped exons of $tid
+#                        0       1     2        3        4
+my %idc; # interval remapping count
 while(<MAP>) {
   chomp;
-  my ($mchr, $mstart, $mend, $oloc, $anum, $ostrand)=split(/\t/);
+  my ($mchr, $mstart, $mend, $idloc, $zero, $ostrand)=split(/\t/);
+  $idloc=~s/~(\d+)\|/~$1\t/;
+  my ($eid, $oloc)=split(/\t/, $idloc);
   my $oseg=$oloc;
-  while ($oseg=~s/_t[53]$//) {}; #cleanup the mapped segment info
-  my ($bchr, $bstart, $bend, $t_info, $bnumexons, $bstrand);
-  my $found=0;
-  print STDERR "looking for $oseg ($oloc) in BED file..\n";
-  while ($bedline) {
-    chomp($bedline);
-    ($bchr, $bstart, $bend, $t_info, $bnumexons, $bstrand)=split(/\t/, $bedline);
-    if ($oseg eq $bchr.'_'.$bstart.'_'.$bend) {
-      $found++;
-      print STDERR " found $oseg src: $bchr:$bstart-$bend: $t_info\n";
-      my ($tid, $exno)=split(/\~/, $t_info);
-      if ($tid ne $ltid) { #change of $t
-       writeMTranscript($ltid, $lnumexons, $lchr, $lstrand, \@exd);
-       ($ltid, $lnumexons, $lchr, $lstrand)=($tid, $bnumexons, $mchr, $bstrand);
-       @exd=();
-      }
-      if ($found==1) {
-        my $status=($oseg ne $oloc)?'a':''; # a = ambiguous mapping
-        push(@exd, [$mstart+1, $mend, $exno.$status]);
-      } elsif ($found==2) {
-        $exd[-1]->[2].='m';  #m=multiple mappings
-      }
+  my $tm=0; #truncated mapping for this exon?
+  while ($oseg=~s/_t[53]$//) { ++$tm; }; #cleanup the mapped segment info
+  my $rbed=$bed{$eid};
+  die("Error: could not find interval ID $eid in BED file!\n") unless $rbed;
+  my ($bchr, $bstart, $bend, $bstrand, $bnumexons)=@$rbed;
+  my ($tid, $eno)=split(/~/,$eid);
+  my $md=$mt{$tid};
+  my $found=($idc{$eid}++);
+  my $eflags=0;
+  $eflags|=2 if $tm;
+  if ($found>1) { #this exon has multiple mappings
+    die("Error: exon $eid found before but transcript not stored?!\n") unless $md;
+    $eflags|=1;
+    #update exising exon
+    my $fex=0; #found exon?
+    for my $ed (@{$md->[3]}) {
+       if ($ed->[3]==$eno) {
+         $fex=1;
+         $ed->[4] |= $eflags;
+         last;
+       }
     }
-    else { #different source segment
-      last if $found;
+    die("Error: exon $eid was not found for multiple mapping ($found)!\n") unless $fex;
+  }
+  else { #first time seeing this interval
+    if ($md) {
+      #update exons
+      #check if exon mapping already stored -> should not be!
+      for my $ed (@{$md->[3]}) {
+        die("Error: exon $eid already found for first mapping!\n")
+         if ($ed->[3]==$eno);
+      }
+      push(@{$md->[3]}, [$mchr, $mstart, $mend, $eno, $eflags]);
+    } else {
+      #create transcript entry in %mt
+      $mt{$tid}=['', $bstrand, $bnumexons, [[$mchr, $mstart, $mend, $eno, $eflags]] ];
     }
-    $bedline=<BED>;
-  } #while src BED lines to check for the current mapping
+  }
 } #while MAPpings
-writeMTranscript($ltid, $lnumexons, $lchr, $lstrand, \@exd);
+while (my ($tid,$td)=each(%mt)) {
+ printRemapped($tid, $td);
+}
 
 close(MAP);
-close(BED);
 
 # --
 if ($outfile) {
@@ -110,25 +125,36 @@ sub flushBED{
  my $en=0;
  foreach my $ed (@exons) {
    $en++;
-   print BED join("\t", $lchr, @$ed, $ltid.'~'.$en, $n, $lstrand)."\n";
+   my $iid=$ltid.'~'.$en;
+   $bed{$iid}=[$lchr, $$ed[0], $$ed[1], $lstrand, $n];
+   print BED join("\t", $lchr, @$ed, $iid, $n, $lstrand)."\n";
  }
 }
 
-sub writeMTranscript {
-  my ($tid, $numexons, $chr, $strand, $exr)=@_;
-  return if @$exr==0;
-  my @ex=sort { $main::a->[0] <=> $main::b->[0] } @$exr;
-  my ($tstart, $tend)=($ex[0]->[0], $ex[-1]->[1]);
-  my @aex=grep { $_->[2]=~m/[am]/ } @ex;
-  my $attrs="ID=$tid;exoncount=$numexons";
-  $attrs.=';ambiguous=1' if @aex>0;
+sub printRemapped {
+  my ($tid, $td)=@_;
+  my ($tchr, $tstrand, $numexons, $exr)=@$td;
+  my @ex=sort { $main::a->[1] <=> $main::b->[1] } @$exr;
+  my ($tstart, $tend)=($ex[0]->[1], $ex[-1]->[2]);
+  my @tex=grep { $_->[4] & 2 } @ex; #any truncated exon mappings?
+  my @mex=grep { $_->[4] & 1 } @ex; #any multiple exon mappings?
+  $tchr=$ex[0]->[0];
+  my @xex=grep { $_->[0] ne $tchr } @ex; #multi-chromosome mappings?
+  my $attrs="ID=$tid;exoncount=$numexons;m_exoncount=".scalar(@ex);
+  my $al=length($attrs);
+  $attrs.=';truncated=1' if @tex>0;
+  $attrs.=';ambiguous=1' if @mex>0;
   $attrs.=';partial=1' if @ex!=$numexons;
-  $attrs.=';ok=1' if @aex==0 && @ex==$numexons;
-  print join("\t", $chr, 'liftover', 'transcript', $tstart, $tend, '.', $strand, '.', $attrs)."\n";
+  $attrs.=';multi_chr=1' if @xex>0;
+  $attrs.=';ok=1' if $al==length($attrs);
+  print join("\t", $tchr, 'liftover', 'transcript', $tstart, $tend, '.', $tstrand, '.', $attrs)."\n";
   my $f=$cdsonly?'CDS':'exon';
   foreach my $e (@ex) {
-   $attrs="Parent=$tid;exoninfo=$$e[2]\n";
-   print join("\t",  $chr, 'liftover', $f, $$e[0], $$e[1], '.', $strand, '.', $attrs);
+   $attrs="Parent=$tid;src_exon_number=".$e->[3];
+   $attrs.=';truncated=1' if ($e->[4] & 2);
+   $attrs.=';multimap=1' if ($e->[4] & 1);
+   $attrs.=';diff_chr=1' if ($e->[0] ne $tchr);
+   print join("\t",  $e->[0], 'liftover', $f, $$e[1], $$e[2], '.', $tstrand, '.', $attrs)."\n";
   }
   @$exr=();
 }
