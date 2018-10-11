@@ -66,11 +66,13 @@ while(<MAP>) {
   while ($oseg=~s/_t[53]$//) {}; #cleanup the mapped segment info
   my ($bchr, $bstart, $bend, $t_info, $bnumexons, $bstrand);
   my $found=0;
+  print STDERR "looking for $oseg ($oloc) in BED file..\n";
   while ($bedline) {
     chomp($bedline);
     ($bchr, $bstart, $bend, $t_info, $bnumexons, $bstrand)=split(/\t/, $bedline);
     if ($oseg eq $bchr.'_'.$bstart.'_'.$bend) {
       $found++;
+      print STDERR " found $oseg src: $bchr:$bstart-$bend: $t_info\n";
       my ($tid, $exno)=split(/\~/, $t_info);
       if ($tid ne $ltid) { #change of $t
        writeMTranscript($ltid, $lnumexons, $lchr, $lstrand, \@exd);
