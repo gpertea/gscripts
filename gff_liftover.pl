@@ -54,7 +54,7 @@ while (<>) {
 }
 flushBED();
 close(BED);
-my $pcmd="paftools.js liftover $paf $fbed";
+my $pcmd="paftools.js liftover -l 200 $paf $fbed";
 open(MAP, "$pcmd|") || die("Error opening pipe $pcmd|\n");
 #                                        0       1       2          3
 my %mt; #remapped transcripts: $ltid->[ chr, strand,  exoncount, \@exd]
@@ -74,7 +74,7 @@ while(<MAP>) {
   my ($bchr, $bstart, $bend, $bstrand, $bnumexons)=@$rbed;
   my ($tid, $eno)=split(/~/,$eid);
   my $md=$mt{$tid};
-  my $found=($idc{$eid}++);
+  my $found=(++$idc{$eid});
   my $eflags=0;
   $eflags|=2 if $tm;
   if ($found>1) { #this exon has multiple mappings
@@ -96,13 +96,17 @@ while(<MAP>) {
       #update exons
       #check if exon mapping already stored -> should not be!
       for my $ed (@{$md->[3]}) {
-        die("Error: exon $eid already found for first mapping!\n")
+        die("Error: exon $eid already found for first mapping!(found=$found)\n")
          if ($ed->[3]==$eno);
       }
       push(@{$md->[3]}, [$mchr, $mstart, $mend, $eno, $eflags]);
     } else {
+      my $tstrand=$bstrand;
+      if ($ostrand eq '-') {
+        $tstrand=($tstrand eq '-') ? '+' : '-';
+      }
       #create transcript entry in %mt
-      $mt{$tid}=['', $bstrand, $bnumexons, [[$mchr, $mstart, $mend, $eno, $eflags]] ];
+      $mt{$tid}=['', $tstrand, $bnumexons, [[$mchr, $mstart, $mend, $eno, $eflags]] ];
     }
   }
 } #while MAPpings
@@ -154,7 +158,7 @@ sub printRemapped {
    $attrs.=';truncated=1' if ($e->[4] & 2);
    $attrs.=';multimap=1' if ($e->[4] & 1);
    $attrs.=';diff_chr=1' if ($e->[0] ne $tchr);
-   print join("\t",  $e->[0], 'liftover', $f, $$e[1], $$e[2], '.', $tstrand, '.', $attrs)."\n";
+   print join("\t",  $e->[0], 'liftover', $f, $$e[1]+1, $$e[2], '.', $tstrand, '.', $attrs)."\n";
   }
   @$exr=();
 }
