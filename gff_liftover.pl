@@ -69,6 +69,10 @@ while(<MAP>) {
   my $oseg=$oloc;
   my $tm=0; #truncated mapping for this exon?
   while ($oseg=~s/_t[53]$//) { ++$tm; }; #cleanup the mapped segment info
+  my ($ostart, $oend)=($oseg=~m/(\d+)_(\d+)$/);
+  #print STDERR ">DEBUG: $mend-$mstart(".($mend-$mstart).") vs $oend-$ostart-10 (".($oend-$ostart-10).
+  #  ")\n";
+  next if $mend-$mstart<$oend-$ostart-10 || ($mend-$mstart<5 &&  $oend-$ostart>5);
   my $rbed=$bed{$eid};
   die("Error: could not find interval ID $eid in BED file!\n") unless $rbed;
   my ($bchr, $bstart, $bend, $bstrand, $bnumexons)=@$rbed;
@@ -99,14 +103,14 @@ while(<MAP>) {
         die("Error: exon $eid already found for first mapping!(found=$found)\n")
          if ($ed->[3]==$eno);
       }
-      push(@{$md->[3]}, [$mchr, $mstart, $mend, $eno, $eflags]);
+      push(@{$md->[3]}, [$mchr, $mstart+1, $mend, $eno, $eflags]);
     } else {
       my $tstrand=$bstrand;
       if ($ostrand eq '-') {
         $tstrand=($tstrand eq '-') ? '+' : '-';
       }
       #create transcript entry in %mt
-      $mt{$tid}=['', $tstrand, $bnumexons, [[$mchr, $mstart, $mend, $eno, $eflags]] ];
+      $mt{$tid}=['', $tstrand, $bnumexons, [[$mchr, $mstart+1, $mend, $eno, $eflags]] ];
     }
   }
 } #while MAPpings
@@ -158,7 +162,7 @@ sub printRemapped {
    $attrs.=';truncated=1' if ($e->[4] & 2);
    $attrs.=';multimap=1' if ($e->[4] & 1);
    $attrs.=';diff_chr=1' if ($e->[0] ne $tchr);
-   print join("\t",  $e->[0], 'liftover', $f, $$e[1]+1, $$e[2], '.', $tstrand, '.', $attrs)."\n";
+   print join("\t",  $e->[0], 'liftover', $f, $$e[1], $$e[2], '.', $tstrand, '.', $attrs)."\n";
   }
   @$exr=();
 }
