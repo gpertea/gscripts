@@ -13,12 +13,13 @@ my $usage = q/Usage:
   Output will be a CDS annotated compact gff3 (tlf)
 /;
 umask 0002;
-getopts('o:') || die($usage."\n");
+getopts('Do:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
 }
+my $debug=$Getopt::Std::opt_D;
 # --
 die($usage."\n") unless @ARGV==2;
 my ($tfa, $pepdb)=@ARGV;
@@ -113,7 +114,9 @@ my $counter=0;
         my $bscore = (3 * ($psl[0] + $psl[2])) - (3 * $psl[1]) - $psl[4] - $psl[6];
         my $bstatus='gmap';
         my ($bCDstart, $bCDend) = $revmap ? ($psl[14]-$psl[16], $psl[14]-$psl[15]) : ($psl[15], $psl[16]); #0-based PSL start coordinate for the CDS
-        print STDERR ">analyzing $tseqid mapping: $chr:$tstart-$tend|$tstrand CDS:$CDstart-$CDend: blat: $bCDstart, $bCDend\n";
+        if ($debug) {
+           print STDERR ">analyzing $tseqid mapping: $chr:$tstart-$tend|$tstrand CDS:$CDstart-$CDend: blat: $bCDstart-$bCDend\n";
+        }
         if ($CDstart && $bCDstart+1==$CDstart) {
           #agreeing with GMAP here, use its coordinates
           $cds_start=$bCDstart;
@@ -136,14 +139,14 @@ my $counter=0;
         my $adj_end=$ofs+$ci*3;
         $adj_end=$psl[14]-$adj_end if $revmap;
         if ($adj_end!=$cds_end) {
-          print STDERR "\t$tseqid mapping adjusted ORF end from $cds_end to $adj_end\n";
+          #print STDERR "\t$tseqid mapping adjusted ORF end from $cds_end to $adj_end\n";
           $cds_end=$adj_end;
           $bscore=3*($cds_end-$cds_start);
           $bstatus.='_adj';
         }
         if ($cds_end-$cds_start<10 && $plen>10) {
-           print STDERR "Warning: $tseqid mapping has a very short ORF ($cds_start-$cds_end) for protein of length $plen\n";
-           $bstatus='.tooshort';
+           #print STDERR "Warning: $tseqid mapping has a very short ORF ($cds_start-$cds_end) for protein of length $plen\n";
+           $bstatus.='.tooshort';
         }
        my $td=$tm{$tid};
        if (!$td) {
@@ -175,19 +178,22 @@ while (my ($tid, $td) = each %tm) {
   my ($CDstart, $CDend);
   $cend--; #adjust CDend calculation
   foreach my $e (@$exs) {
-    my $tinc=$$e[1]-$$e[0]+1;
+    my ($cs, $ce)=@$e;
+    my $tinc=$ce-$cs+1;
+    my $last=0;
     if ($cstart>=$tacc && $cstart-$tacc<$tinc) {
       $CDstart=$$e[0]+$cstart-$tacc;
-      push(@cds, [$CDstart, $$e[1]]);
-      $tacc+=$tinc;
-      next;
+      $cs=$CDstart;
+      #push(@cds, [$CDstart, $$e[1]]);
     }
     if ($cend>=$tacc && $cend-$tacc<$tinc) {
        $CDend=$$e[0]+$cend-$tacc;
-       push(@cds, [$$e[0], $CDend]);
-       last;
+       $ce=$CDend;
+       #push(@cds, [$$e[0], $CDend]);
+       #last;
     }
-    push(@cds, [@$e]) if $CDstart;
+    push(@cds, [$cs, $ce]) if $CDstart;
+    last if $CDend;
     $tacc+=$tinc;
   }
  my $attrs="ID=$tid;mstatus=$bstatus";
