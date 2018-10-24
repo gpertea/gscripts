@@ -4,7 +4,7 @@ use Getopt::Std;
 use IPC::Open2;
 
 my $usage = q/Usage:
-  cds2rna_blat.pl [-w outblat.psl] [-b inblat.psl] \
+  cds2rna_blat.pl [-M][-w outblat.psl] [-b inblat.psl] \
                   tmappings.fa refprot.fa.cidx > tmappings_wCDS.tlf
   
   tmappings.fa must be a transcripts sequence file 
@@ -14,7 +14,7 @@ my $usage = q/Usage:
   Output will be a CDS annotated compact gff3 (tlf)
 /;
 umask 0002;
-getopts('w:b:Do:') || die($usage."\n");
+getopts('w:b:MDo:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
@@ -23,6 +23,7 @@ if ($outfile) {
 my $debug=$Getopt::Std::opt_D;
 my $wblat=$Getopt::Std::opt_w;
 my $inblat=$Getopt::Std::opt_b;
+my $mito_codons=$Getopt::Std::opt_M;
 # --
 die($usage."\n") unless @ARGV==2;
 my ($tfa, $pepdb)=@ARGV;
@@ -35,13 +36,25 @@ my %tm; #a transcript can have multiple mappings (e.g. gmap)
         #we may have multiple blat alignments
         # tid=>[ [tseqid, chr, strand, start, end, [exons], bscore, CDstart, CDend, bstatus], ...]
         #          0       1      2     3      4       5       6       7      8       9
-my @stopCodons=qw(TAA TAG TAR TGA TRA);
-my %stops;
+my @stop_codons=qw(TAA TAG TAR TGA TRA);
+my @start_codons=qw(ATG);
+my %stopCodons;
+my %startCodons;
+@stopCodons{@stop_codons}=('.') x @stop_codons;
+@startCodons{@start_codons}=('M')  x @start_codons;
+if ($mito_codons) {
+  delete($stopCodons{'TGA'}); # TGA is W (Trp) in mitochondria
+  @stopCodons{'AGA', 'AGG'}=('.', '.');
+  $startCodons{'ATA'}='M';
+}
+
 my $totalprot=0;
-@stops{@stopCodons}=('*') x @stopCodons;
+
 mkdir('/dev/shm/gpertea');
 my $ftmp="/dev/shm/gpertea/tpep.$$.fa";
 my $counter=0;
+my @Bnextaln; # used for getNextAln() from blat
+
 if ($inblat) {
  die("Error: input blat file must be different from output blat file!\n") if $wblat eq $inblat;
  open(BLAT, $inblat) || die("Error opening psl file $inblat !\n");
@@ -124,63 +137,72 @@ if ($wblat) {
      # blat PSL format
      # #match #mism #repm #Ns #qgaps #qgapb #tgaps #tgapb strand q_id q_len q_start q_end t_name t_len t_start t_end #blocks blkSizes qStarts tStarts
      #  0       1     2    3    4      5      6       7      8     9    10    11     12     13    14      15    16     17       18       19      21
-     while (<BLAT>) {
-        last if ($inblat && m/^#.#/);
-        print WBLAT $_ if $wblat;
-        chomp;
-        my @psl=split(/\t/);
-        die("Error: expect blast alignment for $tseqid but got $psl[13] instead !\n") if $tseqid ne $psl[13];
-        die("Error: unexpected blat strand specification: -+ for $tseqid\n") if ($psl[8] eq '-+');
-        my $revmap=($psl[8] eq '+-');
-        my ($cds_start, $cds_end); #0-based CDS start, end offsets on the transcript sequence
-        my $bscore = (3 * ($psl[0] + $psl[2])) - (3 * $psl[1]) - $psl[4] - $psl[6];
-        my $bstatus='gmap';
-        my ($bCDstart, $bCDend) = $revmap ? ($psl[14]-$psl[16], $psl[14]-$psl[15]) : ($psl[15], $psl[16]); #0-based PSL start coordinate for the CDS
-        #my ($bCDstart, $bCDend) = ($psl[15], $psl[16]);
-        if ($debug) {
-           print STDERR ">analyzing $tseqid mapping: $chr:$tstart-$tend|$tstrand CDS:$CDstart-$CDend: blat: $bCDstart-$bCDend\n";
-        }
-        if ($CDstart && $bCDstart+1==$CDstart) {
-          #agreeing with GMAP here, use its coordinates
-          $cds_start=$bCDstart;
-          $cds_end=$CDend;
-          $bstatus='gmap';
-        } else { #take blat's t_start coordinate and find the longest reading frame from there
-          $cds_start=$bCDstart;
-          $cds_end=$bCDend;
-          $bstatus='blat';
-        }
-        my ($seq, $ofs)=$revmap ? (reverseComplement($tseq), $bCDstart) : ($tseq, $bCDstart);
-        if ($debug) {
-          print STDERR "$psl[8] alignment of qry($psl[11]-$psl[12]) to target($psl[15]-$psl[16])\n";
-          print STDERR "bCDstart=$bCDstart, bCDend=$bCDend\n";
-          print STDERR " seq at offset $ofs:\n".substr($seq, $ofs, 70)."\n";
-        }
-        my @cods=unpack('(A3)*', substr($seq, $ofs));
-        my $ci=0;
-        foreach my $c (@cods) {
-          $ci++;
-          last if exists($stops{$c});
-        }
-        #stop found at $ofs+$ci*3
-        if ($ci==@cods) {
-           $ci=scalar(@cods)-1 ;
-           print STDERR "\tno stop codon found, \$ci adjusted to $ci\n" if $debug;
-        }
-        my $adj_end=$ofs+$ci*3;
-        #$adj_end=$psl[14]-$adj_end if $revmap;
-        if ($adj_end!=$cds_end) {
-          if ($debug) {
-            print STDERR "\t$tseqid mapping adjusted ORF end from $cds_end to $adj_end\n";
-          }
-          $cds_end=$adj_end;
-          $bscore=3*($cds_end-$cds_start);
-          $bstatus.='_adj';
-        }
-        if ($cds_end-$cds_start<10 && $plen>10) {
-           #print STDERR "Warning: $tseqid mapping has a very short ORF ($cds_start-$cds_end) for protein of length $plen\n";
-           $bstatus.='.tooshort';
-        }
+     my @psl;
+     while (getNextAln(\@psl, $tseqid)) {
+       #last if ($inblat && m/^#.#/);
+       print WBLAT join("\t",@psl)."\n" if $wblat;
+       #chomp;
+       #my @psl=split(/\t/);
+       die("Error: expect PSL alignment for $tseqid but got $psl[13] instead !\n") if $tseqid ne $psl[13];
+       #die("Error: unexpected blat strand specification: -+ for $tseqid\n") if ($psl[8] eq '-+');
+       my $revmap=($psl[8] eq '+-');
+       my ($cds_start, $cds_end); #0-based CDS start, end offsets on the transcript sequence
+       my $bscore = (3 * ($psl[0] + $psl[2])) - (3 * $psl[1]) - $psl[4] - $psl[6];
+       my $bstatus='gmap';
+       my ($bCDstart, $bCDend) = $revmap ? ($psl[14]-$psl[16], $psl[14]-$psl[15]) : ($psl[15], $psl[16]); #0-based PSL start coordinate for the CDS
+       #my ($bCDstart, $bCDend) = ($psl[15], $psl[16]);
+       if ($debug) {
+          print STDERR ">analyzing $tseqid mapping: $chr:$tstart-$tend|$tstrand CDS:$CDstart-$CDend: blat\[$psl[8]\] $bCDstart-$bCDend\n";
+       }
+       if ($CDstart && $bCDstart+1==$CDstart) {
+         #agreeing with GMAP here, use its coordinates
+         $cds_start=$bCDstart;
+         $cds_end=$CDend;
+         $bstatus='gmap';
+       } else { #take blat's t_start coordinate and find the longest reading frame from there
+         $cds_start=$bCDstart;
+         $cds_end=$bCDend;
+         $bstatus='blat';
+       }
+       my ($seq, $ofs)=$revmap ? (reverseComplement($tseq), $bCDstart) : ($tseq, $bCDstart);
+       if ($debug) {
+         print STDERR "psl $psl[8] alignment of qry($psl[11]-$psl[12]) to target($psl[15]-$psl[16])  ";
+         print STDERR 'bCDstart='.($bCDstart+1),", bCDend=$bCDend\n";
+         print STDERR "sequence at offset $ofs:\n".substr($seq, $ofs, 72)."\n";
+       }
+       my $partial='';
+       my @cods=unpack('(A3)*', substr($seq, $ofs));
+       my $ci=0;
+       $partial.='5' if !($psl[11]==0 && exists($startCodons{$cods[0]}));
+       foreach my $c (@cods) {
+         last if exists($stopCodons{$c});
+         $ci+=length($c);
+       }
+       my $bstop_adj=0;
+       my $p_end=$cds_end;
+       if ($ci+$ofs==$tlen) {
+          $partial.='3';
+          print STDERR "\tno stop codon found, cds_end set to tlen $tlen\n" if $debug;
+          $cds_end=$tlen;
+       } else { #stop codon found, include it in CDS
+          $bstop_adj=3;
+          $cds_end=$ofs+$ci+3;
+       }
+       if ($p_end!=$cds_end-$bstop_adj) {
+         if ($debug) {
+           print STDERR "\t$tseqid mapping adjusted CDS end from $p_end to $cds_end\n";
+         }
+         $bscore-=3*($p_end-$cds_end);
+         $bstatus.='_adj';
+       }
+       if ($cds_end-$cds_start<10 && $plen>10) {
+          #print STDERR "Warning: $tseqid mapping has a very short ORF ($cds_start-$cds_end) for protein of length $plen\n";
+          $bstatus.='.shrt';
+       }
+       $bstatus.='|partial'.$partial if $partial;
+       if ($debug) {
+          print STDERR "\tCDS settled to $tseqid:".($cds_start+1)."-$cds_end".($revmap?'-':'')." status=$bstatus\n";
+       }
        my $td=$tm{$tid};
        if (!$td) {
          $td=[];
@@ -195,13 +217,11 @@ if ($wblat) {
        push(@{$td}, [$tseqid, $chr, $adjstrand, $tstart, $tend, [@ex], $bscore, $cds_start, $cds_end, $bstatus]);
      }#for each BLAT mapping
     } #reading blat results
-    print WBLAT "#.#\n";
+    #print WBLAT "#.#\n";
     if (!$inblat) {
        close(BLAT);
        waitpid($prcid,0);
     }
- #-- for now --
- #last if ($counter>5); #for testing now
  } #while FASTA transcript dna records for the mappings
 }
 
@@ -226,6 +246,7 @@ while (my ($tid, $td) = each %tm) {
   my ($tseqid, $chr, $strand, $start, $end, $exs, $bscore, $cstart, $cend, $bstatus)=@{$srtd[0]};
   my $prr=(($cend-$cstart)*100.00)/(3*$plen);
   $totalcds+=$cend-$cstart;
+  $totalcds-=3 if ($bstatus!~m/\|partial.?3$/);
   my $tacc=0; #accumulating length
   my @cds; #CDS segments to populate
   my ($CDstart, $CDend);
@@ -268,6 +289,35 @@ if ($outfile) {
 }
 
 #************ Subroutines **************
+sub getNextAln {
+  #returns 1 if indeed 
+  my ($rpsl, $t_id)=@_;
+  if (@Bnextaln>0) { #pushed earlier because it's a new target id
+    if ($Bnextaln[13] eq $t_id) {
+        @$rpsl=@Bnextaln;
+        @Bnextaln=();
+        return 1;
+    }
+    return 0;
+  }
+  do {
+    $_=<BLAT>;
+  } until (!m/^#/);
+  if (!$_) { #eof
+    @$rpsl=();
+    return 0;
+  }
+  my @r=split(/\t/);
+  if ($r[13] eq $t_id) {
+     @$rpsl=@r;
+     return 1;
+  }
+  #new target id, keep it for later
+  @Bnextaln=@r;
+  @$rpsl=();
+  return 0;
+}
+
 sub reverseComplement {
   my $s=reverse($_[0]);
   $s =~ tr/AaCcTtGgUuMmRrWwSsYyKkVvHhDdBb/TtGgAaCcAaKkYyWwSsRrMmBbDdHhVv/;
