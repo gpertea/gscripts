@@ -178,17 +178,17 @@ if ($wblat) {
          last if exists($stopCodons{$c});
          $ci+=length($c);
        }
-       my $bstop_adj=0;
+       #my $bstop_adj=0;
        my $p_end=$cds_end;
        if ($ci+$ofs==$tlen) {
           $partial.='3';
           print STDERR "\tno stop codon found, cds_end set to tlen $tlen\n" if $debug;
           $cds_end=$tlen;
        } else { #stop codon found, include it in CDS
-          $bstop_adj=3;
+          #$bstop_adj=3;
           $cds_end=$ofs+$ci+3;
        }
-       if ($p_end!=$cds_end-$bstop_adj) {
+       if ($p_end!=$cds_end) {
          if ($debug) {
            print STDERR "\t$tseqid mapping adjusted CDS end from $p_end to $cds_end\n";
          }
