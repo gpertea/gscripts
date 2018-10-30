@@ -152,9 +152,10 @@ if ($wblat) {
        my ($bCDstart, $bCDend) = $revmap ? ($psl[14]-$psl[16], $psl[14]-$psl[15]) : ($psl[15], $psl[16]); #0-based PSL start coordinate for the CDS
        #my ($bCDstart, $bCDend) = ($psl[15], $psl[16]);
        if ($debug) {
-          print STDERR ">analyzing $tseqid mapping: $chr:$tstart-$tend|$tstrand CDS:$CDstart-$CDend: blat\[$psl[8]\] $bCDstart-$bCDend\n";
+          print STDERR ">analyzing $tseqid mapping: $chr:$tstart-$tend|$tstrand CDS:$CDstart-$CDend: ".
+                          "blat\[$psl[8]\] $bCDstart-$bCDend\n";
        }
-       if ($CDstart && $bCDstart+1==$CDstart) {
+       if ($CDstart && $bCDstart+1==$CDstart && !$revmap) {
          #agreeing with GMAP here, use its coordinates
          $cds_start=$bCDstart;
          $cds_end=$CDend;
@@ -210,7 +211,7 @@ if ($wblat) {
        }
        #adjust CDS offsets by original transcript strand:
        my $adjstrand=$tstrand;
-       if ($revmap && $bstatus=~m/^blat/) {
+       if ($revmap) {
          $adjstrand = $tstrand eq '-' ? '+' : '-';
        }
        ($cds_start, $cds_end)=($tlen-$cds_end, $tlen-$cds_start) if $adjstrand eq '-';
