@@ -34,10 +34,12 @@ Filtering options:
 Location modification options:
  -m replace contig\/chromosome IDs with different IDs, as specified in the given
     ID mapping table (a two column table mapping the old ID to the new ID)
+    NOTE: renaming takes place when records are printed, *after* all the
+    other filters have been applied
  -d contig\/chromosome region(s) deletion: discard the transcripts overlapping
     the given genomic region(s), shifting the coordinates of all the 
-    features downstream from a deleted region
- 
+    features downstream from the deleted region(s)
+
 Output options:
  -K keep all attributes; by default only the core GFF\/GTF attributes are
     shown (transcript_id, gene_id, gene_name, ID, Parent, Name, gene_name)
@@ -88,11 +90,15 @@ if ($check_range) {
   ($flt_chr, $flt_strand)=parseLocations($check_range, \@flt_intv);
 }
 #my $range=$flt_chr.':'.$ck_rex[0]->[0].'-'.$ex[-1]->[1];
-my ($del_chr, $del_strand);
+my ($del_chr, $del_strand, $del_total);
 my @del_intv;
 if ($del_range) {
   ($del_chr, $del_strand)=parseLocations($del_range, \@del_intv);
   die("Error: invalid deletion location provided ($del_range)\n") if @del_intv==0;
+  $del_total=0;
+  foreach my $dseg (@del_intv) {
+    $del_total+=$$dseg[1]-$$dseg[0]+1;
+  }
 }
 
 $oattrlist='' if $keepAll;
@@ -138,6 +144,19 @@ if ($oattrlist) {
   my @al=split(/\,/, $oattrlist);
   @oattrs{@al}=();
 }
+
+if ($chrmapping) {
+ open(CMAP, $chrmapping) || die("Error: cannot open file $chrmapping \n");
+ while (<CMAP>) {
+   chomp;
+   next if length($_)<2 || m/^#/;
+   my @m=split(/[\s\,\=]+/);
+   next if @m<2;
+   $chrmap{$m[0]}=$m[1];
+ }
+ close(CMAP);
+}
+
 # ---- 
 my %gffrecs; # recID =>  [ chr, strand, feat_type,  \%attrs, fstart, fend, [@exons], [@cds], isgff3, rejected, track, subfeat, fscore ]
           #                0      1        2           3      4       5       6        7        8        9     10   ,   11,     12
@@ -205,14 +224,25 @@ sub parseLocations {
 }
 
 
-sub checkOvlExons {
+sub checkOvlSegs { # $rx must be a ref to list of segments (intervals) SORTED
  my ($a, $b, $rx)=@_;
- return 0 if ($a>$$rx[-1]->[1] || $b<$$rx[0]->[0]); # not overlapping the whole exon chain
+ return 0 if ($a>$$rx[-1]->[1] || $b<$$rx[0]->[0]); # not overlapping the whole list of segs
  foreach my $x (@$rx) {
    return 1 if ($a<=$$x[1] && $b>=$$x[0]);
    return 0 if $b<$$x[0];
    }
 }
+
+sub checkOvlDels { # $rx must be a ref to list of segments (intervals) SORTED
+ my ($a, $b, $rx)=@_; # return -1 if any overlap is found or
+                      #   if $a>deletion_end, return the total of deleted bases before $a
+ return 0 if ($a>$$rx[-1]->[1] || $b<$$rx[0]->[0]); # not overlapping the whole list of segs
+ foreach my $x (@$rx) {
+   return 1 if ($a<=$$x[1] && $b>=$$x[0]);
+   return 0 if $b<$$x[0];
+   }
+}
+
 
 sub checkWithinExons {
  my ($a, $b, $rx)=@_; #checks if interval $a-$b is contained in any @$rx interval
@@ -457,7 +487,7 @@ sub processGffRecs {
     }
   if ($doprint && $flt_chr && $flt_chr ne $chr) {
     $doprint=0;
-    }
+  }
   if ($doprint) {
     if ($flt_strand && $flt_strand ne $strand) {
       $doprint=0;
@@ -466,7 +496,7 @@ sub processGffRecs {
   if ($doprint && @flt_intv>0) {
     if ($exon_ovl) { #t span overlap any range intervals
        for my $ed (@ex) {
-         if (checkOvlExons($$ed[0], $$ed[1], \@flt_intv)) {
+         if (checkOvlSegs($$ed[0], $$ed[1], \@flt_intv)) {
             $doprint=1;
             last;
             }
@@ -474,11 +504,16 @@ sub processGffRecs {
     } elsif ($strict_ovl) {
        $doprint=1 if checkOvlWithin($fstart, $fend, \@flt_intv);
     } else {
-      $doprint=1 if checkOvlExons($fstart, $fend, \@flt_intv);
+      $doprint=1 if checkOvlSegs($fstart, $fend, \@flt_intv);
     }
   }
   $doprint = ! $doprint if $fltinvert;
   next unless $doprint;
+  # check for chr sequence deletion
+  if ($del_chr && $del_chr eq $chr) {
+     $dshift=checkOvlDels($fstart, $fend, \@del_intv);
+     next if $dshift<0; #dshift is negative for all t overlapping any deletion interval
+  }
   #filter passed, print output
   if ($tab_attrs) {
      my @od;
@@ -507,17 +542,24 @@ sub processGffRecs {
      if (exists($attrs->{gene_name})) {
           $gene_name=delete($attrs->{gene_name});
           $gene_name=undef if ($gene_name eq $tname && !exists($oattrs{gene_name}));
-          }
+     }
      if (exists($attrs->{gene})) {
           $gene=delete($attrs->{gene});
           $gene=undef if ($gene eq $tname || $gene eq $gene_name) && !exists($oattrs{gene});
-          }
+     }
      if (exists($attrs->{locus})) {
           $locus=delete($attrs->{locus});
           $locus=undef if ($locus eq $gene_name || $locus eq $gene_name) && !exists($oattrs{locus});
-          }
      }
-   my $tattrs;  
+   }
+   
+   #chromosome mapping (renaming) requested?
+   if ($chrmapping) {
+     my $cnew=$chrmap{$chr};
+     $chr=$cnew if ($cnew);
+   }
+   #new chromosome name in place from now on, if mapping
+   my $tattrs;
    if ($printGTF) { #print GTF
      $tattrs='transcript_id "'.$tid.'"; gene_id "'.$tname.'";';
      $tattrs.=' gene_name "'.$gene_name.'";' if $gene_name;
@@ -534,8 +576,7 @@ sub processGffRecs {
            $tattrs.=' '.$attr.' "'.$attrs->{$attr}.'";';
            }
         }
-     }
-    else { #print GFF3
+   } else { #print GFF3
      $tattrs='Parent='.$tid;
      my $pattrs="ID=$tid;Name=$tname";
      $pattrs.='gene_name='.$gene_name.';' if $gene_name;
@@ -555,15 +596,15 @@ sub processGffRecs {
            }
         }
      print join("\t",$chr, $track, $feature, $fstart, $fend, $fscore, $strand, '.', $pattrs)."\n";
-     }
+   }
    if ($CDSonly==0) { #write exons only when found in the input
         foreach my $ed (@ex) {
             print join("\t",$chr, $track, $subf, $$ed[0], $$ed[1], $$ed[2], $strand, $$ed[3], $tattrs)."\n";
-            }
         }
+   }
    foreach my $cd (@cds) {
-            print join("\t",$chr, $track, 'CDS', $$cd[0], $$cd[1], $$cd[2], $strand, $$cd[3], $tattrs)."\n";
-            }
+        print join("\t",$chr, $track, 'CDS', $$cd[0], $$cd[1], $$cd[2], $strand, $$cd[3], $tattrs)."\n";
+   }
  } #for each stored transcript
 }
 
