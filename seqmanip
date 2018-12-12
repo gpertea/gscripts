@@ -7,8 +7,8 @@ my $usage=q/
 A simple fasta sequence(s) manipulation tool.
 Usage:
  seqmanip [-r<range>] [-C] [-L] [-D|-X] [-I] [-G] [-T|-t <frame>|-Z] \
-    [-M|-m <ncount>] [-w <annot_file>] [-r <seq_ranges> | -f <ranges_file>]\
-    [-u <only_seqids_file>] [-x <exclude_seqids_file>] \
+    [-M|-m <ncount>] [-w <annot_file>] [-r <seqranges> | -f <ranges_file>]\
+    [-c <ranges>] [-u <only_seqids_file>] [-x <exclude_seqids_file>] \
     [-p <maxlen>] [-q <minlen>] [fasta file(s)...]
  The input files should be one or more nucleotide or aminoacid sequences
  in FASTA or raw format; if no files are given, input is expected at STDIN
@@ -17,23 +17,28 @@ Usage:
     and *then* reverse-complemented)
  -l the line length for the output fasta record (default 70)
  -a extract a single sequence with the given name from a multi-FASTA input
- -r extract one or multiple ranges from an input sequence;
+ -r extract and output one or multiple sequences or sequence ranges;
     <ranges> can have one of the formats:
-    [<seqname>:]<start>..<end> or <start>-<end> or <start>:<len>
-    Multiple such intervals can be given after the -r option (comma or space
-    delimited) and they will be spliced together, e.g.:
-       -r <seqname>:<start1>-<end1>,<start2>-<end2>
-    Targeting a specific sequence from a multi-FASTA file by specifying
-    <seqname> expects the file to be indexed with either cdbfasta or samtools
-    A whole sequence can be extracted using: -r <seqname>
+    <seqid> to extract\/target a whole sequence from an indexed multi-FASTA
+            (useful for -c or -k options)
+    or
+    [<seqid>:]<start>-<end> (or <start>-<end> or <start>:<len>)
+    A terminal '-' character, if added, causes the extract range(s) to be
+    reverse complemented,
+    Multiple intervals can be given, comma or space delimited, and they 
+    will be spliced together. Using a <seqid> requires that the multi-FASTA
+    file to be indexed with  samtools faidx
+ -c cut (delete) the given sequence range(s); expects a single input sequence
+    or -r <seqid> to target a specific sequence from an indexed multi-FASTA
+    <ranges> is a comma delimited list of <start>-<end> or <start>..<end>
+ -k mask (with Ns) the given sequence ranges; expects a single input sequence
+    or -r <seqid> to target a specific sequence from an indexed multi-FASTA
  -f same as -r but for multi-fasta\/seq input; expects a file containing
     lines of this format:
     <seqname> <range>
     The format of <range> is the same with the -r above or it may be just 
     space delimited <start> <end> numbers; the output will be a multi-fasta
     file with one subsequence for each line in the <ranges_file>
- -k mask (with Ns) the given sequence ranges (expects a single input sequence
-    or -r <seqid> to target a specific sequence from an indexed multifasta file)
  -M merge (concatenate) all input sequences into a single sequence
  -m merge all input sequences separating them by <ncount> Ns
  -d provides a custom defline for -M and -m options
@@ -112,7 +117,7 @@ my %codons=(
 );
 my %mcodons=%codons; #mitochondrial codon translation
 @mcodons{qw(AGA AGG ATA TGA)}=('.', '.', 'M', 'W');
-getopts('AZTUPMEGNRXDVCLYOQBa:d:w:f:k:l:m:n:p:q:r:t:u:v:x:y') || die "$usage\n";
+getopts('AZTUPMEGNRXDVCLYOQBa:c:d:w:f:k:l:m:n:p:q:r:t:u:v:x:y') || die "$usage\n";
 #my %ranges; # seqname => [offset, len] only populated by -r or -f option;
 my @ranges; # list of [chr, strand, defline, [[offset1,len1], [offset1,len2], ..]]
             #           0      1       2      3
@@ -205,7 +210,6 @@ my $rangetarget; #if a specific seq target was provided
 if ($Getopt::Std::opt_r) {
    my $rangetext=$Getopt::Std::opt_r;
    #this can only be one or more regions from a single fasta sequence
-   
    my $rstrand='+';
    #if ($rangetext=~s/([\-\+])$//) { $rstrand=$2;}
    if ($rangetext=~s/(\d+[\.\-\:_]+\d+)([\-\+])$/$1/) { $rstrand=$2; }
@@ -301,6 +305,21 @@ if ($Getopt::Std::opt_r) {
      else { die("Error parsing ranges to mask ($rangetext)\n"); }
    }
  } #masking ranges
+ #sequence deletion(s):
+ my @seqcuts;
+ if (my $rangetext=$Getopt::Std::opt_c) {
+   my @ar=split(/[\,\s]+/,$rangetext); #multiple regions separated by comma, space or tab
+   foreach my $r (@ar) { #special range end 'e' can be used as end-of-sequence (seq length)
+    $r=~s/end/e/i;
+    if ($r=~m/^(\d+)[\-\.\_]+([\de]+)$/) {
+      my ($ks, $ke)=($1,$2);
+      my $rlen=($ke eq 'e' || $ke eq '0')? 0 : $ke-$ks+1 ;
+      die("Error: invalid range given: $ks..$ke?)\n") if $rlen<0;
+      push(@seqcuts, [$ks, $rlen]);
+    }
+     else { die("Error parsing cut ranges ($rangetext)\n"); }
+   }
+ }
  my $seq;
  my $seq_len;
  my $count=0;
@@ -308,7 +327,7 @@ if ($Getopt::Std::opt_r) {
  my $curseq;
  my $seqcount;
  print ">$user_defline\n" if ($Getopt::Std::opt_M && !$Getopt::Std::opt_X);
- die("Error: target sequence(s) given but no input file!\n") 
+ die("Error: target sequence(s) given but no input/index file specified!\n") 
       if ($rangetarget && (@ARGV==0 || ! -f $ARGV[0]));
  my $qrange=(@ranges>0 && @ARGV>0 && -f $ARGV[0]);
  if ($qrange) { #target 

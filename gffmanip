@@ -233,14 +233,21 @@ sub checkOvlSegs { # $rx must be a ref to list of segments (intervals) SORTED
    }
 }
 
-sub checkOvlDels { # $rx must be a ref to list of segments (intervals) SORTED
- my ($a, $b, $rx)=@_; # return -1 if any overlap is found or
-                      #   if $a>deletion_end, return the total of deleted bases before $a
- return 0 if ($a>$$rx[-1]->[1] || $b<$$rx[0]->[0]); # not overlapping the whole list of segs
+sub checkOvlDels {
+ # $rseg is a reference to a tuple of coordinates [$a, $b]
+ #       $rseg values will be updated according to the global @del_intv deletion data
+ # $rx must be a ref to list of segments (intervals) SORTED
+ my ($rseg, $rx)=@_; # return 1 if any overlap is found
+ return 0 if ($$rseg[1]<$$rx[0]->[0]); # $rseg ends before any deletion
+ my $del_acc=0;
  foreach my $x (@$rx) {
-   return 1 if ($a<=$$x[1] && $b>=$$x[0]);
-   return 0 if $b<$$x[0];
-   }
+   return 1 if ($$rseg[0]<=$$x[1] && $$rseg[1]>=$$x[0]); #overlap with $x
+   last if ($$rseg[1]<$$x[0]); #cannot overlap anymore
+   $del_acc+=$$x[1]-$$x[0];
+ }
+ $$rseg[0]-=$del_acc;
+ $$rseg[1]-=$del_acc;
+ return 0;
 }
 
 
@@ -250,7 +257,7 @@ sub checkWithinExons {
  foreach my $x (@$rx) {
    return 1 if ($a>=$$x[0] && $b<=$$x[1]);
    return 0 if $b<$$x[0];
-   }
+ }
 }
 
 
@@ -511,8 +518,12 @@ sub processGffRecs {
   next unless $doprint;
   # check for chr sequence deletion
   if ($del_chr && $del_chr eq $chr) {
-     $dshift=checkOvlDels($fstart, $fend, \@del_intv);
-     next if $dshift<0; #dshift is negative for all t overlapping any deletion interval
+     my $exovl; #set if exon overlap detected
+     for my $ed (@ex) {
+        $exovl=checkOvlDels($ed, \@del_intv); 
+        last if $exovl;
+     }
+     next if $exovl;
   }
   #filter passed, print output
   if ($tab_attrs) {
