@@ -41,6 +41,7 @@ Location modification options:
     features downstream from the deleted region(s)
 
 Output options:
+ -Z merge close exons into a single exon (for intron size<4)
  -K keep all attributes; by default only the core GFF\/GTF attributes are
     shown (transcript_id, gene_id, gene_name, ID, Parent, Name, gene_name)
  -k keep only the specified non-core attributes in the output records
@@ -52,10 +53,11 @@ Output options:
  -t replace the string in the 2nd column with the given <track> text
 /;
 umask 0002;
-getopts('vCERAKTo:f:t:i:a:k:l:m:d:') || die($usage."\n");
+getopts('vCERAKTZo:f:t:i:a:k:l:m:d:') || die($usage."\n");
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
 my $outfile=$Getopt::Std::opt_o;
+my $delTinyIntrons=$Getopt::Std::opt_Z;
 my %ignoredFeatures;
 @ignoredFeatures{qw(intron cds_start cds_stop start_codon stop_codon start stop cdsstart cdsstop)}=();
 my %oattrs; #hash with attrs to print
@@ -250,13 +252,25 @@ sub checkOvlDels {
  return 0;
 }
 
-
 sub checkWithinExons {
  my ($a, $b, $rx)=@_; #checks if interval $a-$b is contained in any @$rx interval
  return 0 if ($a>$$rx[-1]->[1] || $b<$$rx[0]->[0]); # not overlapping the whole exon chain
  foreach my $x (@$rx) {
    return 1 if ($a>=$$x[0] && $b<=$$x[1]);
    return 0 if $b<$$x[0];
+ }
+}
+
+sub rmTinyIntrons {
+ my ($rex)=@_;
+ my $i=0;
+ while ($i+1<@$rex) {
+   # $$rev[$i] vs $$rex[$i+1]
+   if ($$rex[$i+1]->[0]-$$rex[$i]->[1]<4) { #intron too small or overlapping exons!
+       $$rex[$i]->[1]=$$rex[$i+1]->[1];
+       splice(@$rex, $i+1, 1);
+   }
+   else { ++$i }
  }
 }
 
@@ -526,6 +540,10 @@ sub processGffRecs {
      next if $exovl;
   }
   #filter passed, print output
+  if ($delTinyIntrons) {
+    rmTinyIntrons(\@ex) if @ex>1;
+    rmTinyIntrons(\@cds) if @cds>1;
+  }
   if ($tab_attrs) {
      my @od;
      foreach my $a (@atab_cols) {
