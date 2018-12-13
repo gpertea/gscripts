@@ -203,7 +203,8 @@ if ($mergedist>0) {
    $Getopt::Std::opt_M=1;
    $mergesep='N' x $mergedist;
    }
-my $rangetarget; #if a specific seq target was provided
+my $rangetarget; #if a specific seqid is given (multi-FASTA input)
+my $rangeseq; # set if -r has only a seqid (also used for -m or -c options)
 # if this is not set, then the first fasta sequence given as input
 # will be used for range queries
 # parse range information if available
@@ -212,11 +213,10 @@ if ($Getopt::Std::opt_r) {
    #this can only be one or more regions from a single fasta sequence
    my $rstrand='+';
    #if ($rangetext=~s/([\-\+])$//) { $rstrand=$2;}
-   if ($rangetext=~s/(\d+[\.\-\:_]+\d+)([\-\+])$/$1/) { $rstrand=$2; }
+   if ($rangetext=~s/(\d+[\.\-\:]+\d+)([\-\+])$/$1/) { $rstrand=$2; }
    my @ar=split(/[\,\s]+/,$rangetext); 
    #allow multiple regions, the first one has the [optional] target seq ID
-   my $seqtarget;
-   unless ($ar[0]=~m/^\d+[\.\-\:_]+\d*$/) {
+   unless ($ar[0]=~m/^\d+[\.\-\:]+\d*$/) {
       my @c=split(/\:/, $ar[0]);
       if (@c>1) {
         $ar[0]=pop(@c);
@@ -224,28 +224,31 @@ if ($Getopt::Std::opt_r) {
           $ar[0]=pop(@c).':'.$ar[0];
         }
         $rangetarget=1;
-        $seqtarget=join(':',@c); #could be a sequence name with ':' char within
-        if ($seqtarget=~s/([\-\+])$//) { $rstrand=$1;}
+        $rangeseq=join(':',@c); #could be a sequence name with ':' char within
+        if ($rangeseq=~s/([\-\+])$//) { $rstrand=$1; }
       } else {
         $rangetarget=1;
-        $seqtarget = $c[0];
+        $rangeseq = $c[0];
       }
    }
-   if ($seqtarget) { #   0        1      2     3
-     push(@ranges, [$seqtarget,$rstrand, '',  []]);
+   if ($rangeseq) { #   0        1       2    3
+     push(@ranges, [$rangeseq, $rstrand, '',  []]);
    }
     else {
      push(@ranges, ['-',$rstrand,'',[]]);
    }
    my $rdata=$ranges[0]->[3]; # [ ]
    foreach my $rt (@ar) {
+     $rangeseq='' if ($rt); #clear rangeseq if actual intervals are provided
      my ($rStart, $rLen)=&parseRange($rt);
      push(@$rdata, [$rStart, $rLen]);
-     #print STDERR ">>>>pushed ('$seqtarget', '$rstrand', '', ['$rStart', '$rLen'])\n";
-     }
+     #
+     #print STDERR ">>>>pushed ('$ranges[0]->[0]', '$rstrand', '', ['$rStart', '$rLen'])\n";
+   }
  }
  elsif ($Getopt::Std::opt_f) { # file with ranges to pull
      my $frname=$Getopt::Std::opt_f;
+     die("Error: options -f and -c are incompatible!\n") if $Getopt::Std::opt_c;
      my $using_stdin;
      if ($frname eq '-' || $frname eq 'stdin') {
        #open(FRNG, <&STDIN);
@@ -261,38 +264,40 @@ if ($Getopt::Std::opt_r) {
        my ($seqname, $rangetxt)=split(/\s+/,$_,2);
        my $defline;
        if ($seqname=~m/^([\w\|\-\+\.]+)\:(\d+[\.\-_]+\d*[\-\+]?)/) {
-          #chr:start-end format
-          # strand may follow chr or end
+          #chr:start-end[,start2-end2..] [defline] 
+          #  strand may follow chr or end
           $seqname=$1;
           $defline=$rangetxt;
           $rangetxt=$2;
           if ($seqname=~s/([\-\+])$//) { $rstrand=$1;}
            elsif ($rangetxt=~s/(\d+[\.\-_]+\d+)([\-\+])$/$1/) { $rstrand=$2; }
-          }
-         else { #1st column is chr(strand), 2nd column is the interval
+       }
+       else { # 1st column is chr(strand), 2nd: interval(s), 3rd (optional): defline 
           if ($seqname=~s/([\-\+])$//) { $rstrand=$1; }
           $rangetxt=~s/(\d+)[\t ]+(\d+)/$1-$2/g;
           my @rt=split(/\s+/,$rangetxt,2);
           if ($rt[1]) {
             $defline=$rt[1];
             $rangetxt=$rt[0];
-            }
           }
+       }
        next unless $rangetxt;
-       push(@ranges, [$seqname, $rstrand, $defline, []]);
-       my $rdata=$ranges[-1]->[3];
+       my $rdata=[];
+       push(@ranges, [$seqname, $rstrand, $defline, $rdata]);
+       #my $rdata=$ranges[-1]->[3];
        #$rangetxt=~s/(\d+)[\t ]+(\d+)/$1-$2/g; #could be space delimited
        my @ar=split(/\,/,$rangetxt);
        foreach my $rt (@ar) {
          my ($rStart, $rLen)=&parseRange($rt);
          push(@$rdata, [$rStart, $rLen]);
-         }
        }
+     }
      $rangetarget=1 if @ranges>0;
      close(FRNG) unless $using_stdin;
   }
  my @maskranges;
  if (my $rangetext=$Getopt::Std::opt_k) {
+   #requires a 
    my @ar=split(/[\,\s]+/,$rangetext); #multiple regions separated by comma, space or tab
    foreach my $r (@ar) { #special range end 'e' can be used as end-of-sequence (seq length)
     $r=~s/end/e/i;
@@ -306,19 +311,49 @@ if ($Getopt::Std::opt_r) {
    }
  } #masking ranges
  #sequence deletion(s):
- my @seqcuts;
  if (my $rangetext=$Getopt::Std::opt_c) {
-   my @ar=split(/[\,\s]+/,$rangetext); #multiple regions separated by comma, space or tab
-   foreach my $r (@ar) { #special range end 'e' can be used as end-of-sequence (seq length)
-    $r=~s/end/e/i;
-    if ($r=~m/^(\d+)[\-\.\_]+([\de]+)$/) {
-      my ($ks, $ke)=($1,$2);
-      my $rlen=($ke eq 'e' || $ke eq '0')? 0 : $ke-$ks+1 ;
-      die("Error: invalid range given: $ks..$ke?)\n") if $rlen<0;
-      push(@seqcuts, [$ks, $rlen]);
-    }
-     else { die("Error parsing cut ranges ($rangetext)\n"); }
+   die("Error: -c option only works with -r <seqid>!\n") if $rangetarget && (!$rangeseq || @ranges>1);
+   my @ar=split(/[\,\s]+/, $rangetext); #multiple regions separated by comma, space or tab
+   if (@ranges==0) {
+     #instead of using -r<seqid>,   -c <seqid>:<ranges..> is accepted
+     $ar[0]=~s/end$/e/i;
+     unless ($ar[0]=~m/^\d+[\.\-\:]+[\de]+$/) {
+        my @c=split(/\:/, $ar[0]);
+        if (@c>1) {
+          $ar[0]=pop(@c);
+          if (@c>1 && $c[-1]=~m/^\d+$/) { # e.g. chr1:1:200
+            $ar[0]=pop(@c).':'.$ar[0];
+          }
+          $rangetarget=1;
+          $rangeseq=join(':',@c); #could be a sequence name with ':' char within
+        }
+     }
+     if ($rangeseq) { #   0        1       2    3
+       push(@ranges, [$rangeseq, '+', '',  []]);
+     }
+     else {
+       push(@ranges, ['-', '+', '', []]);
+     }
    }
+   my $rdata=$ranges[0]->[3];
+   my @intv;
+   foreach my $r (@ar) { #special coordinate end 'e' or 'end' can be used as end-of-sequence (seq length)
+     $r=~s/end$/e/i;
+     if ($r=~m/^(\d+)[\-\.]+([\de]+)$/) {
+        my ($ks, $ke)=($1,$2);
+        push(@intv, [$ks, $ke]);
+     }
+     else { die("Error parsing cut ranges (interval $r)\n"); }
+   }
+   my $lce; #last cut end coordinate
+   @intv= sort { $main::a->[0] <=> $main::b->[0] } @intv;
+   foreach my $r (@intv) {
+      my ($ks, $ke)=@$r;
+      my $rstart = $lce ? $lce+1 : 1;
+      $lce=$ke;
+      push(@$rdata, [$rstart, $ks-1]);
+   }
+   push(@$rdata, [$lce+1, 0]) if int($lce)>0;
  }
  my $seq;
  my $seq_len;
@@ -333,35 +368,35 @@ if ($Getopt::Std::opt_r) {
  if ($qrange) { #target 
    if (@ranges==1 && $ranges[0]->[0] eq '-') { #single fasta file
        processRanges($ARGV[0], $ranges[0]);
-       } # single-fasta file
-    else {
-       #actual sequence names provided, need cdbfasta or samtools index
-       my $fasta=$ARGV[0];
-       #die("Error: no fasta file $fasta!\n") unless -f $fasta;
-       my $faidx;
-       if ($fasta=~s/\.fai$//) {
+   } # single-fasta file
+   else {
+      #actual sequence names provided, need cdbfasta or samtools index
+      my $fasta=$ARGV[0];
+      #die("Error: no fasta file $fasta!\n") unless -f $fasta;
+      my $faidx;
+      if ($fasta=~s/\.fai$//) {
          $faidx=$fasta.'.fai';
-         }
-        else {
+      }
+      else {
          $faidx=$fasta.'.fai' if -f $fasta.'.fai';
-         }
-       unless ($faidx) {
+      }
+      unless ($faidx) {
          if ($fasta=~s/\.cidx$//) {
              $faidx=$fasta.'.cidx';
              }
            else {
              $faidx=$fasta.'.cidx' if -f $fasta.'.cidx';
              }
-          }
-       #print STDERR "info: using fasta index $faidx for $fasta.\n";
-       die("Error: no index file for fasta file $fasta") unless $faidx;
-       die("Error: no fasta file $fasta!\n") unless -f $fasta;
-       foreach my $rd (@ranges) {
+      }
+      #print STDERR "info: using fasta index $faidx for $fasta.\n";
+      die("Error: no index file for fasta file $fasta") unless $faidx;
+      die("Error: no fasta file $fasta!\n") unless -f $fasta;
+      foreach my $rd (@ranges) {
            processRanges($fasta, $rd, $faidx);
-           }
-       } # cidx file needed
-   } # fast[er] range queries
- else { # normal (serial) stream processing, very slow range processing for large sequences
+      }
+   } # cidx file needed
+ } # fast[er] range queries
+ else { # normal (serial) stream processing, very slow range processing for large sequence
    while (<>) {
       if (m/^(>.+)/) {
        my $dl=$1;
@@ -425,13 +460,14 @@ sub processRanges {
      my $cd=$fai_h{$chr};
      die("Error retrieving $chr data from fasta index!\n") unless $cd;
      ($fpos, $flinelen, $dlen, $seqlen)=@$cd;
+     if (@intvs>1 && $intvs[-1]->[0]>$seqlen) { pop(@intvs); }
      $intvs[-1]->[1]=$seqlen-$intvs[-1]->[0]+1 unless $intvs[-1]->[1];
      if ($intvs[-1]->[1]<=0) {
         #invalid range
         $seq='';
         $defline='';
         return;
-        }
+     }
      $defline = $udefline ? '>'.$udefline : ">$chr";
      seek(FA, $fpos, SEEK_SET);
      } #samtools fai
@@ -475,7 +511,7 @@ sub processRanges {
    read(FA, $seq, $readlen) || die("Error reading $readlen bytes from fasta $fasta at offset $fstartpos\n");
    close(FA);
    }
-  else { #last interval goes to the end of sequence, but seqlen is not known
+ else { #last interval goes to the end of sequence, but seqlen is not known
    local $_;
    #print STDERR "for $chr reading from position $fstartpos until next '>' or eof\n";
    while (1) {
@@ -484,14 +520,14 @@ sub processRanges {
      last if (m/^>/ || !$_);
      chomp;
      $seq.=$_;
-     }
-   close(FA);
    }
+   close(FA);
+ }
  $seq=~tr/\n\r//d;
  $seq_len=length($seq);
  #now extract the ranges:
  my @rdata;
- my $txt_intvs;
+ my $txt_intvs; #writing a modified seqid showing extracted intervals
  foreach my $r (@intvs) {
     push(@rdata, [$$r[0]-$rstart, $$r[1]]);
     #$spliceseq.=substr($subseq, $cstart, $clen);
@@ -554,7 +590,7 @@ sub process_seq {
  unless ($range || @ranges==0) {
     $range=$ranges[0]->[3];
     #print STDERR "using default, first ranges!\n"; #DEBUG
-    } 
+ }
  #print STDERR "key=$_[0], range=$$range[0] ($$range[1])\n";
  #print STDERR "$range\t$seq\n";
  
@@ -582,7 +618,7 @@ sub process_seq {
    $seq='';
    $seq_len=0;
    return;
-   }
+ }
  my @seqranges;
  my $intr_ends='';    #        0        1         2         3
  my @gfdata; #array of  [exon_start, exon_len, cdsphase, diagram]
@@ -593,6 +629,7 @@ sub process_seq {
    #print STDERR "   ending: ".substr($seq,-10)."\n";
    my $i=0;
    foreach my $rng (@intvs) {
+     last if $$rng[0]>$seq_len;
      $i++;
      if ($$rng[1]>0) {
         push(@seqranges, substr($seq, $$rng[0]-1, $$rng[1]));
@@ -615,11 +652,11 @@ sub process_seq {
           }
       }#for each range
    #print STDERR "intr_ends=$intr_ends\n";
-   }
+  }
   else { #no ranges requested, create a dummy one with the whole sequence
     push(@seqranges, $seq); 
     push(@gfdata, [1, length($seqranges[-1]),0, '']);
-    }
+  }
  # -- first and last codons
  #there is that rare case when the start/stop codons can be
  #broken/split by an intron
@@ -849,17 +886,16 @@ sub process_seq {
 
 sub parseRange {
  my $r=$_[0];
- my ($rStart, $sep, $rLen)= ($r =~ m/^(\d+)([ \t\.\-\:_]*)(\d*)/);
+ my ($rStart, $sep, $rLen)= ($r =~ m/^(\d+)([ \t\.\-\:]*)(\d*)/);
  if ($rLen) {
-    if ($sep ne ':') { # start-to-end format
+    if ($sep ne ':') { # start-end format
       ($rLen, $rStart) = ($rLen<$rStart) ? ($rStart-$rLen+1, $rLen) : ($rLen-$rStart+1, $rStart);
       }
     }
  #$rLen=-$rLen if ($rLen<0 && $r=~m/\d+\s*\-\s*$/);
  $rLen=-$rLen if ($rLen<0);
  $rStart=1 unless $rStart;
- #print STDERR "rstart='$rStart', sep='$sep', rlen='$rLen'\n";
- return ($rStart, $rLen); #$rLen could be empty
+ return ($rStart, $rLen); #$rLen could be empty, which means 'to the end'
  }
 
 
