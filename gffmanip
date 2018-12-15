@@ -272,6 +272,39 @@ sub checkWithinExons {
  }
 }
 
+
+sub cleanupExons {
+ my ($er, $rex, $cr, $rcd)=@_;
+ @$rex=@$er;
+ @$rcd=@$cr;
+ if (@$rcd>0) {
+   push(@$rex, @$rcd); #merge CDS segments, in case only UTRs were given
+   @$rcd=sort { $a->[0] <=> $b->[0] } @$rcd;
+ }
+ @$rex=sort { $a->[0] <=> $b->[0] } @$rex;
+ my $i=0;
+ while ($i+1<@$rex) {
+   # $$rev[$i] vs $$rex[$i+1]
+   if ($$rex[$i+1]->[0]-$$rex[$i]->[1]<5) { #intron too small or overlapping exons!
+       $$rex[$i]->[1]=$$rex[$i+1]->[1];
+       splice(@$rex, $i+1, 1);
+   }
+   else { ++$i }
+ }
+ $i=0;
+ while ($i+1<@$rcd) {
+   # $$rev[$i] vs $$rex[$i+1]
+   if ($$rcd[$i+1]->[0]-$$rcd[$i]->[1]<2 &&
+       ($$rcd[$i+1]->[4]=~m/codon/i  || $$rcd[$i]->[4]=~m/codon/i ) ) { 
+       #adjacent or overlapping CDS with start/stop_codon feature
+       $$rcd[$i]->[1]=$$rcd[$i+1]->[1];
+       splice(@$rcd, $i+1, 1);
+   }
+   else { ++$i }
+ }
+}
+
+#
 sub rmTinyIntrons {
  my ($rex)=@_;
  my $i=0;
@@ -441,21 +474,22 @@ sub processGffRecs {
    # my ($mstart,$mend)=($fstart, $fend);
    my $CDSonly=0; # set to 1 if only CDS segments were given
    my $hasCDS=0;
-   my @ex;
-   my @cds;
    #some records might lack exons, but have only CDS segments (e.g. mitochondrial genes)
-   if (@$er<1 && @$cr>0) {
-     @ex = sort { $a->[0] <=> $b->[0] } @$cr;
-     @cds=@ex;
+   if (@$er<1 && @$cr>0) { #no exon entries, but CDS
+     #@ex = sort { $a->[0] <=> $b->[0] } @$cr;
+     #@cds=@ex;
      $CDSonly=1;
      $hasCDS=1;
-   } else {
-     @ex = sort { $a->[0] <=> $b->[0] } @$er;
+   } else { #exons declared
+     #@ex = sort { $a->[0] <=> $b->[0] } @$er;
      if (@$cr>0) { # sort cds segments too
-       @cds= sort { $a->[0] <=> $b->[0] } @$cr;
+       #@cds= sort { $a->[0] <=> $b->[0] } @$cr;
        $hasCDS=1;
      }
    }
+   my @ex; #refined exon segments (in case only UTRs are given, or non-CDS exon fragments)
+   my @cds; #refined CDS segments (in case start/stop_codons are given)
+   cleanupExons($er, \@ex, $cr, \@cds); #check for merging exon/UTR/CDS/start_codon/stop_codon into exon/CDS segments
    # --------------
    # get the more accurate version of the start-end coords for the feature
    my $covlen=0;
