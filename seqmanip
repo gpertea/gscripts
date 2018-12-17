@@ -7,15 +7,15 @@ my $usage=q/
 A simple fasta sequence(s) manipulation tool.
 Usage:
  seqmanip [-r<range>] [-C] [-L] [-D|-X] [-I] [-G] [-T|-t <frame>|-Z] \
-    [-M|-m <ncount>] [-w <annot_file>] [-r <seqranges> | -f <ranges_file>]\
-    [-c <ranges>] [-u <only_seqids_file>] [-x <exclude_seqids_file>] \
-    [-p <maxlen>] [-q <minlen>] [fasta file(s)...]
+    [-M|-m <ncount> -D '<defline>'] [-r <seqranges> | -f <ranges_file>]\
+    [-d <ranges>] [-u <only_seqids_file>] [-x <exclude_seqids_file>] \
+    [-w <annot_file>] [-p <maxlen>] [-q <minlen>] [fasta file(s)...]
  The input files should be one or more nucleotide or aminoacid sequences
  in FASTA or raw format; if no files are given, input is expected at STDIN
  Options:
  -C reverse complement (is -r is given, the subsequence is extracted first
     and *then* reverse-complemented)
- -l the line length for the output fasta record (default 70)
+ -l set the line length for the output FASTA record(s) (default 70)
  -a extract a single sequence with the given name from a multi-FASTA input
  -r extract and output one or multiple sequences or sequence ranges;
     <ranges> can have one of the formats:
@@ -28,9 +28,11 @@ Usage:
     Multiple intervals can be given, comma or space delimited, and they 
     will be spliced together. Using a <seqid> requires that the multi-FASTA
     file to be indexed with  samtools faidx
- -c cut (delete) the given sequence range(s); expects a single input sequence
-    or -r <seqid> to target a specific sequence from an indexed multi-FASTA
-    <ranges> is a comma delimited list of <start>-<end> or <start>..<end>
+ -d delete the given sequence range(s); expects a single input sequence target
+    or -r <seqid> can be used to target a specific sequence from an indexed
+    multi-FASTA; <ranges> can be a comma delimited list of intervals
+       <start>-<end> or <start>..<end> or <start>:<length>
+   ..where the first interval can have a <seqid>: prefix
  -k mask (with Ns) the given sequence ranges; expects a single input sequence
     or -r <seqid> to target a specific sequence from an indexed multi-FASTA
  -f same as -r but for multi-fasta\/seq input; expects a file containing
@@ -41,12 +43,11 @@ Usage:
     file with one subsequence for each line in the <ranges_file>
  -M merge (concatenate) all input sequences into a single sequence
  -m merge all input sequences separating them by <ncount> Ns
- -d provides a custom defline for -M and -m options
  -w appends description to the defline based on given <annot_file> which has
     the format:
     <seqname> <description>
- -D add basic, dummy defline if the input doesn't provide one, or add
-    sequence length to the existing defline
+ -D set a custom defline for -M\/-m options or if the input is a raw sequence,
+    or add the sequence length to the existing defline if <txt> is 'len'
  -X exclude defline from the output (just print the sequence)
  -L provide one-line output for each sequence (output 2-line FASTA records, 
     or just the sequence line if -X option is also given)
@@ -74,8 +75,9 @@ Usage:
  -A use ANSI colors to highlight features in terminal (for -E option)
  
  Note:
- -a, -r and -f options make use of a cdbfasta or samtools fasta index 
- file which is expected to be present in the same directory./;
+ -a, -r and -f options make use of a samtools fasta index file which is expected
+ to be present in the same directory as the input FASTA file.
+/;
 
 my %codons=(
 'AAA'=>'K', 'AAC'=>'N', 'AAG'=>'K', 'AAR'=>'K', 'AAT'=>'N',
@@ -117,7 +119,7 @@ my %codons=(
 );
 my %mcodons=%codons; #mitochondrial codon translation
 @mcodons{qw(AGA AGG ATA TGA)}=('.', '.', 'M', 'W');
-getopts('AZTUPMEGNRXDVCLYOQBa:c:d:w:f:k:l:m:n:p:q:r:t:u:v:x:y') || die "$usage\n";
+getopts('AZTUPMEGNRXVCLYOQBD:a:d:w:f:k:l:m:n:p:q:r:t:u:v:x:y') || die "$usage\n";
 #my %ranges; # seqname => [offset, len] only populated by -r or -f option;
 my @ranges; # list of [chr, strand, defline, [[offset1,len1], [offset1,len2], ..]]
             #           0      1       2      3
@@ -126,9 +128,10 @@ my $fai_loaded=0;
 my %fai_h; # seqID => [fpos, linelen, delimlen, seqlen]
 my $rcodons=\%codons;
 $rcodons=\%mcodons if $Getopt::Std::opt_B;
-my $m_linerest; #for the merge case (-M)
+my $m_linerest; #for the merge case (-M or -m)
 my $linelen=$Getopt::Std::opt_l || 70;
-my $user_defline=$Getopt::Std::opt_d || 'dummyname';
+my $user_defline=$Getopt::Std::opt_D || 'dummySeqId';
+my $addSeqLen=($user_defline eq 'len');
 my $ansicolors=$Getopt::Std::opt_A;
 #some ansi colors:
 my ($clred, $clgreen, $clreset)=("\e[1;33;41m", # bright yellow on red
@@ -248,7 +251,7 @@ if ($Getopt::Std::opt_r) {
  }
  elsif ($Getopt::Std::opt_f) { # file with ranges to pull
      my $frname=$Getopt::Std::opt_f;
-     die("Error: options -f and -c are incompatible!\n") if $Getopt::Std::opt_c;
+     die("Error: options -f and -d are incompatible!\n") if $Getopt::Std::opt_d;
      my $using_stdin;
      if ($frname eq '-' || $frname eq 'stdin') {
        #open(FRNG, <&STDIN);
@@ -310,14 +313,14 @@ if ($Getopt::Std::opt_r) {
      else { die("Error parsing ranges to mask ($rangetext)\n"); }
    }
  } #masking ranges
- #sequence deletion(s):
- if (my $rangetext=$Getopt::Std::opt_c) {
+ #sequence deletion(s) (cutting out intervals):
+ if (my $rangetext=$Getopt::Std::opt_d) {
    die("Error: -c option only works with -r <seqid>!\n") if $rangetarget && (!$rangeseq || @ranges>1);
    my @ar=split(/[\,\s]+/, $rangetext); #multiple regions separated by comma, space or tab
    if (@ranges==0) {
      #instead of using -r<seqid>,   -c <seqid>:<ranges..> is accepted
-     $ar[0]=~s/end$/e/i;
-     unless ($ar[0]=~m/^\d+[\.\-\:]+[\de]+$/) {
+     $ar[0]=~s/en?d?$/0/i;;
+     unless ($ar[0]=~m/^\d+[\.\-\:]+\d+$/) {
         my @c=split(/\:/, $ar[0]);
         if (@c>1) {
           $ar[0]=pop(@c);
@@ -338,22 +341,26 @@ if ($Getopt::Std::opt_r) {
    my $rdata=$ranges[0]->[3];
    my @intv;
    foreach my $r (@ar) { #special coordinate end 'e' or 'end' can be used as end-of-sequence (seq length)
-     $r=~s/end$/e/i;
-     if ($r=~m/^(\d+)[\-\.]+([\de]+)$/) {
-        my ($ks, $ke)=($1,$2);
+     $r=~s/en?d?$/0/i;
+     if ($r=~m/^(\d+)([\-\.\:]+)([\de]+)$/) {
+        my ($ks, $sp, $ke)=($1,$2,$3);
+        $ke=$ks+$ke-1 if ($sp eq ':' && $ke>0);
         push(@intv, [$ks, $ke]);
      }
      else { die("Error parsing cut ranges (interval $r)\n"); }
    }
    my $lce; #last cut end coordinate
    @intv= sort { $main::a->[0] <=> $main::b->[0] } @intv;
+   #@$ranges stores ranges as [start, len]
    foreach my $r (@intv) {
       my ($ks, $ke)=@$r;
       my $rstart = $lce ? $lce+1 : 1;
       $lce=$ke;
-      push(@$rdata, [$rstart, $ks-1]);
+      push(@$rdata, [$rstart, $ks-$rstart]);
    }
-   push(@$rdata, [$lce+1, 0]) if int($lce)>0;
+   if ($lce>0) { #add the remaining sequence after the last cut
+     push(@$rdata, [$lce+1, 0]);
+   }
  }
  my $seq;
  my $seq_len;
@@ -440,6 +447,7 @@ sub processRanges {
  my $udefline=$$r_data[2];
  my $chr_rdata=$$r_data[3];
  my @intvs = sort { $main::a->[0] <=> $main::b->[0] } @$chr_rdata; #range intervals
+ my $norelabel=(@intvs==1 && $chr_strand ne '-' && $intvs[0]->[0]==1 && $intvs[0]->[1]==0);
  my ($fpos, $seqlen, $dlen, $flinelen); 
  open(FA, $fasta) || die("Error opening fasta file $fasta\n");
  $fpos=0;
@@ -453,7 +461,8 @@ sub processRanges {
      die("Error at cdbyank -a '$chr' -P $faidx (exit code $syserr)\n") if length($r)==0 || $syserr;
      $fpos=int($r);
      seek(FA, $fpos, SEEK_SET);
-     }
+     $seqlen=-1; #unknown
+   }
    else { #fasta index
      #only load the first time 
      fai_load($faidx) unless ($fai_loaded);
@@ -461,7 +470,9 @@ sub processRanges {
      die("Error retrieving $chr data from fasta index!\n") unless $cd;
      ($fpos, $flinelen, $dlen, $seqlen)=@$cd;
      if (@intvs>1 && $intvs[-1]->[0]>$seqlen) { pop(@intvs); }
-     $intvs[-1]->[1]=$seqlen-$intvs[-1]->[0]+1 unless $intvs[-1]->[1];
+     if ($intvs[-1]->[1]==0) {# to the end of sequence
+       $intvs[-1]->[1]=$seqlen-$intvs[-1]->[0]+1;
+     }
      if ($intvs[-1]->[1]<=0) {
         #invalid range
         $seq='';
@@ -471,7 +482,7 @@ sub processRanges {
      $defline = $udefline ? '>'.$udefline : ">$chr";
      seek(FA, $fpos, SEEK_SET);
      } #samtools fai
-   } #indexed access
+ } #indexed access
  if ($iscdb || !$chr) { 
       #for cdb or plain fasta we have to determine line length by reading the first 1k bytes
      my $rbuf;
@@ -500,7 +511,7 @@ sub processRanges {
  my $rstartpos= ($rstart<$flinelen) ? $rstart : ($rstart+$dlen*(int($rstart/$flinelen)));
  my $fstartpos=$fpos+$rstartpos;
  seek(FA, $fstartpos, SEEK_SET);
- if ($intvs[-1]->[1]) { #ending for last interval is known
+ if ($intvs[-1]->[1]>0) { #ending for last interval is known
    my $rend=$intvs[-1]->[0]+$intvs[-1]->[1]-2;
    #$seq_len=$rend-$rstart+1;
    my $rendpos=($rend<$flinelen) ? $rend : ($rend+$dlen*(int($rend/$flinelen)));
@@ -527,16 +538,16 @@ sub processRanges {
  $seq_len=length($seq);
  #now extract the ranges:
  my @rdata;
- my $txt_intvs; #writing a modified seqid showing extracted intervals
+ my $txt_intvs=''; #writing a modified seqid showing extracted intervals
  foreach my $r (@intvs) {
     push(@rdata, [$$r[0]-$rstart, $$r[1]]);
     #$spliceseq.=substr($subseq, $cstart, $clen);
-    if ($$r[1] || $$r[0]>1) {
-       my $iend= $$r[1] ? ($$r[0]+$$r[1]-1) : 'end';
+    if (!$norelabel) { #if $$r[1] || $$r[0]>1
+       my $iend= ($$r[1]==0 || $$r[0]+$$r[1]-1==$seqlen) ? 'end' : ($$r[0]+$$r[1]-1);
        $txt_intvs.='|'.$$r[0].'-'.$iend;
     }
  }
- $txt_intvs.=$chr_strand if $txt_intvs || $chr_strand eq '-';
+ $txt_intvs.=$chr_strand if $txt_intvs && $chr_strand eq '-';
  $defline.=$txt_intvs unless $udefline;
  process_seq(\@rdata, $rstart, $revC);
 }
@@ -788,7 +799,7 @@ sub process_seq {
       $defline = ($descr) ? ">$seqid $descr" : ">$seqid";
      }
      my $addLen='';
-     $addLen=" $seq_len" if ($Getopt::Std::opt_D);
+     $addLen=" $seq_len" if $addSeqLen;
      print $defline.$addLen."\n" unless ($Getopt::Std::opt_X);
     }
     else { #no defline found in the original file
