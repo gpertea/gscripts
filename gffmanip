@@ -7,7 +7,7 @@ my $usage = q/Usage:
  gffmanip [-v] [-o outrecords.txt] [-r<regata> [-R][-E]] [-t <track>] \
   [-f <feature1>[,..]] [-i [<attr>:]<tids.lst>] [-a <attr>=<value>[,..]] \
   [-k <attr1>[,..]] [-l <attr1>[,..]] [-m <IDchange.tab>] [-d <regdata>] \
-    <gff\/gtf-input>
+  [-T] <gff\/gtf-input>
 
 Filtering options:
  -S sort GFF records by location
@@ -43,7 +43,6 @@ Location modification options:
     features downstream from the deleted region(s)
 
 Output options:
- -Z merge close exons into a single exon (for intron size<4)
  -K keep all transcript\/gene attributes; by default only the core GFF
     attributes are shown (transcript_id, gene_id, gene_name, ID, Parent, Name)
  -k keep only the specified non-core GFF attributes in the output records
@@ -56,11 +55,11 @@ Output options:
  -t replace the string in the 2nd column with the given <track> text
 /;
 umask 0002;
-getopts('vCXERAKTSZo:f:t:i:a:k:l:m:d:') || die($usage."\n");
+getopts('vCXERAKTSo:f:t:i:a:k:l:m:d:') || die($usage."\n");
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
 my $outfile=$Getopt::Std::opt_o;
-my $delTinyIntrons=$Getopt::Std::opt_Z;
+#my $delTinyIntrons=$Getopt::Std::opt_Z;
 my $sort_gff=$Getopt::Std::opt_S;
 my %ignoredFeatures;
 @ignoredFeatures{qw(intron region contig scaffold)}=(); #let's ignore these useless features
@@ -353,7 +352,7 @@ sub loadGff {
             #keep attributes
             my ($attr, $value)=split(/\s*=\s*/,$a,2);
             $value=~s/[" ]+$//;$value=~s/^[" ]+//;
-            push(@$alstref, $attr);
+            push(@$alstref, $attr) unless $attr eq 'ID';
             $attrs{$attr}=$value;
          }
          #my $recID="$chr|$gff3_ID";
@@ -371,10 +370,9 @@ sub loadGff {
            $value=~s/[" ]+$//;
            if ($attr eq 'transcript_id') {
               $attr='ID';
+           } else {
+             push(@$alstref, $attr);
            }
-           # elsif ($attr eq 'gene_id') {
-           #   $attr='Name';
-           #}
            $attrs{$attr}=$value;
         }
         my $recID=$attrs{'ID'};
@@ -427,6 +425,8 @@ sub loadGff {
            my ($attr, $value)=split(/\s*=\s*/,$a,2);
            $attr='ID' if $attr eq 'Parent';
            $value=~s/[" ]+$//;$value=~s/^[" ]+//;
+       push(@$alstref, $attr) unless $attr eq 'ID';
+       $attrs{$attr}=$value;
        }
      }
      else { # GTF input
@@ -436,9 +436,9 @@ sub loadGff {
            $value=~s/[" ]+$//;
            if ($attr eq 'transcript_id') {
               $attr='ID';
-           } #elsif ($attr eq 'gene_id') {
-             # $attr='Name';
-             #}
+           } else {
+              push(@$alstref, $attr);
+           }
            $attrs{$attr}=$value;
        }
      }
@@ -496,7 +496,7 @@ sub processGffRecs {
    # map { $covlen+=$_->[1]-$_->[0]+1 } @ex;
    my ($mstart, $mend) = ($ex[0]->[0], $ex[-1]->[1]);
    my $gffid=$recid;
-   substr($gffid, 0, length($chr)+1)='';
+   #substr($gffid, 0, length($chr)+1)='';
    die("Error: gffid ($gffid) not matching attrs\{ID\}(".$attrs->{'ID'}.")!\n")
        unless ($gffid eq $attrs->{'ID'});
    my $doprint=1;
@@ -566,11 +566,11 @@ sub processGffRecs {
      next if $exovl;
   }
   #filter passed, print output
-  if ($delTinyIntrons) {
-    rmTinyIntrons(\@ex) if @ex>1;
-    #-- do NOT do it for CDS - because of "ribosomal slippage exception" (programmed frameshift)
-    #rmTinyIntrons(\@cds) if @cds>1;
-  }
+  #if ($delTinyIntrons) {
+  #  rmTinyIntrons(\@ex) if @ex>1;
+  #  #-- do NOT do it for CDS - because of "ribosomal slippage exception" (programmed frameshift)
+  #  #rmTinyIntrons(\@cds) if @cds>1;
+  #}
   if ($tab_attrs) {
      my @od;
      foreach my $a (@atab_cols) {
@@ -584,31 +584,42 @@ sub processGffRecs {
      next;
   }
   #the core attributes ID, Name must be there already
-  unless (exists($attrs->{Name})) {
-     foreach my $name (qw(gene_name gene geneID geneId geneid locus loc ID)) {
-       if (exists($attrs->{$name})) {
-           $attrs->{Name}=$attrs->{$name};
-           last;
-           }
-          }
+  #   unless (exists($attrs->{Name})) {
+  #      foreach my $name (qw(gene_name gene geneID geneId geneid locus loc ID)) {
+  #        if (exists($attrs->{$name})) {
+  #            $attrs->{Name}=$attrs->{$name};
+  #            last;
+  #            }
+  #           }
+  #   }
+  #my ($tid, $tname)= (delete($attrs->{'ID'}), delete($attrs->{'Name'}));
+  my $tid=delete($attrs->{'ID'});
+  my $gene_id; #for GTF printing
+  if ($printGTF) {
+    $gene_id=delete($attrs->{'gene_id'});
+    if (!$gene_id) {
+      my @gattrs=grep { /^gene_?id/i } @{$attrs->{'.'}};
+      if (@gattrs>0) {
+        delete($
+      }
+      
+    }
   }
-  my ($tid, $tname)= (delete($attrs->{'ID'}), delete($attrs->{'Name'}));
-  my ($gene_name, $gene, $locus);
-  unless ($keepAll) {
-     if (exists($attrs->{'gene_name'})) {
-          $gene_name=delete($attrs->{'gene_name'});
-          $gene_name=undef if ($gene_name eq $tname && !exists($oattrs{'gene_name'}));
-     }
-     if (exists($attrs->{'gene'})) {
-          $gene=delete($attrs->{'gene'});
-          $gene=undef if ($gene eq $tname || $gene eq $gene_name) && !exists($oattrs{'gene'});
-     }
-     if (exists($attrs->{'locus'})) {
-          $locus=delete($attrs->{'locus'});
-          $locus=undef if ($locus eq $gene_name || $locus eq $gene_name) && !exists($oattrs{'locus'});
-     }
-  }
-   
+  #   unless ($keepAll) {
+  #      if (exists($attrs->{'gene_name'})) {
+  #           $gene_name=delete($attrs->{'gene_name'});
+  #           $gene_name=undef if ($gene_name eq $tname && !exists($oattrs{'gene_name'}));
+  #      }
+  #      if (exists($attrs->{'gene'})) {
+  #           $gene=delete($attrs->{'gene'});
+  #           $gene=undef if ($gene eq $tname || $gene eq $gene_name) && !exists($oattrs{'gene'});
+  #      }
+  #      if (exists($attrs->{'locus'})) {
+  #           $locus=delete($attrs->{'locus'});
+  #           $locus=undef if ($locus eq $gene_name || $locus eq $gene_name) && !exists($oattrs{'locus'});
+  #      }
+  #   }
+  
   #chromosome mapping (renaming) requested?
   if ($chrmapping) {
     my $cnew=$chrmap{$chr};
@@ -617,45 +628,47 @@ sub processGffRecs {
   #new chromosome name in place from now on, if mapping
   my $tattrs;
   if ($printGTF) { #print GTF
-     $tattrs='transcript_id "'.$tid.'"; gene_id "'.$tname.'";';
-     $tattrs.=' gene_name "'.$gene_name.'";' if $gene_name;
-     $tattrs.=' gene "'.$gene.'";' if $gene;
-     $tattrs.=' locus "'.$locus.'";' if $locus;
+     $tattrs='transcript_id "'.$tid.'";';
+     #$tattrs.='"; gene_id "'.$tname.'"';
+     #$tattrs.='; gene_name "'.$gene_name.'"' if $gene_name;
+     #$tattrs.='; gene "'.$gene.'"' if $gene;
+     #$tattrs.='; locus "'.$locus.'"' if $locus;
      if ($keepAll) {
-        foreach my $attr (keys(%$attrs)) {
+        foreach my $attr (@{$attrs->{'.'}}) {
            $tattrs.=' '.$attr.' "'.$attrs->{$attr}.'";';
-           }
         }
-       else { # only a subset of attributes will be shown
-        foreach my $attr (keys(%$attrs)) {
+     }
+     else { # only a subset of attributes will be shown
+        foreach my $attr (@{$attrs->{'.'}}) {
            next unless exists($oattrs{$attr});
            $tattrs.=' '.$attr.' "'.$attrs->{$attr}.'";';
-           }
         }
+     }
+    print join("\t",$chr, $track, 'transcript', $fstart, $fend, $fscore, $strand, '.', $tattrs)."\n";
   } else { #print GFF3
      $tattrs='Parent='.$tid;
-     my $pattrs="ID=$tid;Name=$tname";
-     $pattrs.='gene_name='.$gene_name.';' if $gene_name;
-     $pattrs.='gene='.$gene.';' if $gene;
-     $pattrs.='locus='.$locus.';' if $locus;
+     my $pattrs="ID=$tid";
+     #$pattrs.='gene_name='.$gene_name.';' if $gene_name;
+     #$pattrs.='gene='.$gene.';' if $gene;
+     #$pattrs.='locus='.$locus.';' if $locus;
      if ($keepAll) {
-        foreach my $attr (keys(%$attrs)) {
+        foreach my $attr (@{$attrs->{'.'}}) {
            my $val=$attrs->{$attr};
-           $pattrs.="$attr=$val;";
+           $pattrs.=";$attr=$val";
            }
      }
      else { # only a subset of attributes will be shown
-        foreach my $attr (keys(%$attrs)) {
+        foreach my $attr (@{$attrs->{'.'}}) {
            next unless exists($oattrs{$attr});
            my $val=$attrs->{$attr};
-           $pattrs.="$attr=$val;";
+           $pattrs.=";$attr=$val";
         }
      }
      print join("\t",$chr, $track, $feature, $fstart, $fend, $fscore, $strand, '.', $pattrs)."\n";
   }
   if ($CDSonly==0) { #write exons only when found in the input
         foreach my $ed (@ex) {
-            print join("\t",$chr, $track, $subf, $$ed[0], $$ed[1], $$ed[2], $strand, $$ed[3], $tattrs)."\n";
+            print join("\t",$chr, $track, 'exon', $$ed[0], $$ed[1], $$ed[2], $strand, $$ed[3], $tattrs)."\n";
         }
   }
   foreach my $cd (@cds) {
