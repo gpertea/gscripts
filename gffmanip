@@ -53,12 +53,14 @@ Output options:
     in the first column and the value of all specified attribute(s) for each
     transcript in the other columns
  -t replace the string in the 2nd column with the given <track> text
+ -V (verbose): show warnings or other potentially useful info
 /;
 umask 0002;
-getopts('vCXERAKTSo:f:t:i:a:k:l:m:d:') || die($usage."\n");
+getopts('vCXERAKVTSo:f:t:i:a:k:l:m:d:') || die($usage."\n");
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
 my $outfile=$Getopt::Std::opt_o;
+my $verbose=$Getopt::Std::opt_V;
 #my $delTinyIntrons=$Getopt::Std::opt_Z;
 my $sort_gff=$Getopt::Std::opt_S;
 my %ignoredFeatures;
@@ -273,7 +275,7 @@ sub checkWithinExons {
 
 
 sub cleanupExons {
- my ($er, $rex, $cr, $rcd)=@_;
+ my ($er, $rex, $cr, $rcd, $tid)=@_;
  @$rex=@$er;
  @$rcd=@$cr;
  if (@$rcd>0) {
@@ -285,7 +287,11 @@ sub cleanupExons {
  while ($i+1<@$rex) {
    # $$rev[$i] vs $$rex[$i+1]
    if ($$rex[$i+1]->[0]-$$rex[$i]->[1]<5) { #intron too small or overlapping exons!
-       $$rex[$i]->[1]=$$rex[$i+1]->[1];
+       if ($verbose && $$rex[$i]->[4] eq $$rex[$i+1]->[4]) {
+         print STDERR "Warning:merging overlapping or too close exons $$rex[$i]->[0]-$$rex[$i]->[1], ".
+            "$$rex[$i+1]->[0]-$$rex[$i+1]->[1] of $tid\n";
+       }
+       $$rex[$i]->[1]=$$rex[$i+1]->[1] if $$rex[$i+1]->[1]>$$rex[$i]->[1];
        splice(@$rex, $i+1, 1);
    }
    else { ++$i }
@@ -296,7 +302,7 @@ sub cleanupExons {
    if ($$rcd[$i+1]->[0]-$$rcd[$i]->[1]<2 &&
        ($$rcd[$i+1]->[4]=~m/codon/i  || $$rcd[$i]->[4]=~m/codon/i ) ) { 
        #adjacent or overlapping CDS with start/stop_codon feature
-       $$rcd[$i]->[1]=$$rcd[$i+1]->[1];
+       $$rcd[$i]->[1]=$$rcd[$i+1]->[1] if $$rcd[$i+1]->[1]>$$rcd[$i]->[1];
        splice(@$rcd, $i+1, 1);
    }
    else { ++$i }
@@ -310,7 +316,7 @@ sub rmTinyIntrons {
  while ($i+1<@$rex) {
    # $$rev[$i] vs $$rex[$i+1]
    if ($$rex[$i+1]->[0]-$$rex[$i]->[1]<4) { #intron too small or overlapping exons!
-       $$rex[$i]->[1]=$$rex[$i+1]->[1];
+       $$rex[$i]->[1]=$$rex[$i+1]->[1] if $$rex[$i+1]->[1]>$$rex[$i]->[1];
        splice(@$rex, $i+1, 1);
    }
    else { ++$i }
@@ -489,7 +495,7 @@ sub processGffRecs {
    }
    my @ex; #refined exon segments (in case only UTRs are given, or non-CDS exon fragments)
    my @cds; #refined CDS segments (in case start/stop_codons are given)
-   cleanupExons($er, \@ex, $cr, \@cds); #check for merging exon/UTR/CDS/start_codon/stop_codon into exon/CDS segments
+   cleanupExons($er, \@ex, $cr, \@cds, $recid); #check for merging exon/UTR/CDS/start_codon/stop_codon into exon/CDS segments
    # --------------
    # get the more accurate version of the start-end coords for the feature
    my $covlen=0;
@@ -593,18 +599,6 @@ sub processGffRecs {
   #           }
   #   }
   #my ($tid, $tname)= (delete($attrs->{'ID'}), delete($attrs->{'Name'}));
-  my $tid=delete($attrs->{'ID'});
-  my $gene_id; #for GTF printing
-  if ($printGTF) {
-    $gene_id=delete($attrs->{'gene_id'});
-    if (!$gene_id) {
-      my @gattrs=grep { /^gene_?id/i } @{$attrs->{'.'}};
-      if (@gattrs>0) {
-        delete($
-      }
-      
-    }
-  }
   #   unless ($keepAll) {
   #      if (exists($attrs->{'gene_name'})) {
   #           $gene_name=delete($attrs->{'gene_name'});
@@ -625,28 +619,38 @@ sub processGffRecs {
     my $cnew=$chrmap{$chr};
     $chr=$cnew if ($cnew);
   }
-  #new chromosome name in place from now on, if mapping
+  
+  my $tid=delete($attrs->{'ID'});
   my $tattrs;
   if ($printGTF) { #print GTF
+     my $gene_id; #for GTF printing
+     $gene_id=delete($attrs->{'gene_id'});
+     if (!$gene_id) {
+       my @gattrs=grep { /^gene_?id/i } @{$attrs->{'.'}};
+       $gene_id=delete($attrs->{$gattrs[0]}) if @gattrs>0
+     }
+     if (!$gene_id) {
+       my @gattrs=grep { /^gene$/i } @{$attrs->{'.'}};
+       @gattrs=grep { /^gene/i } @{$attrs->{'.'}} if (@gattrs==0);
+       $gene_id=delete($attrs->{$gattrs[0]}) if @gattrs>0
+     }
      $tattrs='transcript_id "'.$tid.'";';
-     #$tattrs.='"; gene_id "'.$tname.'"';
-     #$tattrs.='; gene_name "'.$gene_name.'"' if $gene_name;
-     #$tattrs.='; gene "'.$gene.'"' if $gene;
-     #$tattrs.='; locus "'.$locus.'"' if $locus;
+     $tattrs.=' gene_id "'.$gene_id.'";' if $gene_id;
      if ($keepAll) {
         foreach my $attr (@{$attrs->{'.'}}) {
-           $tattrs.=' '.$attr.' "'.$attrs->{$attr}.'";';
+           my $val=$attrs->{$attr};
+           $tattrs.=' '.$attr.' "'.$val.'";' if $val;
         }
      }
      else { # only a subset of attributes will be shown
         foreach my $attr (@{$attrs->{'.'}}) {
            next unless exists($oattrs{$attr});
-           $tattrs.=' '.$attr.' "'.$attrs->{$attr}.'";';
+           my $val=$attrs->{$attr};
+           $tattrs.=' '.$attr.' "'.$val.'";' if $val;
         }
      }
     print join("\t",$chr, $track, 'transcript', $fstart, $fend, $fscore, $strand, '.', $tattrs)."\n";
   } else { #print GFF3
-     $tattrs='Parent='.$tid;
      my $pattrs="ID=$tid";
      #$pattrs.='gene_name='.$gene_name.';' if $gene_name;
      #$pattrs.='gene='.$gene.';' if $gene;
@@ -654,25 +658,30 @@ sub processGffRecs {
      if ($keepAll) {
         foreach my $attr (@{$attrs->{'.'}}) {
            my $val=$attrs->{$attr};
-           $pattrs.=";$attr=$val";
+           $pattrs.=";$attr=$val" if $val;
            }
      }
      else { # only a subset of attributes will be shown
         foreach my $attr (@{$attrs->{'.'}}) {
            next unless exists($oattrs{$attr});
            my $val=$attrs->{$attr};
-           $pattrs.=";$attr=$val";
+           $pattrs.=";$attr=$val" if $val;
         }
      }
      print join("\t",$chr, $track, $feature, $fstart, $fend, $fscore, $strand, '.', $pattrs)."\n";
+     $tattrs='Parent='.$tid;
   }
   if ($CDSonly==0) { #write exons only when found in the input
         foreach my $ed (@ex) {
-            print join("\t",$chr, $track, 'exon', $$ed[0], $$ed[1], $$ed[2], $strand, $$ed[3], $tattrs)."\n";
+            my $xattrs=$tattrs;
+            $xattrs.=';'.$$ed[5] if $$ed[5];
+            print join("\t",$chr, $track, 'exon', $$ed[0], $$ed[1], $$ed[2], $strand, $$ed[3], $xattrs)."\n";
         }
   }
   foreach my $cd (@cds) {
-        print join("\t",$chr, $track, 'CDS', $$cd[0], $$cd[1], $$cd[2], $strand, $$cd[3], $tattrs)."\n";
+        my $xattrs=$tattrs;
+        $xattrs.=';'.$$cd[5] if $$cd[5];
+        print join("\t",$chr, $track, 'CDS', $$cd[0], $$cd[1], $$cd[2], $strand, $$cd[3], $xattrs)."\n";
   }
  } #for each stored transcript
 }
