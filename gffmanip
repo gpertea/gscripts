@@ -11,7 +11,9 @@ my $usage = q/Usage:
 
 Filtering options:
  -S sort GFF records by location
- -C output only those transcripts having CDS features (protein Coding)
+ -C output only those transcripts having CDS features (protein coding)
+ -cds like -C but output only the CDS features of the coding transcripts
+    (discarding exon features)
  -r show only transcripts overlapping any of the region intervals given in 
     <regdata> which has the format:
        [<strand>]<chr>[:<start>-<end>[,<start2>-<end2>,...]]
@@ -40,7 +42,8 @@ Location modification options:
     other filters have been applied
  -d contig\/chromosome region(s) deletion: discard the transcripts overlapping
     the given genomic region(s), shifting the coordinates of all the 
-    features downstream from the deleted region(s)
+    features downstream from the deleted region(s). Example deletion:
+    -d NC_029267.1:18816715-18860512
 
 Output options:
  -K keep all transcript\/gene attributes; by default only the core GFF
@@ -56,7 +59,7 @@ Output options:
  -V (verbose): show warnings or other potentially useful info
 /;
 umask 0002;
-getopts('vCXERAKVTSo:f:t:i:a:k:l:m:d:') || die($usage."\n");
+getopts('vCXERAKVTSo:c:f:t:i:a:k:l:m:d:') || die($usage."\n");
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
 my $outfile=$Getopt::Std::opt_o;
@@ -80,6 +83,8 @@ if ($outfile) {
 my ($fltinvert, $printGTF, $out_track)=
   ($Getopt::Std::opt_v, $Getopt::Std::opt_T, $Getopt::Std::opt_t);
 my $only_ifCDS=$Getopt::Std::opt_C;
+my $discard_exons=($Getopt::Std::opt_c eq 'ds');
+$only_ifCDS=1 if $discard_exons;
 my ($idfile, $avflt, $featlist, $oattrlist)=
   ($Getopt::Std::opt_i, $Getopt::Std::opt_a, $Getopt::Std::opt_f, $Getopt::Std::opt_k);
 die("Sorry, -v option does not work with -f !\n") if $fltinvert && $featlist;
@@ -234,6 +239,10 @@ sub parseLocations {
     }
     @$r_intv = sort { $a->[0] <=> $b->[0] } @rdata;
   }
+  if ($verbose) {
+    print STDERR "parsed regions: ${l_strand}$l_chr: ".
+      join(', ', (map { $_->[0].'-'.$_->[1] } @$r_intv) )."\n";
+  }
   return ($l_chr, $l_strand);
 }
 
@@ -259,8 +268,8 @@ sub checkOvlDels {
    last if ($$rseg[1]<$$x[0]); #cannot overlap anymore
    $del_acc+=$$x[1]-$$x[0];
  }
- $$rseg[0]-=$del_acc;
- $$rseg[1]-=$del_acc;
+ $$rseg[0]-=$del_acc+1;
+ $$rseg[1]-=$del_acc+1;
  return 0;
 }
 
@@ -495,7 +504,12 @@ sub processGffRecs {
    }
    my @ex; #refined exon segments (in case only UTRs are given, or non-CDS exon fragments)
    my @cds; #refined CDS segments (in case start/stop_codons are given)
-   cleanupExons($er, \@ex, $cr, \@cds, $recid); #check for merging exon/UTR/CDS/start_codon/stop_codon into exon/CDS segments
+   if ($discard_exons) {
+     @cds=sort { $a->[0] <=> $b->[0] } @$cr;
+     $CDSonly=1;
+   } else {
+     cleanupExons($er, \@ex, $cr, \@cds, $recid); #check for merging exon/UTR/CDS/start_codon/stop_codon into exon/CDS segments
+   }
    # --------------
    # get the more accurate version of the start-end coords for the feature
    my $covlen=0;
@@ -569,7 +583,18 @@ sub processGffRecs {
         $exovl=checkOvlDels($ed, \@del_intv); 
         last if $exovl;
      }
-     next if $exovl;
+     if ($exovl) {
+        print STDERR "INFO: transcript $recid discarded due to overlapping deleted region.\n"
+          if $verbose;
+        next;
+     }
+     elsif (@cds>0) { #have to adjust CDS coordinates too
+       for my $cd (@cds) {
+          if (checkOvlDels($cd, \@del_intv)) { 
+            die("Error ($recid): CDS are overlapping deleted regions, even though exons weren't?!\n");
+          }
+       }
+     }
   }
   #filter passed, print output
   #if ($delTinyIntrons) {
