@@ -48,6 +48,7 @@ Location modification options:
 Output options:
  -K keep all transcript\/gene attributes; by default only the core GFF
     attributes are shown (transcript_id, gene_id, gene_name, ID, Parent, Name)
+ -Z merge close exons into a single exon (for intron size<4)
  -k keep only the specified non-core GFF attributes in the output records
     (expects a comma delimited list of attribute names)
  -E keep all exon\/CDS GFF attributes
@@ -59,7 +60,7 @@ Output options:
  -V (verbose): show warnings or other potentially useful info
 /;
 umask 0002;
-getopts('vCXERAKVTSo:c:f:t:i:a:k:l:m:d:') || die($usage."\n");
+getopts('vCXERAZKVTSo:c:f:t:i:a:k:l:m:d:') || die($usage."\n");
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
 my $outfile=$Getopt::Std::opt_o;
@@ -88,6 +89,7 @@ $only_ifCDS=1 if $discard_exons;
 my ($idfile, $avflt, $featlist, $oattrlist)=
   ($Getopt::Std::opt_i, $Getopt::Std::opt_a, $Getopt::Std::opt_f, $Getopt::Std::opt_k);
 die("Sorry, -v option does not work with -f !\n") if $fltinvert && $featlist;
+my $minIntron=$Getopt::Std::opt_Z ? 5 : 2;
 my $keepAll=$Getopt::Std::opt_K || (lc($oattrlist) eq 'a' || lc($oattrlist) eq 'all');
 my $keepExonAttrs=$Getopt::Std::opt_E;
 my $avflt_all=$Getopt::Std::opt_A; #if $avflt should require a match for ALL given attributes
@@ -295,9 +297,9 @@ sub cleanupExons {
  my $i=0;
  while ($i+1<@$rex) {
    # $$rev[$i] vs $$rex[$i+1]
-   if ($$rex[$i+1]->[0]-$$rex[$i]->[1]<5) { #intron too small or overlapping exons!
+   if ($$rex[$i+1]->[0]-$$rex[$i]->[1]<$minIntron) { #intron too small or overlapping exons!
        if ($verbose && $$rex[$i]->[4] eq $$rex[$i+1]->[4]) {
-         print STDERR "Warning:merging overlapping or too close exons $$rex[$i]->[0]-$$rex[$i]->[1], ".
+         print STDERR "Warning: merging overlapping or too close exons $$rex[$i]->[0]-$$rex[$i]->[1], ".
             "$$rex[$i+1]->[0]-$$rex[$i+1]->[1] of $tid\n";
        }
        $$rex[$i]->[1]=$$rex[$i+1]->[1] if $$rex[$i+1]->[1]>$$rex[$i]->[1];
@@ -306,11 +308,15 @@ sub cleanupExons {
    else { ++$i }
  }
  $i=0;
- while ($i+1<@$rcd) {
+ while ($i+1<@$rcd) { #only adjacent/overlapping CDS and codons will be merged
    # $$rev[$i] vs $$rex[$i+1]
    if ($$rcd[$i+1]->[0]-$$rcd[$i]->[1]<2 &&
        ($$rcd[$i+1]->[4]=~m/codon/i  || $$rcd[$i]->[4]=~m/codon/i ) ) { 
        #adjacent or overlapping CDS with start/stop_codon feature
+       if ($verbose) {
+         print STDERR "Warning: merging CDS features $$rcd[$i]->[4]($$rcd[$i]->[0]-$$rcd[$i]->[1]) and ".
+           "$$rcd[$i+1]->[4]($$rcd[$i+1]->[0]-$$rcd[$i+1]->[1]) of $tid\n";
+       }
        $$rcd[$i]->[1]=$$rcd[$i+1]->[1] if $$rcd[$i+1]->[1]>$$rcd[$i]->[1];
        splice(@$rcd, $i+1, 1);
    }
@@ -416,8 +422,16 @@ sub loadGff {
    if ($ld) { #existing entry
      my $i=($xf eq 'CDS') ? 7 : 6;
      my ($lstart, $lend)=($$ld[4], $$ld[5]);
-     $$ld[4]=$fstart if $fstart<$lstart;
-     $$ld[5]=$fend if $fend>$lend;
+     if ($fstart<$lstart) {
+        print STDERR "Warning: adjusting $recID start $$ld[4] to $fstart due to exon $fstart-$fend\n"
+           if $verbose;
+        $$ld[4]=$fstart;
+     }
+     if ($fend>$lend) {
+        print STDERR "Warning: adjusting $recID end $$ld[5] to $fend due to exon $fstart-$fend\n"
+           if $verbose;
+        $$ld[5]=$fend;
+     }
      my $exattrs='';
      if ($isGFF3 && $keepExonAttrs) {
        $exattrs=$atr;
@@ -486,7 +500,6 @@ sub processGffRecs {
    }
    #next if ($rej && !$fltinvert);
    #next if ($fltinvert && $featlist && !$rej);
-   # my ($mstart,$mend)=($fstart, $fend);
    my $CDSonly=0; # set to 1 if only CDS segments were given
    my $hasCDS=0;
    #some records might lack exons, but have only CDS segments (e.g. mitochondrial genes)
@@ -513,8 +526,6 @@ sub processGffRecs {
    # --------------
    # get the more accurate version of the start-end coords for the feature
    my $covlen=0;
-   # map { $covlen+=$_->[1]-$_->[0]+1 } @ex;
-   my ($mstart, $mend) = ($ex[0]->[0], $ex[-1]->[1]);
    my $gffid=$recid;
    #substr($gffid, 0, length($chr)+1)='';
    die("Error: gffid ($gffid) not matching attrs\{ID\}(".$attrs->{'ID'}.")!\n")
@@ -574,6 +585,7 @@ sub processGffRecs {
       $doprint=1 if checkOvlSegs($fstart, $fend, \@flt_intv);
     }
   }
+  #inverting the filter?
   $doprint = ! $doprint if $fltinvert;
   next unless $doprint;
   # check for chr sequence deletion
@@ -614,31 +626,6 @@ sub processGffRecs {
      print join("\t",@od)."\n";
      next;
   }
-  #the core attributes ID, Name must be there already
-  #   unless (exists($attrs->{Name})) {
-  #      foreach my $name (qw(gene_name gene geneID geneId geneid locus loc ID)) {
-  #        if (exists($attrs->{$name})) {
-  #            $attrs->{Name}=$attrs->{$name};
-  #            last;
-  #            }
-  #           }
-  #   }
-  #my ($tid, $tname)= (delete($attrs->{'ID'}), delete($attrs->{'Name'}));
-  #   unless ($keepAll) {
-  #      if (exists($attrs->{'gene_name'})) {
-  #           $gene_name=delete($attrs->{'gene_name'});
-  #           $gene_name=undef if ($gene_name eq $tname && !exists($oattrs{'gene_name'}));
-  #      }
-  #      if (exists($attrs->{'gene'})) {
-  #           $gene=delete($attrs->{'gene'});
-  #           $gene=undef if ($gene eq $tname || $gene eq $gene_name) && !exists($oattrs{'gene'});
-  #      }
-  #      if (exists($attrs->{'locus'})) {
-  #           $locus=delete($attrs->{'locus'});
-  #           $locus=undef if ($locus eq $gene_name || $locus eq $gene_name) && !exists($oattrs{'locus'});
-  #      }
-  #   }
-  
   #chromosome mapping (renaming) requested?
   if ($chrmapping) {
     my $cnew=$chrmap{$chr};
@@ -647,7 +634,9 @@ sub processGffRecs {
   
   my $tid=delete($attrs->{'ID'});
   my $tattrs;
-  if ($printGTF) { #print GTF
+  if ($printGTF) {
+     #do not print gene features or features without exons/CDS!
+     next unless (@ex>0 || @cds>0);
      my $gene_id; #for GTF printing
      $gene_id=delete($attrs->{'gene_id'});
      if (!$gene_id) {
@@ -696,7 +685,7 @@ sub processGffRecs {
      print join("\t",$chr, $track, $feature, $fstart, $fend, $fscore, $strand, '.', $pattrs)."\n";
      $tattrs='Parent='.$tid;
   }
-  if ($CDSonly==0) { #write exons only when found in the input
+  if ($CDSonly==0) { #write exons only when they're also found in the input
         foreach my $ed (@ex) {
             my $xattrs=$tattrs;
             $xattrs.=';'.$$ed[5] if $$ed[5];
