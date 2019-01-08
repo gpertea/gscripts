@@ -7,7 +7,7 @@ my $usage = q/Usage:
  gffmanip [-v] [-o outrecords.txt] [-i [<attr>:]<tids.lst>] [-t <track>]\
  [-f <feature1>[,..]] [-r<regata> [-R][-E]] [-a [feat:]<attr>=<value>[;..] [-A]\
  [-k <attr1>[,..]] [-l <attr1>[,..]] [-m <IDchange.tab>] [-d <regdata>] \
- [-T] <gff\/gtf-input>
+ [-y <CDSdata.tab>] [-T] <gff\/gtf-input>
 
 Filtering options:
  -S sort GFF records by location
@@ -37,11 +37,18 @@ Filtering options:
  -f output only the specified GFF features, given as a comma-delimited
     list of strings (e.g. -f 'mRNA,ncRNA,exon,CDS') (doesn't work with -v)
 
-Location modification options:
+Data modification options:
  -m replace contig\/chromosome IDs with different IDs, as specified in the given
     ID mapping table (a two column table mapping the old ID to the new ID)
     NOTE: renaming takes place when records are printed, *after* all the
     other filters have been applied
+ -y assign\/modify the CDS and strand of transcripts according to the data
+    found in the given tab delimited file of this format:
+      transcriptID	new_strand	CDSinfo
+    ..where CDSinfo can be either CDSstart:CDSstop or a comma delimited
+    list of CDS features, e.g. 70139455-70139671,70140524-70140552
+
+Genomic deletion processing:
  -d contig\/chromosome region(s) deletion: discard the transcripts overlapping
     the given genomic region(s), shifting the coordinates of all the 
     features downstream from the deleted region(s). Example deletion:
@@ -65,13 +72,14 @@ Output options:
  -V (verbose): show warnings or other potentially useful info
 /;
 umask 0002;
-getopts('vCXERAZPMGKVTSo:c:f:t:i:a:k:l:m:d:') || die($usage."\n");
+getopts('vCXERAZPMGKVTSo:c:f:t:i:a:k:l:m:y:d:') || die($usage."\n");
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
 my $outfile=$Getopt::Std::opt_o;
 my $verbose=$Getopt::Std::opt_V;
 my $keepCmts=$Getopt::Std::opt_P;
 my $sort_gff=$Getopt::Std::opt_S;
+my $CDSdatafile=$Getopt::Std::opt_y;
 my %ignoredFeatures;
 @ignoredFeatures{qw(intron region contig scaffold)}=(); #let's ignore these useless features
 my %oattrs; #hash with attrs to print
@@ -84,6 +92,33 @@ my @atab_cols;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
+}
+my %assignCDS; # tid =>  [ strand, CDSlo, CDShi, [[cdsegstart, cdsegend],..]]
+if ($CDSdatafile) {     #     0    1        2            3
+ open(FCDS, $CDSdatafile) || die("Error opening CDS data file $CDSdatafile\n");
+ while (<FCDS>) {
+   next if m/^#/;
+   chomp;
+   my ($tid, $strand, $cdsdata)=split(/\t/);
+   die ("Error: invalid format encountered for CDS data:$_\n")
+     unless ($cdsdata && ($strand eq '-' || $strand eq '+'));
+   my ($cds_lo, $cds_hi);
+   my @cds;
+   if ($cdsdata=~m/^(\d+)\:(\d+)$/) {
+      ($cds_lo, $cds_hi)=($1, $2);
+   }
+   else {
+     @cds=map { [(split(/\-/))] } (split(/\,/, $cdsdata));
+     #assumed sorted properly!
+     ($cds_lo, $cds_hi)=($cds[0]->[0], $cds[-1]->[1]);
+   }
+   if (exists($assignCDS{$tid})) {
+     print STDERR "Warning: multiple CDS (re)assignments given for $tid, only the 1st is used.\n";
+     next;
+   }
+   $assignCDS{$tid}=[$strand, $cds_lo, $cds_hi, [@cds]];
+ }
+ close(FCDS);
 }
 
 # --
@@ -304,17 +339,25 @@ sub cleanupExons {
  @$rex=@$er;
  @$rcd=@$cr;
  if (@$rcd>0) {
-   push(@$rex, @$rcd); #merge CDS segments, in case only UTRs were given
+   push(@$rex, @$rcd); #merge CDS segments with UTRs, in case only UTRs were given instead of full exons
    @$rcd=sort { $a->[0] <=> $b->[0] } @$rcd;
  }
  @$rex=sort { $a->[0] <=> $b->[0] } @$rex;
  my $i=0;
  while ($i+1<@$rex) {
    # $$rev[$i] vs $$rex[$i+1]
-   if ($$rex[$i+1]->[0]-$$rex[$i]->[1]<$minIntron) { #intron too small or overlapping exons!
-       if ($verbose && $$rex[$i]->[4] eq $$rex[$i+1]->[4]) {
-         print STDERR "Warning: merging overlapping or too close exons $$rex[$i]->[0]-$$rex[$i]->[1], ".
-            "$$rex[$i+1]->[0]-$$rex[$i+1]->[1] of $tid\n";
+   my $exdist=$$rex[$i+1]->[0]-$$rex[$i]->[1]; #inter-exon distance
+   if ($exdist<$minIntron) { #intron too small or overlapping exons!
+       if ($verbose && $$rex[$i]->[4] eq $$rex[$i+1]->[4]) { #same type of exon
+          my $CDstatus=(@$cr>0) ?' (CDS unaffected)' : '';
+          $exdist--;
+          if ($exdist<0) {
+             print STDERR "Warning: merging overlapping ($exdist) exons $$rex[$i]->[0]-$$rex[$i]->[1], ".
+               "$$rex[$i+1]->[0]-$$rex[$i+1]->[1] of ${tid}$CDstatus\n";
+          } else {
+             print STDERR "Warning: merging too close ($exdist) exons $$rex[$i]->[0]-$$rex[$i]->[1], ".
+               "$$rex[$i+1]->[0]-$$rex[$i+1]->[1] of ${tid}$CDstatus\n";
+          }
        }
        $$rex[$i]->[1]=$$rex[$i+1]->[1] if $$rex[$i+1]->[1]>$$rex[$i]->[1];
        splice(@$rex, $i+1, 1);
@@ -378,7 +421,7 @@ sub loadGff {
    my $gff3_Parent;
    my %attrs;
    ($fstart, $fend)=($fend, $fstart) if $fend<$fstart;
-   #$atr=~s/"([^"]+)\;([^"]+)"/"$1.$2"/g; #protect ; within text between quotes
+   #$atr=~s/"([^"]+)\;([^"]+)"/"$1.$2"/g; #protect ; in string between quotes?
    my $alstref=[];
    $attrs{'.'}=$alstref;
    my @av=split(/\s*\;\s*/, $atr);
@@ -482,6 +525,7 @@ sub loadGff {
        $exattrs=$atr;
        $exattrs=~s/\bParent=[^;]+;?//;
      }
+     # --- exon feature storage format:  start, end, score, CDSphase, feature_name, GFF_attributes
      push(@{$$ld[$i]}, [$fstart, $fend, $fscore, $frame, $f, $exattrs]);
      #                       0      1       2       3     4   5
    }
@@ -490,11 +534,11 @@ sub loadGff {
      if ($gff3_Parent) { #has GFF3 Parent - this should NOT happen usually
        print STDERR "Warning: exon feature found before/without parent $gff3_Parent!\n$line\n";
        foreach my $a (@av) {
-           my ($attr, $value)=split(/\s*=\s*/,$a,2);
-           $attr='ID' if $attr eq 'Parent';
-           $value=~s/[" ]+$//;$value=~s/^[" ]+//;
-       push(@$alstref, $attr) unless $attr eq 'ID';
-       $attrs{$attr}=$value;
+          my ($attr, $value)=split(/\s*=\s*/,$a,2);
+          $attr='ID' if $attr eq 'Parent';
+          $value=~s/[" ]+$//;$value=~s/^[" ]+//;
+          push(@$alstref, $attr) unless $attr eq 'ID';
+          $attrs{$attr}=$value;
        }
      }
      else { # GTF input
@@ -515,6 +559,83 @@ sub loadGff {
            [$chr, $strand, 'transcript', {%attrs}, $fstart, $fend, [[$fstart, $fend, $fscore, $frame, $f]], [],               $track, $f, '.' ] ;
          #   0       1      2     3        4       5       6(exons)                          7 (CDS)                           8       9   10
    }
+ }
+}
+
+sub assignCDS {
+ my ($tid, $rstrand, $exr, $cdr, $tcds)=@_;
+ my ($cstrand, $cds_lo, $cds_hi, $cdsegs)=@$tcds;
+ my ($ex_lo, $ex_hi)=($$exr[0]->[0], $$exr[-1]->[1]);
+ my @info;
+ if ($$rstrand ne $cstrand) {
+   push(@info, 'strand changed to '.$cstrand);
+   $$rstrand=$cstrand;
+ }
+ #check if the intervals are compatible
+ if ($cds_lo<$ex_lo || $cds_lo>$ex_hi) {
+   print STDERR "Error: new CDS lower boundary ($cds_lo) outside the region of transcript $tid ($ex_lo-$ex_hi)!\n";
+ }
+ if ($cds_hi<$ex_lo || $cds_hi>$ex_hi) {
+   print STDERR "Error: new CDS higher boundary ($cds_hi) outside the region of transcript $tid ($ex_lo-$ex_hi)!\n";
+ }
+ if (@$cdsegs==0) { #rebuild cdsegs from cds_lo:cds_hi
+  my ($cdstarted, $cdended);
+  foreach my $e (@$exr) {
+     my ($cdstart, $cdsend)= ( $$e[0], $$e[1] );
+     if (!$cdstarted && $cds_lo>=$$e[0] && $cds_lo<=$$e[1]) {
+        $cdstart=$cds_lo;
+        $cdstarted=1;
+     }
+     if ($cdstarted && $cds_hi>=$$e[0] && $cds_hi<=$$e[1]) {
+        $cdsend=$cds_hi;
+        $cdended=1;
+     }
+     push(@$cdsegs, [$cdstart, $cdsend]) if $cdstarted;
+     last if $cdended;
+  }
+  die("Error mapping new CDS boundaries ($cds_lo:$cds_hi) to $tid exons!\n") unless @$cdsegs>0;
+ }
+ #add phase to CDS (assuming starts with 0)
+ my $pcds=$cdsegs;
+ my @revcds;
+ if ($cstrand eq '-') {
+   @revcds=reverse(@$cdsegs);
+   $pcds=\@revcds;
+ }
+ my ($ph, $aclen)=(0,0);
+ foreach my $cs (@$pcds) {
+   if ($aclen) { $ph = $aclen % 3; }
+   $aclen+=$$cs[1]-$$cs[0]+1;
+   die("Error: unexpected CDS segment data for $tid CDS assignment!\n") if (@$cs!=2);
+   push(@$cs, '.');
+   push(@$cs, $ph);
+   push(@$cs, 'CDS');
+ }
+ if (scalar(@$cdr)==0) {
+   push(@info, "CDS added: $cds_lo:$cds_hi");
+   @$cdr=@$cdsegs;
+ }
+ else { # re-assigned
+   my $changed='preserved';
+   my $ch;
+   if (scalar(@$cdr) == scalar(@$cdsegs)) {
+      for (my $i=0;$i<@$cdr;$i++) {
+        if ($$cdr[$i]->[0]!=$$cdsegs[$i]->[0] || 
+            $$cdr[$i]->[1]!=$$cdsegs[$i]->[1] ||
+            $$cdr[$i]->[3] ne $$cdsegs[$i]->[3]) {
+            $ch=1;
+            last;
+        }
+      }
+   } else { $ch=1;}
+   if ($ch) {
+     @$cdr=@$cdsegs;
+     $changed='changed';
+   }
+   push(@info, "CDS $changed: $cds_lo:$cds_hi");
+ }
+ if ($verbose && @info) {
+   print STDERR "Info: CDS assign for $tid: ".join('; ',@info)."\n";
  }
 }
 
@@ -568,6 +689,12 @@ sub processGffRecs {
    } else {
      cleanupExons($er, \@ex, $cr, \@cds, $recid); #check for merging exon/UTR/CDS/start_codon/stop_codon into exon/CDS segments
    }
+   #---- for transcripts, check for new CDS/strand assignment 
+   if ($CDSdatafile && @ex>0) { # $discard_exons is incompatible with -y option
+      my $tcds=$assignCDS{$recid};
+      assignCDS($recid, \$strand, \@ex, \@cds, $tcds) #modifies $strand and @cds as needed!
+         if $tcds;
+   }
    # --------------
    # get the more accurate version of the start-end coords for the feature
    my $covlen=0;
@@ -597,16 +724,16 @@ sub processGffRecs {
               unless $tdata;
           }
         }#for each transcript of this gene
-      if ($adjGeneSpan && ($min!=$fstart || $max!=$fend)) {
-         print STDERR "Warning: gene $recid original span ($fstart-$fend) adjusted to ($min-$max)\n"
-            if $verbose;
-         ($fstart, $fend)=($min, $max);
-      }
+        if ($adjGeneSpan && ($min!=$fstart || $max!=$fend)) {
+          print STDERR "Warning: gene $recid original span ($fstart-$fend) adjusted to ($min-$max)\n"
+             if $verbose;
+          ($fstart, $fend)=($min, $max);
+        }
      }
      else {
        print STDERR "Warning: no %genes entry found for $recid !\n";
      }
-   } else { # not a gene
+   } else { # not a gene - so likely a transcript
      #should be skipped if parent gene was already filtered out
      my $gdata=$genes{$geneID};
      if ($gdata && $gdata->[2]) { #gene was filtered out!
