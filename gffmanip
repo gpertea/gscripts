@@ -349,7 +349,7 @@ sub cleanupExons {
    my $exdist=$$rex[$i+1]->[0]-$$rex[$i]->[1]; #inter-exon distance
    if ($exdist<$minIntron) { #intron too small or overlapping exons!
        if ($verbose && $$rex[$i]->[4] eq $$rex[$i+1]->[4]) { #same type of exon
-          my $CDstatus=(@$cr>0) ?' (CDS unaffected)' : '';
+          my $CDstatus=(@$cr>0) ?' (CDS unchanged)' : '';
           $exdist--;
           if ($exdist<0) {
              print STDERR "Warning: merging overlapping ($exdist) exons $$rex[$i]->[0]-$$rex[$i]->[1], ".
