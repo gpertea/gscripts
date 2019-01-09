@@ -620,10 +620,6 @@ sub assignCDS {
    my $ch;
    if (scalar(@$cdr) == scalar(@$cdsegs)) {
       for (my $i=0;$i<@$cdr;$i++) {
-        if ($tid eq 'CHS.48186.1') {
-          print STDERR "[DBG]($tid ".scalar(@$cdr)." exons)\t($$cdr[$i]->[0], $$cdr[$i]->[1], $$cdr[$i]->[3]) ".
-            "vs ($$cdsegs[$i]->[0], $$cdsegs[$i]->[1], $$cdsegs[$i]->[3])\n";
-        }
         if ($$cdr[$i]->[0]!=$$cdsegs[$i]->[0] || 
             $$cdr[$i]->[1]!=$$cdsegs[$i]->[1] ||
             $$cdr[$i]->[3] ne $$cdsegs[$i]->[3]) {
