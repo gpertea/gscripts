@@ -21,9 +21,10 @@ Filtering options:
     interval(s) (i.e. intron-only overlaps are not considered)
  -R for -r option, only print transcripts fully contained in any of the given 
     range interval(s)
- -i only shows transcripts (or genes) whose IDs match any of the entries in the
+ -i only shows transcripts whose IDs match any of the entries in the
     given file <ids.lst>; another attribute instead of ID can be used for 
-    matching the list values if given as a <attr>: prefix to the file path
+    matching the list values if given as a <attr>: prefix to the file path;
+    special "geneID:" prefix will apply gene ID filtering
  -a only shows transcripts which have the <attr> attribute with the value 
     <value>; multiple attribute\/value pairs can be given (semicolon delimited)
     and a record is printed if there is at least one attribute match (OR list);
@@ -80,6 +81,7 @@ my $verbose=$Getopt::Std::opt_V;
 my $keepCmts=$Getopt::Std::opt_P;
 my $sort_gff=$Getopt::Std::opt_S;
 my $CDSdatafile=$Getopt::Std::opt_y;
+my $geneflt=0; #if specific gene filtering was used with -i or -a
 my %ignoredFeatures;
 @ignoredFeatures{qw(intron region contig scaffold)}=(); #let's ignore these useless features
 my %oattrs; #hash with attrs to print
@@ -167,23 +169,25 @@ if ($tab_attrs) {
   @atab{@atab_cols}=();
   }
 my $idfileattr; # attribute to use for ID list filtering instead of ID/transcript_id
+
 if ($idfile) {
   unless (-f $idfile) {
      my ($a,$f)=(split(/\:/,$idfile));
      ($idfile, $idfileattr)=($f,$a) if $f;
+     if ($idfileattr eq 'geneID') {
+       $idfileattr='.';
+       $geneflt=1;
      }
+  }
+  die("Error: no such id list file: $idfile\n") unless $idfile && -f $idfile;
   my $idf;
-  #if ($idfile eq '-') {
-  #  open($idf, "<&=STDIN") || die("Error: couldn't alias STDIN. $!\n");
-  #} else {
-    open($idf, $idfile) || die("Error: cannot open $idfile $!\n");
-  #}
+  open($idf, $idfile) || die("Error: cannot open $idfile $!\n");
   while (<$idf>) {
     my ($id)=(m/(\S+)/);
     $idflt{$id}=1 if $id;
-    }
-  close($idf);
   }
+  close($idf);
+}
 if ($avflt) {
   my @avl=split(/\;/, $avflt);
   foreach my $avpair (@avl) {
@@ -194,6 +198,7 @@ if ($avflt) {
     $value=~s/[" ]+$//;$value=~s/^[" ]+//;
     push(@{$attrflt{$attr}},$value);
     }
+  $geneflt=1 if $avflt_feature eq 'gene';
   }
 my %featflt; # feature list filter -- if $featlist was given
 if ($featlist)  {
@@ -221,7 +226,7 @@ if ($chrmapping) {
 
 ##--- gene tracking:
 my %genes; #gene ID => [$gffrecs_Data, [$t_ID, ...], $filtered_out)
-           #                0               1        2
+           #                0               1           2
 
 ##--- keeping track of all gene and transcript records :
 my %gffrecs; # ID => [ chr, strand, feat_type,  \%attrs, fstart, fend, [@exons], [@cds], track, geneID, fscore ]
@@ -438,7 +443,6 @@ sub loadGff {
             push(@$alstref, $attr) unless $attr eq 'ID';
             $attrs{$attr}=$value;
          }
-         #my $recID=$gff3_ID;
          die("Error: duplicate feature $gff3_ID\n") if (exists($recs->{$gff3_ID}));
          push(@gff_IDs, $gff3_ID);
          #              0      1      2       3        4      5    6    7    8     9    10
@@ -736,7 +740,7 @@ sub processGffRecs {
    } else { # not a gene - so likely a transcript
      #should be skipped if parent gene was already filtered out
      my $gdata=$genes{$geneID};
-     if ($gdata && $gdata->[2]) { #gene was filtered out!
+     if ($geneflt && $gdata && $gdata->[2]==1) { #gene was specifically filtered out!
        #$doprint=0;
        #that gene filter has already been inverted!
        next;
@@ -748,10 +752,10 @@ sub processGffRecs {
    if ($doprint && $idfile) {
      if ($idfileattr) {
         $doprint=0 unless exists($idflt{$attrs->{$idfileattr}});
-        }
+      }
       else {
         $doprint=0 unless exists($idflt{$recid});
-        }
+      }
    }
    my $check_avflt=$avflt && ((!$avflt_feature && !$isGene) || ($avflt_feature eq $feature));
    if ($doprint && $check_avflt) {
@@ -810,7 +814,7 @@ sub processGffRecs {
   #inverting the filter?
   $doprint = !$doprint if $fltinvert;
   if (!$doprint) {
-     if ($isGene) { #update gene filtered status!
+     if ($isGene && $geneflt) { #specific gene filtering
        my $gdata=$genes{$recid};
        $gdata->[2]=1 if $gdata;
      }
