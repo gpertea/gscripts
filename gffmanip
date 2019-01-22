@@ -133,7 +133,7 @@ $only_ifCDS=1 if $discard_exons;
 my ($idfile, $avflt, $featlist, $oattrlist)=
   ($Getopt::Std::opt_i, $Getopt::Std::opt_a, $Getopt::Std::opt_f, $Getopt::Std::opt_k);
 die("Sorry, -v option does not work with -f !\n") if $fltinvert && $featlist;
-my $minIntron=$Getopt::Std::opt_Z ? 5 : 2;
+my $minIntron=$Getopt::Std::opt_Z ? 5 : 1;
 my $keepAll=$Getopt::Std::opt_K || (lc($oattrlist) eq 'a' || lc($oattrlist) eq 'all');
 my $keepExonAttrs=$Getopt::Std::opt_E;
 my $avflt_feature; #feature targeted by attr=value,.. filter
@@ -352,7 +352,7 @@ sub cleanupExons {
  while ($i+1<@$rex) {
    # $$rev[$i] vs $$rex[$i+1]
    my $exdist=$$rex[$i+1]->[0]-$$rex[$i]->[1]; #inter-exon distance
-   if ($exdist<$minIntron) { #intron too small or overlapping exons!
+   if ($exdist<=$minIntron) { #intron too small or overlapping exons!
        if ($verbose && $$rex[$i]->[4] eq $$rex[$i+1]->[4]) { #same type of exon
           my $CDstatus=(@$cr>0) ?' (CDS unchanged)' : '';
           $exdist--;
