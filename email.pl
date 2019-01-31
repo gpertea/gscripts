@@ -15,7 +15,7 @@ my $subj=$v{s} || '[no subject]';
 my $body=$v{b};
 my $fname=$v{f};
 if ($fname && $fname ne '-') {
-  die("Error: file $fname not found!\n") 
+  die("Error: file $fname not found!\n")
        unless -f $fname;
 }
 my $etxt="To: <$to>\n";
@@ -25,7 +25,7 @@ open(MSMTP, "| msmtp --tls-certcheck=off -t '$to'");
 print MSMTP "$etxt\n";
 if ($fname) {
  @ARGV=();
- print MSMTP "\n";
+ print MSMTP "\n" if $body;
  if ($fname ne '-') {
      @ARGV=($fname);
      #print MSMTP "-------- content of $fname follows: --------\n";
