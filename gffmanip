@@ -56,14 +56,13 @@ Genomic deletion processing:
     -d NC_029267.1:18816715-18860512
 
 Output options:
- -K keep all transcript\/gene attributes; by default only the core GFF
-    attributes are shown (transcript_id, gene_id, gene_name, ID, Parent, Name)
+ -K keep all GFF\/GTF attributes and preserve the input format
+ -E for -K, discard exon\/CDS attributes (only keep transcript\/gene attrs)
  -Z merge close exons into a single exon (for intron size<4)
  -M adjust transcript boundaries to match min\/max coordinates of their exons
  -G adjust gene boundaries to match min\/max coordinates of their transcripts
  -k keep only the specified non-core GFF attributes in the output records
     (expects a comma delimited list of attribute names)
- -E keep all exon\/CDS GFF attributes
  -P preserve comments (lines starting with #)
  -T print GTF format (default is GFF3)
  -l instead of GTF\/GFF, output a tab delimited table with transcript ID 
@@ -73,7 +72,7 @@ Output options:
  -V (verbose): show warnings or other potentially useful info
 /;
 umask 0002;
-getopts('vCXERAZPMGKVTSo:c:f:t:i:a:k:l:m:y:d:') || die($usage."\n");
+getopts('vCXERAZPMGKVTSo:c:f:r:t:i:a:k:l:m:y:d:') || die($usage."\n");
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
 my $outfile=$Getopt::Std::opt_o;
@@ -135,10 +134,11 @@ my ($idfile, $avflt, $featlist, $oattrlist)=
 die("Sorry, -v option does not work with -f !\n") if $fltinvert && $featlist;
 my $minIntron=$Getopt::Std::opt_Z ? 5 : 1;
 my $keepAll=$Getopt::Std::opt_K || (lc($oattrlist) eq 'a' || lc($oattrlist) eq 'all');
-my $keepExonAttrs=$Getopt::Std::opt_E;
+my $discardExonAttrs=$Getopt::Std::opt_E;
+die("Error: -E option requires -K !\n") if ($discardExonAttrs && !$keepAll);
 my $avflt_feature; #feature targeted by attr=value,.. filter
 my $avflt_AND=$Getopt::Std::opt_A; #if $avflt should require a match for ALL given attributes
-my ($check_range, $strict_ovl, $exon_ovl)=
+my ($check_range,        $strict_ovl,         $exon_ovl)=
    ($Getopt::Std::opt_r, $Getopt::Std::opt_R, $Getopt::Std::opt_X);
 my $del_range=$Getopt::Std::opt_d;
 my $chrmapping=$Getopt::Std::opt_m;
@@ -150,7 +150,6 @@ my @flt_intv;
 if ($check_range) {
   ($flt_chr, $flt_strand)=parseLocations($check_range, \@flt_intv);
 }
-#my $range=$flt_chr.':'.$ck_rex[0]->[0].'-'.$ex[-1]->[1];
 my ($del_chr, $del_strand, $del_total);
 my @del_intv;
 if ($del_range) {
@@ -239,7 +238,9 @@ my %gffrecs; # ID => [ chr, strand, feat_type,  \%attrs, fstart, fend, [@exons],
 #  open($gffh, $input_gff) ||  die("Error opening file $input_gff $!\n");
 #  }
 my @gff_IDs; #IDs of each primary records (transcripts and genes) as they are encountered
+my $input_GFF3; #set to 1 if input was detected as GFF3
 loadGff(\%gffrecs);
+$printGTF=1 if (!$printGTF && !$input_GFF3);
 if ($sort_gff) {
   my @sorted_recs=sort sortByLoc keys(%gffrecs);
   processGffRecs(\%gffrecs, \@sorted_recs);
@@ -435,6 +436,7 @@ sub loadGff {
    my $isGene=($f=~m/gene$/i && $gff3_ID);
    $isGFF3 = ($gff3_ID || $gff3_Parent);
    if ($isGFF3) { # GFF format
+      $input_GFF3=1;
       if ($gff3_ID && !$exonFeature) { #top level feature (e.g. gene, mRNA)
          foreach my $a (@av) {
             #keep attributes
@@ -525,9 +527,14 @@ sub loadGff {
        }
      }
      my $exattrs='';
-     if ($isGFF3 && $keepExonAttrs) {
+     #if ($isGFF3 && !$discardExonAttrs) {
+     if ($keepAll && !$discardExonAttrs) {
        $exattrs=$atr;
-       $exattrs=~s/\bParent=[^;]+;?//;
+       if ($isGFF3) { $exattrs=~s/\bParent=[^;]+;?//; }
+       else { 
+         $exattrs=~s/\btranscript_id\s+[^;]+;?//;
+         $exattrs=~s/\bgene_id\s+[^;]+;?//;
+       }
      }
      # --- exon feature storage format:  start, end, score, CDSphase, feature_name, GFF_attributes
      push(@{$$ld[$i]}, [$fstart, $fend, $fscore, $frame, $f, $exattrs]);
@@ -798,18 +805,20 @@ sub processGffRecs {
      }
    }
    if ($doprint && @flt_intv>0) {
+    my $ovlmatch=0;
     if ($exon_ovl) { #t span overlap any range intervals
        for my $ed (@ex) {
          if (checkOvlSegs($$ed[0], $$ed[1], \@flt_intv)) {
-            $doprint=1;
+            $ovlmatch=1;
             last;
             }
          }
     } elsif ($strict_ovl) {
-       $doprint=1 if checkOvlWithin($fstart, $fend, \@flt_intv);
+       $ovlmatch=checkOvlWithin($fstart, $fend, \@flt_intv);
     } else {
-      $doprint=1 if checkOvlSegs($fstart, $fend, \@flt_intv);
+       $ovlmatch=checkOvlSegs($fstart, $fend, \@flt_intv);
     }
+    $doprint=$ovlmatch;
   }
   #inverting the filter?
   $doprint = !$doprint if $fltinvert;
@@ -881,6 +890,7 @@ sub processGffRecs {
   my $tid=delete($attrs->{'ID'});
   my $tattrs;
   if ($printGTF) {
+     my $pattrs;
      #do not print gene features or features without exons/CDS!
      next unless (@ex>0 || @cds>0);
      my $gene_id; #for GTF printing
@@ -894,22 +904,23 @@ sub processGffRecs {
        @gattrs=grep { /^gene/i } @{$attrs->{'.'}} if (@gattrs==0);
        $gene_id=delete($attrs->{$gattrs[0]}) if @gattrs>0
      }
-     $tattrs='transcript_id "'.$tid.'";';
-     $tattrs.=' gene_id "'.$gene_id.'";' if $gene_id;
+     $pattrs='transcript_id "'.$tid.'";';
+     $pattrs.=' gene_id "'.$gene_id.'";' if $gene_id;
+     $tattrs=$pattrs;
      if ($keepAll) {
         foreach my $attr (@{$attrs->{'.'}}) {
            my $val=$attrs->{$attr};
-           $tattrs.=' '.$attr.' "'.$val.'";' if $val;
+           $pattrs.=' '.$attr.' "'.$val.'";' if $val;
         }
      }
      else { # only a subset of attributes will be shown
         foreach my $attr (@{$attrs->{'.'}}) {
            next unless exists($oattrs{$attr});
            my $val=$attrs->{$attr};
-           $tattrs.=' '.$attr.' "'.$val.'";' if $val;
+           $pattrs.=' '.$attr.' "'.$val.'";' if $val;
         }
      }
-    print join("\t",$chr, $track, 'transcript', $fstart, $fend, $fscore, $strand, '.', $tattrs)."\n";
+    print join("\t",$chr, $track, 'transcript', $fstart, $fend, $fscore, $strand, '.', $pattrs)."\n";
   } else { #print GFF3
      my $pattrs="ID=$tid";
      #$pattrs.='gene_name='.$gene_name.';' if $gene_name;
@@ -931,6 +942,7 @@ sub processGffRecs {
      print join("\t",$chr, $track, $feature, $fstart, $fend, $fscore, $strand, '.', $pattrs)."\n";
      $tattrs='Parent='.$tid;
   }
+  { local $/=';'; chomp($tattrs); }
   if ($CDSonly==0) { #write exons only when they're also found in the input
         foreach my $ed (@ex) {
             my $xattrs=$tattrs;
