@@ -1,0 +1,140 @@
+#!/usr/bin/perl
+## basic process watcher utility
+## list of processes to watch is maintained ~/.pwatch.lst
+##a cronjob should be set up to simply call pwatch every minute or so
+##additional configuration is in ~/.pwatchrc
+##    email=   #email to send the notification to
+##    cmd=     #override the command to be run when the process 
+##             #is no longer running
+##    delay=   #time (seconds) to wait before checking for process existence
+use strict;
+my $home=$ENV{HOME};
+my @h=split(/\./, $ENV{HOSTNAME});
+my $host=$h[0];
+*P_STDERR=*STDERR;
+my $memdir='/dev/shm/'.$ENV{USER}.'-pwatch';
+if (!-d $memdir) {
+ mkdir($memdir) || die("Error: cannot create directory $memdir ($!)!\n");
+}
+my $lstfile="$memdir/pwatch.lst";
+my $logh;
+open($logh, '>>', "$memdir/pwatch.log") || 
+   die("Error opening log file $memdir/pwatch.log");
+*STDERR = $logh;
+my ($email, $tcmd, $delay);
+if (@ARGV==0) {
+  #main use case: watching processes
+  if (! -f "$memdir/.pwatchrc") { 
+    #copy the configuration file .pwatchrc to $memdir for faster subsequent access
+    die("Error: file $home/.pwatchrc is missing!\n")
+      unless -f "$home/.pwatchrc";
+    system("cp $home/.pwatchrc $memdir/");
+  }
+  ($email, $tcmd, $delay)=loadConfig("$memdir/.pwatchrc");
+  #cron job checking on the processes listed in pwatch.lst
+  checkProcesses();
+  exit 0;
+}
+my $cmd=shift(@ARGV);
+if ($cmd eq 'show' || $cmd eq 'pid' ) {
+  my $pname=shift(@ARGV) || die("Error: name of process/script required!\n");
+  my @pids=grep { !/\\_/ } (split(/\n/,`ps hf -opid,state,comm,user:21,etime -C '$pname'`));
+  #my @pids=split(/\n/,`ps hf -opid,comm,user:21,etime -C '$pname'`);
+  foreach my $pl (@pids) {
+    my ($pid)=($pl=~m/^(\d+)/);
+    my $wd=`readlink -e /proc/$pid/cwd`;
+    chomp($wd);
+    $pl.="\t$wd";
+  }
+  print join("\n", @pids)."\n";
+  exit 0;
+}
+if ($cmd eq 'add') {
+  my ($pid, $label)=@ARGV;
+  die("Error: a numeric process ID# is required! Use 'pwatch pid processName' to find it. \n")
+    if (!$pid || $pid!~/^\d+$/);
+  if (!$label) {
+    $label=`ps -p $pid -o cmd=`;
+    chomp($label);
+  }
+  #get the working directory as well:
+  my $wd=`readlink -e /proc/$pid/cwd`;
+  open(LST, ">>$lstfile") || die("Error opening file $lstfile\n");
+  print LST join("\t",$pid, $label, $wd)."\n";
+  wlog("Process $label ($pid, $wd) added to watch list.");
+  close(LST);
+  exit 0;
+}
+
+#-----------------
+
+sub wlog {
+ print STDERR join(' ', @_)."\n";
+ print P_STDERR join(' ', @_)."\n";
+}
+
+sub notify {
+ my ($pid, $name, $wd, $st)=@_;
+ my $status=$st ? 'ended' : "stopped ($st)";
+ wlog("process $name ($pid) $status");
+ send_email($email, "[pwatch] $name ".$status." on $host", 
+  "Process '$name' (pid $pid) $status on host $host");
+}
+
+sub checkProcesses {
+ return unless (-s $lstfile)>1;
+ my $changed;
+ my @procs;
+ if (!open(LST, $lstfile)) {
+   wlog("Error opening file $lstfile !");
+   exit(1);
+ }
+ while(<LST>) {
+   next if m/^#/;
+   my ($pid, $name, $wd)=split(/\t/,$_);
+   my $l=$_;
+   my $st=`ps -p $pid -o state=`;
+   chomp($st);
+   if (!$st || $st =~ m/[ZTtXxKP]/) {
+     $changed=1;
+     notify($pid, $name, $wd, $st);
+   }
+   else {
+    push(@procs, $l);
+   }
+ }
+ close(LST);
+ return if !$changed || @procs>0;
+ if (!open(LST, '>'.$lstfile)) {
+   wlog("Error creating file $lstfile!\n");
+   exit(1);
+ }
+ print LST join('', @procs);
+ close(LST);
+}
+
+sub loadConfig {
+ open(CFG, $_[0]) || die("Error opening file $_[0]\n");
+ my ($em, $cm, $dly);
+ while (<CFG>) {
+  next if m/^#/;
+  chomp;
+  if (m/^\s*(email|cmd|delay)\s*=\s*([^#]+)/i) {
+    my ($s, $v)=($1,$2);
+    $v=~s/\s+$//;
+    if ($s eq 'email') { $em=$v }
+    elsif ($s eq 'cmd') { $cm=$v }
+    elsif ($s eq 'delay') { $dly=$v }
+  }
+ }
+ close(CFG);
+ return ($em, $cm, $dly);
+}
+
+sub send_email {
+ my ($to, $subj, $body)=@_;
+ open(MSMTP, "| msmtp --tls-certcheck=off -t '$to'") 
+   || die("Error opening the msmtp pipe!\n");
+ print MSMTP "To: <$to>\nSubject: $subj\n\n$body\n";
+ close(MSMTP);
+}

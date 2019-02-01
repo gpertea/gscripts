@@ -21,7 +21,8 @@ if ($fname && $fname ne '-') {
 my $etxt="To: <$to>\n";
 $etxt.="Subject: $subj\n\n";
 $etxt.=$body if $body;
-open(MSMTP, "| msmtp --tls-certcheck=off -t '$to'");
+open(MSMTP, "| msmtp --tls-certcheck=off -t '$to'")
+  || die("Error opening the msmtp pipe!\n");
 print MSMTP "$etxt\n";
 if ($fname) {
  @ARGV=();
