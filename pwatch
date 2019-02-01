@@ -1,12 +1,12 @@
 #!/usr/bin/perl
 ## basic process watcher utility
 ## list of processes to watch is maintained ~/.pwatch.lst
-##a cronjob should be set up to simply call pwatch every minute or so
+## a cronjob should be set up to simply call pwatch every 2 minutes or so:
+## */2 * * * * /path/to/pwatch
 ##additional configuration is in ~/.pwatchrc
-##    email=   #email to send the notification to
+##    email=   #email to send the notification to (required)
 ##    cmd=     #override the command to be run when the process 
-##             #is no longer running
-##    delay=   #time (seconds) to wait before checking for process existence
+##             #is no longer running (not implemented - default is email)
 use strict;
 my $home=$ENV{HOME};
 my @h=split(/\./, $ENV{HOSTNAME});
@@ -21,7 +21,7 @@ my $logh;
 open($logh, '>>', "$memdir/pwatch.log") || 
    die("Error opening log file $memdir/pwatch.log");
 *STDERR = $logh;
-my ($email, $tcmd, $delay);
+my ($email, $tcmd);
 if (@ARGV==0) {
   #main use case: watching processes
   if (! -f "$memdir/.pwatchrc") { 
@@ -30,7 +30,7 @@ if (@ARGV==0) {
       unless -f "$home/.pwatchrc";
     system("cp $home/.pwatchrc $memdir/");
   }
-  ($email, $tcmd, $delay)=loadConfig("$memdir/.pwatchrc");
+  ($email, $tcmd)=loadConfig("$memdir/.pwatchrc");
   #cron job checking on the processes listed in pwatch.lst
   checkProcesses();
   exit 0;
@@ -90,9 +90,9 @@ sub checkProcesses {
    exit(1);
  }
  while(<LST>) {
-   next if m/^#/;
-   my ($pid, $name, $wd)=split(/\t/,$_);
+   next if m/^#/ || length($_)<2;
    my $l=$_;
+   my ($pid, $name, $wd)=split(/\t/,$_);
    my $st=`ps -p $pid -o state=`;
    chomp($st);
    if (!$st || $st =~ m/[ZTtXxKP]/) {
@@ -115,20 +115,20 @@ sub checkProcesses {
 
 sub loadConfig {
  open(CFG, $_[0]) || die("Error opening file $_[0]\n");
- my ($em, $cm, $dly);
+ my ($em, $cm);
  while (<CFG>) {
   next if m/^#/;
   chomp;
-  if (m/^\s*(email|cmd|delay)\s*=\s*([^#]+)/i) {
+  if (m/^\s*(email|cmd)\s*=\s*([^#]+)/i) {
     my ($s, $v)=($1,$2);
     $v=~s/\s+$//;
     if ($s eq 'email') { $em=$v }
     elsif ($s eq 'cmd') { $cm=$v }
-    elsif ($s eq 'delay') { $dly=$v }
+    #elsif ($s eq 'delay') { $dly=$v }
   }
  }
  close(CFG);
- return ($em, $cm, $dly);
+ return ($em, $cm);
 }
 
 sub send_email {
