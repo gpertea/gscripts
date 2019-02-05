@@ -1,0 +1,95 @@
+#!/usr/bin/perl
+#based on MAKER's cufflinks2gff3
+use strict;
+use Getopt::Std;
+
+my $usage =q/
+Usage:
+  stringtie2maker [-S] <transcripts.gtf> ...
+  
+  This script converts the cufflinks or stringtie output GTF
+  (or the output of stringtie --merge) into the "match" GFF3 
+  format for use with MAKER via GFF3 passthrough.
+  
+  Use option -S to discard strandless features which correspond 
+  to single exon transcript assemblies.
+/;
+
+getopts('So:') || die($usage."\n");
+my $outfile=$Getopt::Std::opt_o;
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+}
+my $noUnstranded=$Getopt::Std::opt_S;
+
+# --
+die($usage."\n") unless @ARGV>0;
+my @infiles = @ARGV;
+
+my $error;
+foreach my $file (@infiles){
+   if(! -f $file){
+      $error .= "ERROR: The file $file does not exist.\n";
+   }
+}
+die($error."\n") if($error);
+
+my $prefix = 1;
+foreach my $file (@infiles){
+  open(IN, "< $file");
+  my $offset = 0;
+  while(my $line = <IN>) {
+    chomp $line;
+    next if $line=~m/^\#/;
+    my @F = split(/\t/, $line);
+    ($F[3], $F[4]) = ($F[4], $F[3]) if($F[3] > $F[4]); #sanity check
+    next if ($F[6] eq '.' && $noUnstranded);
+    #build attributes
+    my ($ID) = ($F[8]=~m/transcript_id\s+\"([^\"]+)/);
+    $ID = "$prefix:$ID"; #handles case of multiple input files
+    my $name = $ID;
+    my $target = $ID;
+    my $tB = 1;
+    my $tE = abs($F[4] - $F[3]) + 1;
+    my $parent='';
+    if($F[2] eq 'exon'){
+      $parent = $ID;
+      if ($F[8]=~m/exon_number\s+\"([^\"]+)/) {
+         $ID .= ":exon-$1";
+      }
+      else{
+         $ID .= ":exon-$offset";
+      }
+      $tB += $offset;
+      $tE += $offset;
+      $offset = $tE;
+    }
+    else{
+      $offset = 0;
+    }
+
+    #build GFF3 columns
+    my $seqid = $F[0];
+    my $source = $F[1];
+    my $type = ($F[2] eq 'transcript') ? 'match' : 'match_part';
+    my $start = $F[3];
+    my $end = $F[4];
+    my ($score) = ($F[8]=~m/cov\s+\"([^\"]+)/);
+    $score=1000 unless $score;
+    my $strand = $F[6];
+    my $phase = '.';
+    my $attributes = "ID=$ID;Name=$name;";
+    $attributes .= "Parent=$parent;" if($parent);
+    $attributes .= "Target=$target $tB $tE +;" if($type eq 'match_part');
+    print join("\t", $seqid, $source, $type, $start, $end, $score, $strand, $phase, $attributes) ."\n";
+  }
+  close(IN);
+  $prefix++;
+}
+
+# --
+if ($outfile) {
+ select(STDOUT);
+ close(OUTF);
+}
