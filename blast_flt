@@ -1,0 +1,41 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+use FindBin;use lib $FindBin::Bin;
+
+my $usage = q{Usage:
+ blast_flt [-p minpid] [-l min_qovlen | -q min_qcovs] < blast_tab...
+ ..where blast_tab input is expected to have been obtained
+ with a blast command with the output format like this:
+blastn ... \
+ -outfmt '6 qseqid qlen qstart qend sseqid slen sstart send pident bitscore evalue sstrand qcovs salltitles' \
+| perl -pe 's/\tminus\t/\t-\t/;s/\tplus\t/\t+\t/' > blast_tab
+};
+umask 0002;
+getopts('p:l:q:o:') || die($usage."\n");
+my $outfile=$Getopt::Std::opt_o;
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+}
+# --
+my ($tpid, $talen, $tqcov)=($Getopt::Std::opt_p, $Getopt::Std::opt_l, $Getopt::Std::opt_q);
+while (<>) {
+ next if m/^#/;
+ my $l=$_;
+ chomp;
+ my ($qid, $qlen, $qstart, $qend, $sid, $slen, $sstart, $send, $pid, $bitscore,
+   $evalue, $sstrand, $qcovs, $sdescr) =split(/\t/);
+ next if $tpid && $pid<$tpid;
+ next if $talen && $qend-$qstart+1<$talen;
+ next if $tqcov && $qcovs<$tqcov;
+ print $l;
+}
+# --
+if ($outfile) {
+ select(STDOUT);
+ close(OUTF);
+}
+
+#************ Subroutines **************
+

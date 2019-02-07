@@ -1,0 +1,160 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+use FindBin;use lib $FindBin::Bin;
+
+my $usage = q{Usage:
+ blast_ann [-e max_evalue] [-l min_qovlen | -q min_qcovs] \
+   protein_blastp/x_out [ nucl_blastn_out]
+ 
+ ..where blast*_out files is expected to have been obtained
+ with blast command specifying the output format like this:
+blastn ... \
+ -outfmt '6 qseqid qlen qstart qend sseqid slen sstart send pident bitscore evalue sstrand qcovs salltitles' \
+| perl -pe 's/\tminus\t/\t-\t/;s/\tplus\t/\t+\t/' > blast_tab
+};
+umask 0002;
+getopts('e:l:q:o:') || die($usage."\n");
+die($usage."\n") unless @ARGV==1 || @ARGV==2;
+my $outfile=$Getopt::Std::opt_o;
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+}
+my %tdata; #qid -> [ list of [sid, e-val, bitscore, qcov, sid, sdescr] ]
+my %t2s; #qid~sid -> highest e-val [sid, e-val, bitscore, qcov, sdescr]
+#same for blastn data if given
+my %tndata; #qid -> [ list of [sid, e-val, bitscore, qcov,  sdescr] ]
+my %tn2s; #qid~sid -> highest bitscore [sid, e-val, bitscore, qcov, sdescr]
+
+# --
+my ($teval, $talen, $tqcov)=($Getopt::Std::opt_e, $Getopt::Std::opt_l, $Getopt::Std::opt_q);
+my $ptabfile=shift(@ARGV);
+loadHits($ptabfile, \%tdata, \%t2s);
+my $ntabfile=shift(@ARGV);
+loadHits($ntabfile, \%tndata, \%tn2s) if $ntabfile;
+foreach my $tid (keys(%tdata)) {
+  my $pd=$tdata{$tid};
+  my ($psid, $peval, $pbitsocre, $pqcov, $pdescr)=@{$$pd[0]};
+  my $nd=$tndata{$tid} if $ntabfile;
+  if ($nd) {
+    my ($nsid, $neval, $nbitsocre, $nqcov, $ndescr)=@{$$nd[0]};
+    my $nid=$nsid;
+    $nid=~s/\-\d+$//;
+    my $pid=$psid;
+    $pid=~s/\-\d+$//;
+    if ($pid eq $nid) {
+      annotate($tid, $psid, $peval, $pqcov, $pdescr);
+    }
+    else { #different nid vs pid
+      if ($nqcov>$pqcov && $neval<$peval) {
+         annotate($tid, $nsid, $neval, $nqcov, $ndescr);
+      }
+      else { annotate($tid, $psid, $peval, $pqcov, $pdescr); }
+    }
+    delete($tndata{$tid});
+  } else { 
+    annotate($tid, $psid, $peval, $pqcov, $pdescr); 
+  }
+}
+#now process blastn-only hits, if any
+foreach my $tid (keys(%tndata)) {
+  my $nd=$tndata{$tid};
+  my ($nsid, $neval, $nbitsocre, $nqcov, $ndescr)=@{$$nd[0]};
+  annotate($tid, $nsid, $neval, $nqcov, $ndescr);
+}
+# --
+if ($outfile) {
+ select(STDOUT);
+ close(OUTF);
+}
+
+#************ Subroutines **************
+sub gff_fix {
+ my ($v, $GTF) = @_;
+ $v=~tr/\x00-\x1F\x7f/ /;
+ $v=~tr/;,&/| _/;
+ $v=~s/\s*=\s*/:/g;
+ $v=~s/\s*\%/ prc./g;
+ $v=~tr/ / /s;
+ $v=~tr/"/'/ if $GTF; #"protect for GTF
+ return $v;
+}
+
+sub annotate {
+my ($tid, $sid, $eval, $cov, $info)=@_;
+  my $descr=$1 if ($info=~s/\s*description:(.+)$//);
+  my ($gsym)=($info=~m/\bgene_symbol:(.+)$/);
+  my $txt="similarity=$sid cov:$cov e-value:$eval";
+  $txt.=";gene_info=".gff_fix($gsym) if $gsym;
+  my $sidbase=$sid;
+  $sidbase=~s/\-\d+$//;
+  if ($descr) {
+    my @ds;
+    my %h;
+    foreach my $d (split(/\;\s*/, $descr)) {
+      my $s=$d;
+      if ($s=~s/\.?\s*\(([^\)]+)\)$//) {
+        my $aid=$1;
+        my $aidbase=$aid;
+        $aidbase=~s/\-\d+$//;
+        if ($aidbase ne $sidbase) {
+          #print STDERR "Warning: unexpected pattern ($aidbase vs $sidbase) for $tid hit: $sid, $eval, $cov, $descr\n";
+          $s=$d;
+        }
+      } #remove ID in parentheses at the end of each description
+      push(@ds, gff_fix($s)) unless exists($h{$s});
+      $h{$s}=$d;
+    }
+    $txt.=';description='.join(" | ", @ds) if @ds>0;
+  } #has a description
+  else {
+   #no description, just append transcript_biotype 
+   if ($info=~m/\btranscript_biotype:(\S+)/) {
+      $txt.=" ($1)";
+   }
+  }
+  print "$tid\t$txt\n";
+}
+
+sub loadHits {
+  my ($file, $th, $ta)=@_;
+  open(IN, $file) || die("Error opening file $file\n");
+  while (<IN>) {
+   next if m/^#/;
+   my $l=$_;
+   chomp;
+   my ($qid, $qlen, $qstart, $qend, $sid, $slen, $sstart, $send, $pid, $bitscore,
+     $evalue, $sstrand, $qcovs, $sdescr) =split(/\t/);
+   
+   next if $teval && $evalue>=$teval;
+   next if $talen && $qend-$qstart+1<$talen;
+   next if $tqcov && $qcovs<$tqcov;
+   
+   my $hd=$$th{$qid};
+   my $nd=[$sid, $evalue, $bitscore, $qcovs, $sdescr];
+   if ($hd) {
+     my $ra=$$ta{$qid.'~'.$sid};
+     if ($ra) { #already loaded this subj association
+         if ($bitscore>$ra->[2]) { #better hit - should not happen
+           print STDERR "Warning: \[$file\] $qid: load better hit ($bitscore>$$ra[2]) $sid, $evalue, $bitscore, $qcovs\n";
+           foreach my $d (@$hd) {
+             if ($d->[0] eq $sid) {
+                $d=$nd;
+                last;
+             }
+           }
+           $$ta{$qid.'~'.$sid}=$nd;
+         }
+     }
+     else { #not seen this subj before
+       $$ta{$qid.'~'.$sid}=$nd;
+       push(@$hd, $nd);
+     }
+   }
+   else {#new qid
+     $$th{$qid}=[$nd];
+   }
+  } #while <IN>
+  close(IN);
+}

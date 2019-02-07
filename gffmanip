@@ -65,6 +65,7 @@ Output options:
     (expects a comma delimited list of attribute names)
  -P preserve comments (lines starting with #)
  -T print GTF format (default is GFF3)
+ -U decode url-encoded characters in attribute values and use safe replacements
  -l instead of GTF\/GFF, output a tab delimited table with transcript ID 
     in the first column and the value of all specified attribute(s) for each
     transcript in the other columns
@@ -72,13 +73,14 @@ Output options:
  -V (verbose): show warnings or other potentially useful info
 /;
 umask 0002;
-getopts('vCXERAZPMGKVTSo:c:f:r:t:i:a:k:l:m:y:d:') || die($usage."\n");
+getopts('vCXERAZPMGKVUTSo:c:f:r:t:i:a:k:l:m:y:d:') || die($usage."\n");
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
 my $outfile=$Getopt::Std::opt_o;
 my $verbose=$Getopt::Std::opt_V;
 my $keepCmts=$Getopt::Std::opt_P;
 my $sort_gff=$Getopt::Std::opt_S;
+my $Udecode=$Getopt::Std::opt_U;
 my $CDSdatafile=$Getopt::Std::opt_y;
 my $geneflt=0; #if specific gene filtering was used with -i or -a
 my %ignoredFeatures;
@@ -910,6 +912,10 @@ sub processGffRecs {
      if ($keepAll) {
         foreach my $attr (@{$attrs->{'.'}}) {
            my $val=$attrs->{$attr};
+           if ($Udecode) {
+             $val=gff3_decode($val);
+             $val=gff3_fixspecial($val, 1);
+           }
            $pattrs.=' '.$attr.' "'.$val.'";' if $val;
         }
      }
@@ -917,6 +923,10 @@ sub processGffRecs {
         foreach my $attr (@{$attrs->{'.'}}) {
            next unless exists($oattrs{$attr});
            my $val=$attrs->{$attr};
+           if ($Udecode) {
+             $val=gff3_decode($val);
+             $val=gff3_fixspecial($val, 1);
+           }
            $pattrs.=' '.$attr.' "'.$val.'";' if $val;
         }
      }
@@ -929,6 +939,10 @@ sub processGffRecs {
      if ($keepAll) {
         foreach my $attr (@{$attrs->{'.'}}) {
            my $val=$attrs->{$attr};
+           if ($Udecode) {
+             $val=gff3_decode($val);
+             $val=gff3_fixspecial($val);
+           }
            $pattrs.=";$attr=$val" if $val;
            }
      }
@@ -936,6 +950,10 @@ sub processGffRecs {
         foreach my $attr (@{$attrs->{'.'}}) {
            next unless exists($oattrs{$attr});
            my $val=$attrs->{$attr};
+           if ($Udecode) {
+             $val=gff3_decode($val);
+             $val=gff3_fixspecial($val);
+           }
            $pattrs.=";$attr=$val" if $val;
         }
      }
@@ -958,3 +976,26 @@ sub processGffRecs {
  } #for each stored transcript
 }
 
+sub gff3_encode {
+ my ($v) = @_;
+ $v =~ s/([^A-Za-z0-9])/sprintf("%%%2.2X", ord($1))/ge;
+ return $v;
+}
+
+sub gff3_fixspecial {
+ my ($v, $GTF) = @_;
+ $v=~tr/\x00-\x1F\x7f/ /;
+ $v=~tr/;,&/| _/;
+ $v=~s/\s*=\s*/:/g;
+ $v=~s/\s*\%/ prc./g;
+ $v=~tr/"/'/ if $GTF; #"protect for GTF
+ return $v;
+}
+
+sub gff3_decode {
+ #actually decodes any % encoded characters
+ my ($v) = @_;
+ #$v =~ s/\+/ /g; #url decoding would also need this
+ $v =~ s/%(..)/pack('c',hex($1))/ge;
+ return $v;
+}
