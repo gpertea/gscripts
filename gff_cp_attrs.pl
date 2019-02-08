@@ -49,7 +49,7 @@ if ($removeattrs) {
 die("${usage}") if @ARGV!=2;
 my $srcgff=shift(@ARGV);
 my %satrs; #ID => { attr => value, ... }
-my %se; #ID => [ [@exons], [@CDS] ] - just plain [start, end]
+my %se; #ID => [ [@exons], [@CDS], strand ] 
 open(SRCIN, $srcgff)||die("Error: cannot open $srcgff! ($!)\n");
 
 while(<SRCIN>) { #source file to copy attributes for each ID
@@ -98,11 +98,11 @@ while(<SRCIN>) { #source file to copy attributes for each ID
     my $ed=$se{$parent}; #exon data for this parent ID
     #print STDERR "[DBG]>> trying to add $f \[$fstart, $fend\] to \$se\{$parent\}\n";
     if ($f=~m/(exon|utr)/i) {
-       unless ($ed) { $ed=[[],[]]; $se{$parent}=$ed; }
+       unless ($ed) { $ed=[[],[], $strand]; $se{$parent}=$ed; }
        push(@{$$ed[0]}, [$fstart, $fend]);
     }
     elsif ($f=~m/(cds|codon)/i) {
-       unless ($ed) { $ed=[[],[]]; $se{$parent}=$ed; }
+       unless ($ed) { $ed=[[],[], $strand]; $se{$parent}=$ed; }
        push(@{$$ed[1]}, [$fstart, $fend, $srcline]);
        push(@{$$ed[0]}, [$fstart, $fend]); #merge CDS into exons (to be normalized, just in case)
     }
@@ -119,8 +119,8 @@ if ($CDStransfer) {
 # read the target file
 shift(@ARGV) if $ARGV[0] eq '-';
 my @ts; #transcripts or gene IDs, in the order they were encountered
-my %tdata; # id=>[line, [@nexon/CDS_lines], [@exons], [@cds]];
-############        0         1[]              2[]     3[]   
+my %tdata; # id=>[line, [@nexon/CDS_lines], [@exons], [@cds], strand];
+############        0         1[]              2[]     3[]      4
 while (<>) {
   my $line=$_;
   chomp;
@@ -156,7 +156,18 @@ while (<>) {
   my $td;
   if ($isExon) { #exon or CDS
      $td=$tdata{$pid};
-     if (!$td) { $td=['', [], [], [] ]; $tdata{$pid}=$td; }
+     if (!$td) { #shouldn't happen
+         my $sed=$se{$pid};
+         if ($sed && $$sed[2] ne $t[6]) {
+           $t[6]=$$sed[2];
+           $line=join("\t",@t)."\n";
+         }
+         $td=['', [], [], [], $t[6] ]; 
+         $tdata{$pid}=$td;
+     } elsif ($td->[4] ne $t[6]) {
+       $t[6]=$td->[4];
+       $line=join("\t",@t)."\n";
+     }
      if ($CDStransfer) {
        if ($t[2]=~m/(cds|codon)/i) {
          push(@{$$td[3]}, [$t[3], $t[4]]);
@@ -170,7 +181,12 @@ while (<>) {
     die("Error parsing no-ID line:\n$line\n") unless $id;
     $td=$tdata{$id};
     die("Error: ID $id duplicated?\n") if $td;
-    $td=['', [], [], [] ];
+    my $sed=$se{$id};
+    if ($sed && $$sed[2] ne $t[6]) {
+       $t[6]=$$sed[2];
+       $line=join("\t",@t)."\n";
+    }
+    $td=['', [], [], [], $t[6] ];
     $tdata{$id}=$td;
     push(@ts, $id);
   }
@@ -220,13 +236,11 @@ foreach my $tid (@ts) {
    if ($CDStransfer && @{$$td[2]}>0) {
       #die("Warning: record ID $tid has no exons?!\n") if (@{$$td[2]}==0);
       normalizeExons($$td[2]);
-      print STDERR "[DBG]>> ".scalar(@{$$td[2]})." exons normalized for $tid\n";
       ## -- now validate if exon structure is matching the source
       ##    and if so, transfer CDS
       my $sd=$se{$tid};
       if ($sd) { #only valid if source ID exists
         if (matchingExons($$td[2], $$sd[0])) {
-            print STDERR "[DBG]>> exon structures matching for $tid\n";
             if (@{$$sd[1]}>0) {
               print STDERR "WARNING: existing target CDS override for $tid\n"
                 if (@{$$td[3]}>0);
@@ -245,8 +259,8 @@ foreach my $tid (@ts) {
             }
         }
         else { print STDERR "WARNING: exons structure mismatch for $tid!\n" }
-      } else {
-        print STDERR "[DBG]>> Warning: no source data found for $tid\n";
+       #} #else {
+       #print STDERR "[DBG]>> Warning: no source data found for $tid\n";
       }#source ID to compare to
    } #-- if $CDStransfer
    print $$td[0];
