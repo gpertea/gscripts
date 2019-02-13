@@ -7,6 +7,26 @@
 ##    email=   #email to send the notification to (required)
 ##    msmtp=   #full path to msmtp program (required)
 use strict;
+my $usage=q/
+ Process watch - monitoring specified running processes and notify 
+ when they are gone.
+ Usage:
+ 
+  pwatch {show|pid} [<process_name>] 
+     show the pids of <process_name> or of all parent processes
+     of the current user, if <process_name> is not specified
+
+  pwatch add <processID> [<label>]
+     add the process with <processID> to the watchlist, so the
+     user will be notified by email when the process is no longer
+     active
+
+  pwatch
+     check for the running status of processs placed on the 
+     watchlist with 'pwatch add'; better put this in crontab, e.g.:
+       *\/2 * * * * \/path\/to\/pwatch/;
+
+die("$usage\n") if ($ARGV[0] eq '-h' || $ARGV[0] eq '--help');
 my $home=$ENV{HOME};
 my $isTerm=-t STDOUT;
 my $memdir='/dev/shm/'.$ENV{USER}.'-pwatch';
@@ -38,9 +58,22 @@ if (@ARGV==0) {
   exit 0;
 }
 my $cmd=shift(@ARGV);
-if ($cmd eq 'show' || $cmd eq 'pid' ) {
-  my $pname=shift(@ARGV) || die("Error: name of process/script required!\n");
-  my @pids=grep { !/\\_/ } (split(/\n/,`ps hf -opid,state,comm,user:21,etime -C '$pname'`));
+if ($cmd eq 'show' || $cmd eq 'pid' || $cmd eq 'list') {
+  my $pname=shift(@ARGV);
+  my @pids;
+  if ($pname) {
+    @pids=grep { !/\\_/ } 
+       (split(/\n/,`ps hf -opid,state,comm,user:21,etime -C '$pname'`));
+  }
+  else {
+   @pids=grep { !/^\s*\d+\s+[A-Z][\s\\\_\|]+[a-z]*sh\s+/ }
+     (split(/\n/,`ps hf -opid,state,comm:32,user:21,etime`));
+   @pids=map { 
+      s/^(\s*\d+\s+[A-Z]\s+\w+)    /$1/ 
+        unless s/^(\s*\d+\s+[A-Z]\s) (\\_ |[\| ]  )/$1/; 
+      $_
+     } @pids;
+  }
   #my @pids=split(/\n/,`ps hf -opid,comm,user:21,etime -C '$pname'`);
   foreach my $pl (@pids) {
     my ($pid)=($pl=~m/^(\d+)/);
