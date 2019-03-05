@@ -14,6 +14,7 @@ my $usage = q/Usage:
 /;
 umask 0002;
 getopts('Ro:') || die($usage."\n");
+my %ids; #to avoid duplicates, need to keep track of all IDs $qname => HI
 my $outfile=$Getopt::Std::opt_o;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
@@ -94,6 +95,8 @@ while (<>) {
   if ($mend) {
     push(@exons, [$mstart, $mend]);
   }
+  my $hi=(++$ids{$qname}); #hit index
+  $qname.=".m$hi";
   if ($reg_out) {
     print $qname."\t".$gseq.':'.join(',', (map { $$_[0].'-'.$$_[1] } @exons) );
     print '-' if $tstrand eq '-';
@@ -115,7 +118,7 @@ while (<>) {
 if ($outfile) {
  select(STDOUT);
  close(OUTF);
- }
+}
 
 #************ Subroutines **************
 
