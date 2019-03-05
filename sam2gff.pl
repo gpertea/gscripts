@@ -27,6 +27,7 @@ while (<>) {
   chomp;
   my ($qname, $flags, $gseq, $pos, $mapq, $cigar, $rnext, $pnext, 
       $tlen, $seq, $qual, @extra)= split(/\t/);
+  next if length($cigar)<2 || $pos==0;
   my $alnstrand= (($flags & 0x10)==0) ? '+' : '-';
   my @cigdata=($cigar=~m/(\d+[A-Z,=])/g);
   my $sflag = $flags & 0xc0;
@@ -67,13 +68,22 @@ while (<>) {
         $mend=$curpos-1; #advance the end of the exon
         next;
      }
+     #if ($code eq 'I') {
+     #   # skip reference gaps (extra read bases)
+     #   next;
+     #   $mend=$curpos-1;
+     #}
      if ($code eq 'N') { # intron
-        #process previous interval
+        #exon should really end here
         if ($mend) {
            push(@exons, [$mstart, $mend]);
            $mend=0;
         } else {
-          die("Error: gap found not following a valid exon?!\n$samline\n");
+          die("Error: intron gap found before any exon?!\n$samline\n")
+           unless @exons>0;
+          # -- it can follow an Insertion, which followed another intron (!)
+          # * in that case, the intron should be silendly extended, 
+          #   and mstart (the next exon start) will be pushed accordingly
         }
         $curpos+=$cd;    # genomic position advancing to
         $mstart=$curpos; #    the start of the next exon
@@ -92,7 +102,7 @@ while (<>) {
   }
   # print GFF3 here, as plain mRNA because it's easier
   print join("\t", $gseq, 'sam2gff', 'mRNA', $exons[0]->[0], 
-      $exons[-1]->[0], '.', $tstrand, '.', "ID=$qname");
+      $exons[-1]->[1], '.', $tstrand, '.', "ID=$qname");
   #print additional tags as attributes?
   print "\n";
   foreach my $exon (@exons) {
