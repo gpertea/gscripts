@@ -7,7 +7,7 @@ my $usage = q/Usage:
  gffmanip [-v] [-o outrecords.txt] [-i [<attr>:]<tids.lst>] [-t <track>]\
  [-f <feature1>[,..]] [-r<regata> [-R][-E]] [-a [feat:]<attr>=<value>[;..] [-A]\
  [-k <attr1>[,..]] [-l <attr1>[,..]] [-m <IDchange.tab>] [-d <regdata>] \
- [-y <CDSdata.tab>] [-T] <gff\/gtf-input>
+ [[-y|-Y] <CDSdata.tab>] [-T] <gff\/gtf-input>
 
 Filtering options:
  -S sort GFF records by location
@@ -43,12 +43,13 @@ Data modification options:
     ID mapping table (a two column table mapping the old ID to the new ID)
     NOTE: renaming takes place when records are printed, *after* all the
     other filters have been applied
- -y assign\/modify the CDS and strand of transcripts according to the data
+ -y assign\/modify the CDS and transcription strand of transcripts 
     found in the given tab delimited file of this format:
       transcriptID	new_strand	CDSinfo
     ..where CDSinfo can be either CDSstart:CDSstop or a comma delimited
-    list of CDS features, e.g. 70139455-70139671,70140524-70140552
-
+    list of CDS features, e.g.: 70139455-70139671,70140524-70140552
+ -Y same as -y, but only add CDS to records not having CDS info, never 
+    change existing CDS!
 Genomic deletion processing:
  -d contig\/chromosome region(s) deletion: discard the transcripts overlapping
     the given genomic region(s), shifting the coordinates of all the 
@@ -73,7 +74,8 @@ Output options:
  -V (verbose): show warnings or other potentially useful info
 /;
 umask 0002;
-getopts('vCXERAZPMGKVUTSo:c:f:r:t:i:a:k:l:m:y:d:') || die($usage."\n");
+my @cmdline=($0, @ARGV);
+getopts('vCXERAZPMGKVUTSo:c:f:r:t:i:a:k:l:m:y:Y:d:') || die($usage."\n");
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
 my $outfile=$Getopt::Std::opt_o;
@@ -82,6 +84,10 @@ my $keepCmts=$Getopt::Std::opt_P;
 my $sort_gff=$Getopt::Std::opt_S;
 my $Udecode=$Getopt::Std::opt_U;
 my $CDSdatafile=$Getopt::Std::opt_y;
+my $CDSaddonly=$Getopt::Std::opt_Y;
+print STDERR "Command line: ".join(' ',@cmdline)."\n" if $verbose;
+die("Error: use only one of -y or -Y!\n") if ($CDSdatafile && $CDSaddonly);
+$CDSdatafile=$CDSaddonly if ($CDSaddonly);
 my $geneflt=0; #if specific gene filtering was used with -i or -a
 my %ignoredFeatures;
 @ignoredFeatures{qw(intron region contig scaffold)}=(); #let's ignore these useless features
@@ -580,9 +586,15 @@ sub assignCDS {
  my ($cstrand, $cds_lo, $cds_hi, $cdsegs)=@$tcds;
  my ($ex_lo, $ex_hi)=($$exr[0]->[0], $$exr[-1]->[1]);
  my @info;
+ my $changeExisting=0;
  if ($$rstrand ne $cstrand) {
-   push(@info, 'strand changed to '.$cstrand);
-   $$rstrand=$cstrand;
+   if ($CDSaddonly && scalar(@$cdr)>0) {
+      $changeExisting=1;
+      push(@info, 'strand would have changed to '.$cstrand);
+   } else {
+      $$rstrand=$cstrand;
+      push(@info, 'strand changed to '.$cstrand);
+   }
  }
  #check if the intervals are compatible
  if ($cds_lo<$ex_lo || $cds_lo>$ex_hi) {
@@ -642,13 +654,17 @@ sub assignCDS {
       }
    } else { $ch=1;}
    if ($ch) {
-     @$cdr=@$cdsegs;
-     $changed='changed';
+     if ($CDSaddonly) {
+       $changed='would have changed';
+     } else {
+       @$cdr=@$cdsegs;
+       $changed='changed';
+     }
    }
    push(@info, "CDS $changed: $cds_lo:$cds_hi");
  }
  if ($verbose && @info) {
-   print STDERR "Info: CDS assign for $tid: ".join('; ',@info)."\n";
+   print STDERR "INFO: CDS assign for $tid: ".join('; ',@info)."\n";
  }
 }
 
@@ -706,7 +722,12 @@ sub processGffRecs {
    if ($CDSdatafile && @ex>0) { # $discard_exons is incompatible with -y option
       my $tcds=$assignCDS{$recid};
       assignCDS($recid, \$strand, \@ex, \@cds, $tcds) #modifies $strand and @cds as needed!
-         if $tcds;
+         if ($tcds);
+   }
+   if (scalar(@cds)>0 && $attrs->{'TYPE'} eq 'non_coding') {
+       #make sure that TYPE is changed from "non_coding" to "protein_coding_uncertain"
+       $attrs->{'TYPE'}='protein_coding_uncertain';
+       print STDERR "INFO: $recid TYPE changed to 'protein_coding_uncertain'\n" if $verbose;
    }
    # --------------
    # get the more accurate version of the start-end coords for the feature
