@@ -89,7 +89,7 @@ sub writeCCDS {
  my $src=$c2s{$id};
  #-- print GFF
  my $chrId=$chr.'|'.$id;
- print join("\t", $chr, 'CCDS', 'mRNA', $start, $end, ".\t$strand\t.", "ID=$chrId");
+ print join("\t", $chr, 'CCDS', 'mRNA', $start+1, $end+1, ".\t$strand\t.", "ID=$chrId");
  print ";gene=$gene" if $gene;
  if ($src) {
   print ';ncbi_src='.join(',', @{$src->[0]}) if @{$src->[0]}>0;
@@ -101,6 +101,6 @@ sub writeCCDS {
  print "\n";
  #print CDS segments:
  foreach my $c (@$segs) {
-   print join("\t", $chr, 'CCDS', 'CDS', $$c[0], $$c[1], ".\t$strand\t.", "Parent=$chrId")."\n";
+   print join("\t", $chr, 'CCDS', 'CDS', $$c[0]+1, $$c[1]+1, ".\t$strand\t.", "Parent=$chrId")."\n";
  }
 }
