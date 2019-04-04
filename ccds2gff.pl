@@ -101,6 +101,6 @@ sub writeCCDS {
  print "\n";
  #print CDS segments:
  foreach my $c (@$segs) {
-   print join("\t", $chr, 'CCDS', 'CDS', $$c[0], $$c[1], ".\t$strand\t0", "Parent=$chrId")."\n";
+   print join("\t", $chr, 'CCDS', 'CDS', $$c[0], $$c[1], ".\t$strand\t.", "Parent=$chrId")."\n";
  }
 }
