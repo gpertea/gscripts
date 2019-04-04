@@ -715,6 +715,8 @@ sub processGffRecs {
    if ($discard_exons) {
      @cds=sort { $a->[0] <=> $b->[0] } @$cr;
      $CDSonly=1;
+     #-- also silently adjust transcript boundaries to just the CDS region
+     ($fstart, $fend)=($cds[0]->[0], $cds[-1]->[1]);
    } else {
      cleanupExons($er, \@ex, $cr, \@cds, $recid); #check for merging exon/UTR/CDS/start_codon/stop_codon into exon/CDS segments
    }
