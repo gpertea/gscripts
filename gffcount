@@ -1,43 +1,71 @@
-#!/bin/sh
-if [ "x"$1 = "x-h" ]; then
-echo "Usage: gffcount [-g] <gff3_file>"
-echo -e "\n Show the count of distinct transcript IDs in the gff3 file.\nOptions:"
-echo "-l   list the transcript IDs"
-echo "-C   count only transcripts with CDS features"
-echo "-Cl  list only transcript IDs having CDS features"
-echo "-g   count distinct gene IDs only"
-echo "-gl   list distinct gene IDs"
-exit 1
-fi
-if [ "x"$1 = "x-g" ]; then
- shift
- perl -ne 'chomp;@t=split(/\t/);print "$1\n" if $t[2]=~m/gene$/ && m/ID=([^;]+)/' $1 | sort -u | wc -l
- exit
+#!/bin/bash
+show_usage() {
+ cat << EOF
+Usage: 
+  gffcount [options] [<gff3_file>]
+
+Default operation is to show the number of distinct transcript IDs (or any
+transcript-like features parenting exonic or coding sequence subfeatures)
+in the input (expected at stdin when <gffr_file> is not provided)
+
+Options (only use one at a time):
+   -l   list the feature IDs having exonic or coding sequence sub-features
+   -c   count features having CDS/codon subfeatures
+   -cl  list feature IDs having CDS features
+   -g   count distinct gene IDs only (feature type ending with 'gene')
+   -gl  list distinct gene IDs (feature type ending with 'gene')
+   -il  list all distinct IDs with their feature type
+   -pl  list all Parent identifiers with their feature type
+EOF
+}
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+ show_usage
+ exit 1
 fi
 
-if [ "x"$1 = "x-gl" ]; then
+a=""
+if [[ $1 =~ ^-.+ ]]; then
+ a="${1:1}" #remove first character (the dash)
  shift
- perl -ne 'chomp;@t=split(/\t/);print "$1\n" if $t[2]=~m/gene$/ && m/ID=([^;]+)/' $1 | sort -u 
- exit
+fi
+if [[ -z "$a" ]]; then
+  perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2]=~m/(?:exon|CDS|utr)$/ && m/\bParent=([^;]+)/)' $1 | sort -u | wc -l
+  exit 0
 fi
 
-if [ "x"$1 = "x-C" ]; then
- shift
- perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2] eq "CDS") && m/Parent=([^;]+)/' $1 | sort -u | wc -l
- exit
-fi
+case $a in
+ l)
+   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if $t[2]=~m/(?:exon|CDS|utr)$/i && m/\bParent=([^;]+)/ && (++$n{$1})==1' $1
+   ;;
+ g)
+   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if $t[2]=~m/gene$/i && m/\bID=([^;]+)/' $1 | wc -l
+   ;;
+ gl)
+   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if $t[2]=~m/gene$/i && m/\bID=([^;]+)/' $1 
+   ;;
+ c)
+   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2] eq "CDS") && m/\bParent=([^;]+)/ && (++$n{$1})==1' $1 | wc -l
+   ;;
+ cl)
+   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2] eq "CDS") && m/\bParent=([^;]+)/ && (++$n{$1})==1' $1 
+   ;;
+ il)
+   perl -ne 'chomp;@t=split(/\t/);print "$1\t$t[2]\n" if m/\bID=([^;]+)/ && (++$n{$1})==1' $1
+   ;;
+ pl)
+ #assumes parent IDs are always found BEFORE their children reference them with Parent attribute
+ read -r -d '' script <<'EOF'
+   chomp; @t=split(/\t/);
+   $h{$1}=$t[2] if m/\bID=([^;]+)/;
+   print "$1\t$h{$1}\n" if m/\bParent=([^;]+)/ &&(++$n{$1})==1;
+EOF
+   perl -ne "$script" $1
+   ;;
+ *)
+   show_usage
+   echo "Error: -$a option not recognized!"
+   exit 1
+   ;;
+esac
 
-if [ "x"$1 = "x-Cl" ]; then
- shift
- perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2] eq "CDS") && m/Parent=([^;]+)/' $1 | sort -u
- exit
-fi
-
-if [ "x"$1 == "x-l" ]; then
- shift
- perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2]=~m/(?:exon|CDS)$/ && m/Parent=([^;]+)/)' $1 | sort -u
- exit
-fi
-
-#perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2]!~m/(?:exon|CDS|gene)$/) && m/ID=([^;]+)/' $1 | sort -u | wc -l
-perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2]=~m/(?:exon|CDS)$/ && m/Parent=([^;]+)/)' $1 | sort -u | wc -l
