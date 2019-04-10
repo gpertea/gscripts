@@ -24,11 +24,12 @@ my $usage = q/Usage:
      target.gff IDs to the src.gff IDs using a mapping file ID.map (with 
      the target IDs in the 1st column and corresponding src.gff IDs in the 2nd)
   -t override the GFF track column in the output with the given value
-  -C checks if there is matching of the boundary and exon definitions 
-     of transcripts with the same ID in the two gff input files and 
-     transfer the CDS features from src.gff to target.gff
+  -C checks if there is exon compatibility between the ID matched source and
+     target transcripts, and if so, transfer the CDS features from src
   -E transfer all exon and CDS features from src.gff to target.gff, 
      completely replacing existing exon\/CDS features in target.gff
+  -A for -E, do not replace exons for target transcripts with ASSEMBLED=yes
+  -K for -E, never remove CDS (when the source has no CDS, but the target does)
   -V verbose processing (logging the applied changes)
 
 Note: input is expected to be GFF3 "normalized", with full 'exon' and\/or
@@ -36,7 +37,8 @@ Note: input is expected to be GFF3 "normalized", with full 'exon' and\/or
 /;
 
 umask 0002;
-getopts('OVECt:r:a:m:o:') || die($usage."\n");
+my $cmdline=$0.' '.join(' ',@ARGV);
+getopts('OVEAKCt:r:a:m:o:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
@@ -48,12 +50,15 @@ my %removeAttr;
 my %idmap; # srcID => targetID
 my $CDStransfer=$Getopt::Std::opt_C;
 my $exonReplace=$Getopt::Std::opt_E; #completely replace exon/CDS lines
+my $protectAssembled=$Getopt::Std::opt_E;
+my $protectCDS=$Getopt::Std::opt_K;
 my $attrReplace=$Getopt::Std::opt_O;
 my $gfftrack=$Getopt::Std::opt_t;
 my $attrlist=$Getopt::Std::opt_a;
 my $mapfile=$Getopt::Std::opt_m;
 my $removeattrs=$Getopt::Std::opt_r;
 my $verbose=$Getopt::Std::opt_V;
+print STDERR "Command line: $cmdline\n" if ($verbose);
 my %attr;
 if ($attrlist) {
  my @l=split(/[:\.,]/, $attrlist);
@@ -285,32 +290,63 @@ foreach my $tid (@ts) {
       ##    and if so, transfer CDS
       my $sd=$se{$tid};
       if ($sd) { #only valid if source ID exists
-        if (matchingExons($$td[1], $$sd[0])) {
+        if (compatExons($$td[1], $$sd[0])) {
             if (@{$$sd[1]}>0) {
-              print STDERR "WARNING: existing CDS override for $tid\n"
+              print STDERR "Info: existing CDS override for $tid\n"
                 if (@{$$td[2]}>0);
               @{$$td[2]}=@{$$sd[1]};
             }
         }
-        else { print STDERR "WARNING: exons structure mismatch for $tid, CDS not changed!\n" }
+        else { print STDERR "Warning: exons structure mismatch for $tid, CDS unchanged!\n" }
        #} #else {
        #print STDERR "[DBG]>> Warning: no source data found for $tid\n";
       }#source ID to compare to
    } #-- if $CDStransfer
    elsif ($exonReplace) {
        my $sd=$se{$tid};
-       if ($sd) { 
-         print STDERR "WARNING: exons replaced for $tid\n";
-         @{$$td[1]}=@{$$sd[0]};
-         my $cop;
-         if (@{$$sd[1]}>0) {
-           $cop=(@{$$td[2]}>0) ? 'replaced' : 'added';
-         } elsif (@{$$td[2]}>0) {
-            $cop='removed!';
+       if ($sd) {
+         my $rex=1; #replace exons?
+         my $rCDS=1; #replace CDS?
+         if ($protectAssembled && $$td[0]=~m/ASSEMBLED=yes/) {
+            if (compatExons($$td[1], $$sd[0])) {
+               my ($rd, $re)=($$td[1], $$sd[0]);
+               if ($$rd[0]->[0]!=$$re[0]->[0] ||
+                         $$rd[-1]->[1]!=$$re[-1]->[1]) {
+                 $rex=0;
+                 print STDERR "Warning: ASSEMBLED $tid has imperfect exon match with source, exons unchanged\n";
+               }
+            }
+            else {
+               $rex=0;
+               $rCDS=0;
+               print STDERR "Warning: ASSEMBLED $tid has incompatible exon structure with source, unchanged\n";
+            }
+            if ($rCDS && @{$$sd[1]}==0 && @{$$td[2]}>0) {
+              $rCDS=0;
+              print STDERR "Warning: ASSEMBLED $tid has CDS in target but not source, prevent CDS removal\n";
+            }
          }
-         if ($cop) {
-           @{$$td[2]}=@{$$sd[1]};
-           print STDERR "WARNING: CDS $cop for $tid\n";
+         if ($rex) {
+            print STDERR "Info: exons replaced for $tid\n";
+            @{$$td[1]}=@{$$sd[0]};
+         }
+         if ($rCDS && $protectCDS && @{$$td[2]}>0 && @{$$sd[1]}==0) {
+            print STDERR "Warning: prevent CDS removal for $tid\n";
+            $rCDS=0;
+         }
+         if ($rCDS) {
+           my $cop;
+           my $msg='Info';
+           if (@{$$sd[1]}>0) {
+             $cop=(@{$$td[2]}>0) ? 'replaced' : 'added';
+           } elsif (@{$$td[2]}>0) {
+              $cop='removed';
+              $msg='Warning';
+           }
+           if ($cop) {
+             @{$$td[2]}=@{$$sd[1]};
+             print STDERR "$msg: CDS $cop for $tid\n";
+           }
          }
        }
    }
@@ -347,12 +383,14 @@ sub normalizeExons {
  }
 }
 
-sub matchingExons {
- my ($re, $rd)=@_;
- return 0 if scalar(@$re) != scalar(@$rd);
- for (my $i=0;$i<@$re;$i++) {
-   return 0 if ($$re[$i]->[0]!=$$rd[$i]->[0] ||
-         $$re[$i]->[1]!=$$rd[$i]->[1]);
- }
- return 1;
+sub compatExons {
+  my ($re, $rd)=@_;
+  return 0 if $#$re != $#$rd;
+  foreach my $i (0 .. $#$re) {
+    my ($nl, $nr);
+    $nl = ($i==0) ? ($$re[0]->[0] > $$rd[0]->[0]) : ($$re[$i]->[0] != $$rd[$i]->[0]);
+    $nr = ($i==$#$re) ? ($$re[$i]->[1] < $$rd[$i]->[1]) : ($$re[$i]->[1] != $$rd[$i]->[1]); 
+    return 0 if ($nl || $nr);
+  }
+  return 1;
 }
