@@ -50,7 +50,7 @@ my %removeAttr;
 my %idmap; # srcID => targetID
 my $CDStransfer=$Getopt::Std::opt_C;
 my $exonReplace=$Getopt::Std::opt_E; #completely replace exon/CDS lines
-my $protectAssembled=$Getopt::Std::opt_E;
+my $protectAssembled=$Getopt::Std::opt_A;
 my $protectCDS=$Getopt::Std::opt_K;
 my $attrReplace=$Getopt::Std::opt_O;
 my $gfftrack=$Getopt::Std::opt_t;
