@@ -4,7 +4,7 @@ use Getopt::Std;
 use FindBin;use lib $FindBin::Bin;
 
 my $usage = q/Usage:
- gff_cp_attrs.pl [-a 'attr_lst'] [ -r 'remove_lst'] [-E | -C] [-V] \
+ gff_cp_attrs.pl [-a 'attr_lst'] [ -r 'remove_lst'] [-F] [-E | -C] [-V] \
    [-m ID.map] src.gff target.gff
  Transfer the additional transcript attributes from src.gff to the 
  transcripts with the same IDs from target.gff (or mapped IDs with -m option).
@@ -24,6 +24,7 @@ my $usage = q/Usage:
      target.gff IDs to the src.gff IDs using a mapping file ID.map (with 
      the target IDs in the 1st column and corresponding src.gff IDs in the 2nd)
   -t override the GFF track column in the output with the given value
+  -F overwrite original target feature name with the one in the source file
   -C checks if there is exon compatibility between the ID matched source and
      target transcripts, and if so, transfer the CDS features from src
   -E transfer all exon and CDS features from src.gff to target.gff, 
@@ -38,7 +39,7 @@ Note: input is expected to be GFF3 "normalized", with full 'exon' and\/or
 
 umask 0002;
 my $cmdline=$0.' '.join(' ',@ARGV);
-getopts('OVEAKCt:r:a:m:o:') || die($usage."\n");
+getopts('OVFEAKCt:r:a:m:o:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
@@ -53,6 +54,7 @@ my $exonReplace=$Getopt::Std::opt_E; #completely replace exon/CDS lines
 my $protectAssembled=$Getopt::Std::opt_A;
 my $protectCDS=$Getopt::Std::opt_K;
 my $attrReplace=$Getopt::Std::opt_O;
+my $featSrc=$Getopt::Std::opt_F;
 my $gfftrack=$Getopt::Std::opt_t;
 my $attrlist=$Getopt::Std::opt_a;
 my $mapfile=$Getopt::Std::opt_m;
@@ -70,10 +72,11 @@ if ($removeattrs) {
 }
 die("${usage}") if @ARGV!=2;
 my $srcgff=shift(@ARGV);
-my %satrs; #source attributes: ID => { attr => value, ... }
-my %se; #source data: ID => [ [@exons], [@CDS], strand ] 
-          # @exons and @CDS are lists of [start, end, gffline]
-          
+####vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv####
+my %satrs; ##source attributes: ID => { attr => value, ... }
+my %se;    ## source data:      ID => [ [@exons], [@CDS], strand ]
+            # (@exons and @CDS are lists of [start, end, gffline])
+####^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^####
 if ($mapfile) {
   open(MAP, $mapfile) || die("Error opening $mapfile ($!)!\n");
   while(<MAP>) {
@@ -168,9 +171,13 @@ close(SRCIN);
 
 # read the target file
 shift(@ARGV) if $ARGV[0] eq '-';
-my @ts; #transcripts or gene IDs, in the order they were found in the input stream
+####vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv####
+my @ts;    #transcripts or gene IDs, in the order they were found in the input stream
+
 my %tdata; # id=>[transcript/gene line,  [@exons], [@cds], strand];
 ############              0                 1[]     2[]     3
+####^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^####
+
 while (<>) {
   my $line=$_;
   chomp;
@@ -207,7 +214,7 @@ while (<>) {
   my $td;
   if ($isExon) { #exon or CDS
      $td=$tdata{$pid};
-     if (!$td) { #shouldn't happen
+     if (!$td) { #shouldn't happen, exons shouldn't be in %se
          my $sed=$se{$pid};
          if ($sed && $$sed[2] ne $t[6]) {
            $t[6]=$$sed[2];
@@ -245,9 +252,24 @@ while (<>) {
     #      else { $$td[0]=$line }
     next;
   }
-  #important: source feature name should be transferred too, could be different!
-  $t[2]=delete($sa->{'~f'}) || die("Error: could not find feature type attribute for $id!\n");
+
+  if ($featSrc) {
+    ##NOTE: source feature name should be transferred too, could be different!
+     # exception: if the source feature is gene but it has exons or CDS data, keep the target feature name
+     # or make it a "transcript"
+     my $ofname=$t[2]; #original feature name
+     $t[2]=delete($sa->{'~f'}) || die("Error: could not find feature type attribute for $id!\n");
+     if ($t[2] eq 'gene' && (@{$$sed[0]}>0 || @{$$sed[1]}>0)) {
+       $t[2]= ($ofname ne 'gene') ? $ofname : 'transcript'; #if it has exons, it's a transcript
+     }
+  }
+  else  {
+     delete($sa->{'~f'});
+     # still don't allow 'gene' as a feature name if it has exons/introns and a parent
+     $t[2]='transcript' if ($pid && $t[2] eq 'gene' && (@{$$sed[0]}>0 || @{$$sed[1]}>0));
+  }
   my $bl=join("\t",@t[0..7])."\tID=$id"; #building the GFF line -- with adjusted attributes
+  my $tattrs=''; #gather target attributes here, to append at the end of the line
   foreach my $a (@alst) {
     if ($a eq 'ID' 
          || ($removeattrs && exists($removeAttr{$a})) ) {
@@ -260,7 +282,7 @@ while (<>) {
       $bl.=";$a=$sv";
     }
     else {
-      $bl.=";$a=$v"; #print the original value
+      $tattrs.=";$a=$v"; #print the original value
     }
     delete $sa->{$a} if length($sv); #so we don't print it later
   }
@@ -270,6 +292,7 @@ while (<>) {
     my $av=$sa->{$a};
     $bl.=";$a=$av" if length($av);
   }
+  $bl.=$tattrs;
   #if ($isExon) { push(@{$$td[1]}, "$bl\n") }
   # else { $$td[0]="$bl\n" }
   $$td[0]="$bl\n";

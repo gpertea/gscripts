@@ -6,7 +6,7 @@ use FindBin;use lib $FindBin::Bin;
 my $usage = q/Usage:
  gffmanip [-v] [-o outrecords.txt] [-i [<attr>:]<tids.lst>] [-t <track>]\
  [-f <feature1>[,..]] [-r<regata> [-R][-E]] [-a [feat:]<attr>=<value>[;..] [-A]\
- [-k <attr1>[,..]] [-l <attr1>[,..]] [-m <IDchange.tab>] [-d <regdata>] \
+ [-k <attr1>[,..]] [-l <attrlist..>] [-m <IDchange.tab>] [-d <regdata>] \
  [[-y|-Y] <CDSdata.tab>] [-T] <gff\/gtf-input>
 
 Filtering options:
@@ -37,6 +37,8 @@ Filtering options:
 
  -f output only the specified GFF features, given as a comma-delimited
     list of strings (e.g. -f 'mRNA,ncRNA,exon,CDS') (doesn't work with -v)
+ -F output only transcript-like records having exon or CDS features
+    (doesn't work with -v)
 
 Data modification options:
  -m replace contig\/chromosome IDs with different IDs, as specified in the given
@@ -67,15 +69,16 @@ Output options:
  -P preserve comments (lines starting with #)
  -T print GTF format (default is GFF3)
  -U decode url-encoded characters in attribute values and use safe replacements
- -l instead of GTF\/GFF, output a tab delimited table with transcript ID 
-    in the first column and the value of all specified attribute(s) for each
-    transcript in the other columns
+ -l instead of GTF\/GFF, output a tab delimited file with the values of the
+    specified attribute(s) for each record; special pseudo-attributes prefixed
+    by @ are recognized: @chr, @start, @end, @strand, @numexons, @exons, @cds
+    Hint: use with -F option to only show transcript-like records
  -t replace the string in the 2nd column with the given <track> text
  -V (verbose): show warnings or other potentially useful info
 /;
 umask 0002;
 my @cmdline=($0, @ARGV);
-getopts('vCXERAZPMGKVUTSo:c:f:r:t:i:a:k:l:m:y:Y:d:') || die($usage."\n");
+getopts('vCXEFRAZPMGKVUTSo:c:f:r:t:i:a:k:l:m:y:Y:d:') || die($usage."\n");
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
 my $outfile=$Getopt::Std::opt_o;
@@ -85,6 +88,8 @@ my $sort_gff=$Getopt::Std::opt_S;
 my $Udecode=$Getopt::Std::opt_U;
 my $CDSdatafile=$Getopt::Std::opt_y;
 my $CDSaddonly=$Getopt::Std::opt_Y;
+my $trOnly=$Getopt::Std::opt_F; #only transcript-like records
+
 print STDERR "Command line: ".join(' ',@cmdline)."\n" if $verbose;
 die("Error: use only one of -y or -Y!\n") if ($CDSdatafile && $CDSaddonly);
 $CDSdatafile=$CDSaddonly if ($CDSaddonly);
@@ -140,6 +145,8 @@ $only_ifCDS=1 if $discard_exons;
 my ($idfile, $avflt, $featlist, $oattrlist)=
   ($Getopt::Std::opt_i, $Getopt::Std::opt_a, $Getopt::Std::opt_f, $Getopt::Std::opt_k);
 die("Sorry, -v option does not work with -f !\n") if $fltinvert && $featlist;
+die("Sorry, -v option does not work with -F !\n") if $fltinvert && $trOnly;
+
 my $minIntron=$Getopt::Std::opt_Z ? 5 : 1;
 my $keepAll=$Getopt::Std::opt_K || (lc($oattrlist) eq 'a' || lc($oattrlist) eq 'all');
 my $discardExonAttrs=$Getopt::Std::opt_E;
@@ -236,7 +243,7 @@ my %genes; #gene ID => [$gffrecs_Data, [$t_ID, ...], $filtered_out)
            #                0               1           2
 
 ##--- keeping track of all gene and transcript records :
-my %gffrecs; # ID => [ chr, strand, feat_type,  \%attrs, fstart, fend, [@exons], [@cds], track, geneID, fscore ]
+my %gffrecs; # ID => [ chr, strand, feat_type,  \%attrs, fstart, fend, [@exons], [@cds], track,  geneID, fscore ]
           #             0      1        2           3      4       5       6        7        8      9       10
 #my $gffh;
 #if ($input_gff eq '-') {
@@ -427,9 +434,17 @@ sub loadGff {
    next if !$reqfeat && exists($ignoredFeatures{lc($f)});
    $track=$out_track if $out_track;
    my $xf;
-   $xf='exon' if ($f=~m/exon/i || $f=~m/utr/i);
-   $xf='CDS' if ($f=~m/^cds$/i || $f=~m/codon/i);
-   my $exonFeature=($xf eq 'exon' || $xf eq 'CDS');
+   my ($isExon, $isCDS);
+   if ($f=~m/exon/i || $f=~m/utr/i) {
+      $xf='exon';
+      $isExon=1;
+   }
+   if ($f=~m/^cds$/i || $f=~m/codon/i) {
+     $xf='CDS';
+     $isExon=1; # still an exon-like feature
+     $isCDS=1;
+   }
+   #my $exonFeature=($xf eq 'exon' || $xf eq 'CDS');
    #next if $f eq 'gene' || $f eq 'locus'; # Warning: skipping any 'gene' or 'locus' features, unconditionally
    my $gff3_ID;
    my $gff3_Parent;
@@ -441,11 +456,11 @@ sub loadGff {
    my @av=split(/\s*\;\s*/, $atr);
    ($gff3_ID)=($atr=~m/\bID=([^;]+)/);
    ($gff3_Parent)=($atr=~m/\bParent=([^;]+)/);
-   my $isGene=($f=~m/gene$/i && $gff3_ID);
+   my $isGene=($f=~m/gene$/i && $gff3_ID && !$gff3_Parent); ##FIXME - what if a gene *has* a Parent?
    $isGFF3 = ($gff3_ID || $gff3_Parent);
    if ($isGFF3) { # GFF format
       $input_GFF3=1;
-      if ($gff3_ID && !$exonFeature) { #top level feature (e.g. gene, mRNA)
+      if ($gff3_ID && !$isExon) { #top level feature (e.g. gene, mRNA)
          foreach my $a (@av) {
             #keep attributes
             my ($attr, $value)=split(/\s*=\s*/,$a,2);
@@ -506,7 +521,7 @@ sub loadGff {
       } # parent 'transcript' feature in GTF
    } #GTF
    # ---------- only exon/CDS features from here on ----
-   next unless $exonFeature;
+   next unless $isExon;
    my $recID;
    if ($isGFF3) {
       $recID=$gff3_Parent;
@@ -760,7 +775,7 @@ sub processGffRecs {
               unless $tdata;
           }
         }#for each transcript of this gene
-        if ($adjGeneSpan && ($min!=$fstart || $max!=$fend)) {
+        if ($adjGeneSpan && $min && $max && ($min!=$fstart || $max!=$fend)) {
           print STDERR "Warning: gene $recid original span ($fstart-$fend) adjusted to ($min-$max)\n"
              if $verbose;
           ($fstart, $fend)=($min, $max);
@@ -778,6 +793,7 @@ sub processGffRecs {
        next;
      }
    }
+   next if ($trOnly && @ex==0 && @cds==0);
    my $doprint=1;
    #check all the filters
    $doprint=0 if ($only_ifCDS && $hasCDS==0);
@@ -900,9 +916,34 @@ sub processGffRecs {
        if (uc($a) eq 'ID') {
           push(@od, $recid);
           next;
-          }
-       push(@od, $attrs->{$a});
        }
+       if (substr($a,0, 1) eq '@') {
+         my $f=substr($a,1);
+         if ($f eq 'chr') {
+           push(@od, $chr);
+         }
+         elsif ($f eq 'start') {
+           push(@od, $fstart);
+         }
+         elsif ($f eq 'end') {
+           push(@od, $fend);
+         }
+         elsif ($f eq 'strand') {
+           push(@od, $strand);
+         }
+         elsif ($f eq 'numexons') {
+           push(@od, scalar(@ex));
+         }
+         elsif ($f eq 'exons') {
+          push(@od, join(',', (map { "$$_[0]-$$_[1]" } @ex)));
+         }
+         elsif ($f eq 'cds') {
+          push(@od, @cds>0 ? join(',', (map { "$$_[0]-$$_[1]" } @cds)) : '.');
+         }
+         next;
+       }
+       push(@od, $attrs->{$a} || '.');
+     }
      print join("\t",@od)."\n";
      next;
   }
