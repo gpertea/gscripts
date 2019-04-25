@@ -70,8 +70,9 @@ Output options:
  -T print GTF format (default is GFF3)
  -U decode url-encoded characters in attribute values and use safe replacements
  -l instead of GTF\/GFF, output a tab delimited file with the values of the
-    specified attribute(s) for each record; special pseudo-attributes prefixed
-    by @ are recognized: @chr, @start, @end, @strand, @numexons, @exons, @cds
+    specified attribute(s) for each record; special pseudo-attributes (prefixed
+    by @) are recognized: 
+     @chr, @start, @end, @strand, @numexons, @exons, @cds, @covlen, @cdslen
     Hint: use with -F option to only show transcript-like records
  -t replace the string in the 2nd column with the given <track> text
  -V (verbose): show warnings or other potentially useful info
@@ -940,9 +941,21 @@ sub processGffRecs {
          elsif ($f eq 'cds') {
           push(@od, @cds>0 ? join(',', (map { "$$_[0]-$$_[1]" } @cds)) : '.');
          }
+         elsif ($f eq 'covlen') {
+          my $cov=0;
+          my $r=@ex>0?\@ex : \@cds;
+          map { $cov+=($$_[1]-$$_[0]+1) } @$r;
+          push(@od, $cov);
+         }
+         elsif ($f eq 'cdslen') {
+          my $cov=0;
+          map { $cov+=($$_[1]-$$_[0]+1) } @cds;
+          push(@od, $cov);
+         }
          next;
        }
-       push(@od, $attrs->{$a} || '.');
+       my $av=$attrs->{$a};
+       push(@od, length($av)>0 ? $av : '.');
      }
      print join("\t",@od)."\n";
      next;
