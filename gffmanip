@@ -1,18 +1,17 @@
 #!/usr/bin/perl
 use strict;
-use Getopt::Std;
-use FindBin;use lib $FindBin::Bin;
-
+use Getopt::Long;
+Getopt::Long::Configure ("gnu_getopt", "no_ignore_case");
 my $usage = q/Usage:
  gffmanip [-v] [-o outrecords.txt] [-i [<attr>:]<tids.lst>] [-t <track>]\
- [-f <feature1>[,..]] [-r<regata> [-R][-E]] [-a [feat:]<attr>=<value>[;..] [-A]\
- [-k <attr1>[,..]] [-l <attrlist..>] [-m <IDchange.tab>] [-d <regdata>] \
- [[-y|-Y] <CDSdata.tab>] [-T] <gff\/gtf-input>
+ [-f <feature1>[,..]] [-r <region> [-R][-E]] [-a [feat:]<attr>=<value>[;..] [-A]\
+ [-k <attr1>[,..]] [--table <attrlist..>] [-m <IDchange.tab>] [-d <regdata>] \
+ [[-y|-Y] <CDSdata.tab>] [-T] [-C|--cds] <gff\/gtf-input>
 
 Filtering options:
  -S sort GFF records by location
  -C output only those transcripts having CDS features (protein coding)
- -cds like -C but output only the CDS features of the coding transcripts
+ --cds like -C but output only the CDS features of the coding transcripts
     (discarding exon features)
  -r show only transcripts overlapping any of the region intervals given in 
     <regdata> which has the format:
@@ -56,7 +55,7 @@ Genomic deletion processing:
  -d contig\/chromosome region(s) deletion: discard the transcripts overlapping
     the given genomic region(s), shifting the coordinates of all the 
     features downstream from the deleted region(s). Example deletion:
-    -d NC_029267.1:18816715-18860512
+    -d NC_029267.1.R:18816715-18860512
 
 Output options:
  -K keep all GFF\/GTF attributes and preserve the input format
@@ -69,7 +68,7 @@ Output options:
  -P preserve comments (lines starting with #)
  -T print GTF format (default is GFF3)
  -U decode url-encoded characters in attribute values and use safe replacements
- -l instead of GTF\/GFF, output a tab delimited file with the values of the
+ --table : instead of GTF\/GFF, output a tab delimited file with the values of the
     specified attribute(s) for each record; special pseudo-attributes (prefixed
     by @) are recognized: 
      @chr, @start, @end, @strand, @numexons, @exons, @cds, @covlen, @cdslen
@@ -79,17 +78,26 @@ Output options:
 /;
 umask 0002;
 my @cmdline=($0, @ARGV);
-getopts('vCXEFRAZPMGKVUTSo:c:f:r:t:i:a:k:l:m:y:Y:d:') || die($usage."\n");
+#getopts('vCXEFRAZPMGKVUTSo:c:f:r:t:i:a:k:l:m:y:Y:d:') || die($usage."\n");
+my ($outfile, $verbose, $keepCmts, $sort_gff, $Udecode, $CDSdatafile, 
+  $CDSaddonly, $trOnly, $fltinvert, $printGTF, $out_track, $adjGeneSpan, $adjTSpan,
+  $only_ifCDS, $discard_exons, $idfile, $avflt, $featlist, $oattrlist, $minIntron,
+  $keepAll, $discardExonAttrs, $avflt_AND, $check_range, $strict_ovl, $exon_ovl,
+  $del_range, $chrmapping, $tab_attrs, $exlen2score, $exlen2attr, $minEndExon
+  );
+GetOptions('o:s' => \$outfile, 'V'=>\$verbose, 'P'=>\$keepCmts, 'S'=>\$sort_gff, 
+   'U'=>\$Udecode,'y:s'=>\$CDSdatafile, 'Y:s'=>\$CDSaddonly, 'F'=> \$trOnly,
+   'v'=>\$fltinvert, 'T'=>\$printGTF, 't:s'=>\$out_track, 'G'=>\$adjGeneSpan, 'M'=>\$adjTSpan,
+   'C'=>\$only_ifCDS, 'cds'=>\$discard_exons, 'i:s'=>\$idfile, 'a:s'=>\$avflt, 'f:s'=>\$featlist, 
+   'k:s'=>\$oattrlist, 'Z'=>\$minIntron, 'K'=>\$keepAll, 'E'=>\$discardExonAttrs, 
+   'A'=>\$avflt_AND, 'r:s'=>\$check_range, 'R'=>\$strict_ovl, 'X'=>\$exon_ovl,
+   'd:s'=>\$del_range, 'm:s'=>\$chrmapping, 'table:s'=>\$tab_attrs,
+   'exonlen2score'=>\$exlen2score, 'exonlen2attr'=>\$exlen2attr, 'trim-exons:6'=>\$minEndExon
+   ) || die($usage."\n");
+   
 die("${usage}Error: no input file given (use '-' for stdin)\n") unless @ARGV>0;
 shift(@ARGV) if ($ARGV[0] eq '-');
-my $outfile=$Getopt::Std::opt_o;
-my $verbose=$Getopt::Std::opt_V;
-my $keepCmts=$Getopt::Std::opt_P;
-my $sort_gff=$Getopt::Std::opt_S;
-my $Udecode=$Getopt::Std::opt_U;
-my $CDSdatafile=$Getopt::Std::opt_y;
-my $CDSaddonly=$Getopt::Std::opt_Y;
-my $trOnly=$Getopt::Std::opt_F; #only transcript-like records
+#my $trOnly=$Getopt::Std::opt_F; #only transcript-like records
 
 print STDERR "Command line: ".join(' ',@cmdline)."\n" if $verbose;
 die("Error: use only one of -y or -Y!\n") if ($CDSdatafile && $CDSaddonly);
@@ -137,27 +145,29 @@ if ($CDSdatafile) {     #     0    1        2            3
 }
 
 # --
-my ($fltinvert, $printGTF, $out_track)=
-  ($Getopt::Std::opt_v, $Getopt::Std::opt_T, $Getopt::Std::opt_t);
-my ($adjGeneSpan, $adjTSpan)=($Getopt::Std::opt_G, $Getopt::Std::opt_M);
-my $only_ifCDS=$Getopt::Std::opt_C;
-my $discard_exons=($Getopt::Std::opt_c eq 'ds');
+#my ($fltinvert, $printGTF, $out_track)=
+#  ($Getopt::Std::opt_v, $Getopt::Std::opt_T, $Getopt::Std::opt_t);
+#my ($adjGeneSpan, $adjTSpan)=($Getopt::Std::opt_G, $Getopt::Std::opt_M);
+#my $only_ifCDS=$Getopt::Std::opt_C;
+#my $discard_exons=($Getopt::Std::opt_c eq 'ds');
 $only_ifCDS=1 if $discard_exons;
-my ($idfile, $avflt, $featlist, $oattrlist)=
-  ($Getopt::Std::opt_i, $Getopt::Std::opt_a, $Getopt::Std::opt_f, $Getopt::Std::opt_k);
+#my ($idfile, $avflt, $featlist, $oattrlist)=
+#  ($Getopt::Std::opt_i, $Getopt::Std::opt_a, $Getopt::Std::opt_f, $Getopt::Std::opt_k);
 die("Sorry, -v option does not work with -f !\n") if $fltinvert && $featlist;
 die("Sorry, -v option does not work with -F !\n") if $fltinvert && $trOnly;
 
-my $minIntron=$Getopt::Std::opt_Z ? 5 : 1;
-my $keepAll=$Getopt::Std::opt_K || (lc($oattrlist) eq 'a' || lc($oattrlist) eq 'all');
-my $discardExonAttrs=$Getopt::Std::opt_E;
+#my $minIntron=$Getopt::Std::opt_Z ? 5 : 1;
+$minIntron= $minIntron ? 5 : 1;
+#my $keepAll=$Getopt::Std::opt_K || (lc($oattrlist) eq 'a' || lc($oattrlist) eq 'all');
+$keepAll=1 if lc($oattrlist) eq 'a' || lc($oattrlist) eq 'all';
+#my $discardExonAttrs=$Getopt::Std::opt_E;
 die("Error: -E option requires -K !\n") if ($discardExonAttrs && !$keepAll);
 my $avflt_feature; #feature targeted by attr=value,.. filter
-my $avflt_AND=$Getopt::Std::opt_A; #if $avflt should require a match for ALL given attributes
-my ($check_range,        $strict_ovl,         $exon_ovl)=
-   ($Getopt::Std::opt_r, $Getopt::Std::opt_R, $Getopt::Std::opt_X);
-my $del_range=$Getopt::Std::opt_d;
-my $chrmapping=$Getopt::Std::opt_m;
+#my $avflt_AND=$Getopt::Std::opt_A; #if $avflt should require a match for ALL given attributes
+#my ($check_range,        $strict_ovl,         $exon_ovl)=
+#   ($Getopt::Std::opt_r, $Getopt::Std::opt_R, $Getopt::Std::opt_X);
+#my $del_range=$Getopt::Std::opt_d;
+#my $chrmapping=$Getopt::Std::opt_m;
 if (($del_range || $chrmapping) && $fltinvert) {
    die("Error: -v option cannot be used with -m or -d options!\n");
 }
@@ -178,7 +188,7 @@ if ($del_range) {
 }
 
 $oattrlist='' if $keepAll;
-my $tab_attrs=$Getopt::Std::opt_l;
+#my $tab_attrs=$Getopt::Std::opt_l;
 if ($tab_attrs) {
   @atab_cols=split(/\,/, $tab_attrs);
   @atab{@atab_cols}=();
@@ -244,8 +254,8 @@ my %genes; #gene ID => [$gffrecs_Data, [$t_ID, ...], $filtered_out)
            #                0               1           2
 
 ##--- keeping track of all gene and transcript records :
-my %gffrecs; # ID => [ chr, strand, feat_type,  \%attrs, fstart, fend, [@exons], [@cds], track,  geneID, fscore ]
-          #             0      1        2           3      4       5       6        7        8      9       10
+my %gffrecs; # ID => [ chr, strand, feat_type,  \%attrs, fstart, fend, [@exons], [@cds], track,  geneID, fscore, exonsProcessed ]
+          #             0      1        2           3      4       5       6        7        8      9       10        11
 #my $gffh;
 #if ($input_gff eq '-') {
 #  open($gffh, "<&=STDIN") || die("Error: couldn't alias STDIN $!\n");
@@ -428,6 +438,7 @@ sub loadGff {
    }
    chomp;
    my ($chr, $track, $f, $fstart, $fend, $fscore, $strand, $frame, $atr)=split(/\t/);
+   next if $trOnly && $f eq 'locus';
    my $line=$_;
    next unless $fstart>0 && $atr;
    my $reqfeat=exists($featflt{$f});
@@ -471,9 +482,9 @@ sub loadGff {
          }
          die("Error: duplicate feature $gff3_ID\n") if (exists($recs->{$gff3_ID}));
          push(@gff_IDs, $gff3_ID);
-         #              0      1      2       3        4      5    6    7    8     9    10
+         #              0      1      2       3        4      5    6    7    8     9    10         11
          my $recData=[$chr, $strand, $f, {%attrs}, $fstart, $fend, [], [], $track, 
-                                                     ($isGene ? $gff3_ID : $gff3_Parent), $fscore];
+                                                     ($isGene ? $gff3_ID : $gff3_Parent), $fscore, 0];
          $recs->{$gff3_ID} = $recData;
          if ($isGene) {
            die("Error: gene record already created for $gff3_ID\n") if exists($genes{$gff3_ID});
@@ -508,7 +519,8 @@ sub loadGff {
         die("Error: cannot find transcript_id for GTF 'transcript' line:\n$line\n") unless $gffID;
         die("Error: duplicate feature $gffID\n") if (exists($recs->{$gffID}));
         push(@gff_IDs, $gffID);
-        $recs->{$gffID} = [$chr, $strand, $f, {%attrs}, $fstart, $fend, [], [], $track, $gene_id, $fscore ];
+        #                    0        1    2      3        4        5   6   7    8        9         10     11
+        $recs->{$gffID} = [$chr, $strand, $f, {%attrs}, $fstart, $fend, [], [], $track, $gene_id, $fscore, 0 ];
         if ($gene_id) {
            my $gData=$genes{$gene_id};
            if ($gData) { #update existing %genes entry
@@ -590,9 +602,9 @@ sub loadGff {
        }
      }
      $recs->{$recID} = ($f eq 'CDS') ? 
-           [$chr, $strand, 'transcript', {%attrs}, $fstart, $fend,          [],      [[$fstart, $fend, $fscore, $frame, $f]], $track, '', '.' ] :
-           [$chr, $strand, 'transcript', {%attrs}, $fstart, $fend, [[$fstart, $fend, $fscore, $frame, $f]], [],               $track, $f, '.' ] ;
-         #   0       1      2     3        4       5       6(exons)                          7 (CDS)                           8       9   10
+           [$chr, $strand, 'transcript', {%attrs}, $fstart, $fend,          [],      [[$fstart, $fend, $fscore, $frame, $f]], $track, '', '.', 0 ] :
+           [$chr, $strand, 'transcript', {%attrs}, $fstart, $fend, [[$fstart, $fend, $fscore, $frame, $f]], [],               $track, $f, '.', 0 ] ;
+         #   0       1      2     3        4       5       6(exons)                          7 (CDS)                           8       9   10  11
    }
  }
 }
@@ -701,8 +713,9 @@ sub processGffRecs {
    }
    my $td=$$recs{$recid};
    die("Error: cannot find GFF record for $recid\n") unless $td;
-   #     0       1       2        3        4      5       6    7      8       9      10    
-   my ($chr, $strand, $feature, $attrs, $fstart, $fend,  $er, $cr,  $track, $geneID, $fscore) = @$td;
+   processExons($recid, $td);
+   #     0       1       2        3        4      5       6    7      8       9      10        11
+   my ($chr, $strand, $feature, $attrs, $fstart, $fend,  $er, $cr,  $track, $geneID, $fscore, $xprocessed) = @$td;
    my $newchr=($chr ne $lastchr);
    if ($newchr) {
       $dshift=0;
@@ -711,37 +724,10 @@ sub processGffRecs {
    #next if ($rej && !$fltinvert);
    #next if ($fltinvert && $featlist && !$rej);
    my $isGene=($geneID eq $recid);
-   my $CDSonly=0; # set to 1 if only CDS segments were given
-   my $hasCDS=0;
-   #some records might lack exons, but have only CDS segments (e.g. mitochondrial genes)
-   if (@$er<1 && @$cr>0) { #no exon entries, but CDS
-     #@ex = sort { $a->[0] <=> $b->[0] } @$cr;
-     #@cds=@ex;
-     $CDSonly=1;
-     $hasCDS=1;
-   } else { #exons declared
-     #@ex = sort { $a->[0] <=> $b->[0] } @$er;
-     if (@$cr>0) { # sort cds segments too
-       #@cds= sort { $a->[0] <=> $b->[0] } @$cr;
-       $hasCDS=1;
-     }
-   }
-   my @ex; #refined exon segments (in case only UTRs are given, or non-CDS exon fragments)
-   my @cds; #refined CDS segments (in case start/stop_codons are given)
-   if ($discard_exons) {
-     @cds=sort { $a->[0] <=> $b->[0] } @$cr;
-     $CDSonly=1;
-     #-- also silently adjust transcript boundaries to just the CDS region
-     ($fstart, $fend)=($cds[0]->[0], $cds[-1]->[1]);
-   } else {
-     cleanupExons($er, \@ex, $cr, \@cds, $recid); #check for merging exon/UTR/CDS/start_codon/stop_codon into exon/CDS segments
-   }
-   #---- for transcripts, check for new CDS/strand assignment 
-   if ($CDSdatafile && @ex>0) { # $discard_exons is incompatible with -y option
-      my $tcds=$assignCDS{$recid};
-      assignCDS($recid, \$strand, \@ex, \@cds, $tcds) #modifies $strand and @cds as needed!
-         if ($tcds);
-   }
+   my $CDSonly=$xprocessed>1; # set to true if only CDS segments were given
+   my $hasCDS=(@$cr>0);
+   my @ex=@$er; #refined exon segments (in case only UTRs are given, or non-CDS exon fragments)
+   my @cds=@$cr; #refined CDS segments (in case start/stop_codons are given)
    if (scalar(@cds)>0 && $attrs->{'TYPE'} eq 'non_coding') {
        #make sure that TYPE is changed from "non_coding" to "protein_coding_uncertain"
        $attrs->{'TYPE'}='protein_coding_uncertain';
@@ -763,6 +749,7 @@ sub processGffRecs {
         foreach my $tid (@{$gdata->[1]}){
           my $tdata=$$recs{$tid};
           if ($tdata) {
+             processExons($tid, $tdata);
              if ($tdata->[0] eq $chr) {
                 $min=$tdata->[4] if $tdata->[4]<$min || !$min;
                 $max=$tdata->[5] if $tdata->[5]>$max;
@@ -1042,16 +1029,79 @@ sub processGffRecs {
         foreach my $ed (@ex) {
             my $xattrs=$tattrs;
             $xattrs.=';'.$$ed[5] if $$ed[5];
-            print join("\t",$chr, $track, 'exon', $$ed[0], $$ed[1], $$ed[2], $strand, $$ed[3], $xattrs)."\n";
+            $xattrs.=';'.sprintf( ($printGTF?'exonlen "%d"':'exonlen=%d'), $$ed[1]-$$ed[0]+1) if $exlen2attr;
+            my $exscore=$$ed[2];
+            if ($exlen2score) {
+              $exscore= ($exscore>10 && $exscore<=100) ? sprintf('%.1f', $exscore*($$ed[1]-$$ed[0]+1)/100.0) : ($$ed[1]-$$ed[0]+1) ;
+            }
+            print join("\t",$chr, $track, 'exon', $$ed[0], $$ed[1], $exscore, $strand, $$ed[3], $xattrs)."\n";
         }
   }
   foreach my $cd (@cds) {
         my $xattrs=$tattrs;
         $xattrs.=';'.$$cd[5] if $$cd[5];
-        print join("\t",$chr, $track, 'CDS', $$cd[0], $$cd[1], $$cd[2], $strand, $$cd[3], $xattrs)."\n";
+        $xattrs.=';'.sprintf( ($printGTF?'exonlen "%d"':'exonlen=%d'), $$cd[1]-$$cd[0]+1) if $exlen2attr;
+        my $exscore=$$cd[2];
+        if ($exlen2score) {
+          $exscore= ($exscore>10 && $exscore<=100) ? sprintf('%.1f', $exscore*($$cd[1]-$$cd[0]+1)/100.0) : ($$cd[1]-$$cd[0]+1) ;
+        }
+        print join("\t",$chr, $track, 'CDS', $$cd[0], $$cd[1], $exscore, $strand, $$cd[3], $xattrs)."\n";
   }
  } #for each stored transcript
 }
+
+sub processExons {
+   my ($tid, $td)=@_;
+   return if $$td[11]; #already processed
+   #     0       1       2        3        4      5       6    7      8       9      10        11
+   my ($chr, $strand, $feature, $attrs, $fstart, $fend,  $er, $cr,  $track, $geneID, $fscore, $xproc) = @$td;
+   if (@$er==0 && @$cr==0) {
+     $td->[11]=1;
+     return;
+   }
+   my $isGene=($geneID eq $tid);
+   my $hasCDS=(@$cr>0);
+   my @ex; #refined exon segments (in case only UTRs are given, or non-CDS exon fragments)
+   my @cds; #refined CDS segments (in case start/stop_codons are given)
+   my $CDSonly=0;
+   $CDSonly=1 if (@$er==0 && @$cr>0); #no exon entries, just CDS
+   if ($discard_exons) {
+     @cds=sort { $a->[0] <=> $b->[0] } @$cr;
+     $CDSonly=1;
+     #-- also silently adjust transcript boundaries to just the CDS region
+     ($fstart, $fend)=($cds[0]->[0], $cds[-1]->[1]);
+   } else {
+     cleanupExons($er, \@ex, $cr, \@cds, $tid); #check for merging exon/UTR/CDS/start_codon/stop_codon into exon/CDS segments
+   }
+   if ($minEndExon) {
+     #remove short terminal exons!
+     my $nexons=scalar(@ex);
+     shift(@ex) while (@ex>0 && $ex[0]->[1]-$ex[0]->[0]<=$minEndExon);
+     pop(@ex) while (@ex>0 && $ex[-1]->[1]-$ex[-1]->[0]<=$minEndExon);
+     print STDERR "Warning: short terminal exon(s) removed for $tid\n"
+               if $verbose && @ex<$nexons;
+   }
+   #---- for transcripts, check for new CDS/strand assignment 
+   if ($CDSdatafile && @ex>0) { # $discard_exons is incompatible with -y option
+      my $tcds=$assignCDS{$tid};
+      assignCDS($tid, \$strand, \@ex, \@cds, $tcds) #modifies $strand and @cds as needed!
+         if ($tcds);
+   }
+   if ($adjTSpan && @ex>0) {
+     if ($fstart!=$ex[0]->[0]) {
+       $fstart=$ex[0]->[0];
+       print STDERR "Warning: start coordinate adjusted to exon boundary for $tid\n"
+         if $verbose;
+     }
+     if ($fend!=$ex[-1]->[1]) {
+       $fend=$ex[-1]->[1];
+       print STDERR "Warning: end coordinate adjusted to exon boundary for $tid\n"
+         if $verbose;
+     }
+   }
+   @$td=($chr, $strand, $feature, $attrs, $fstart, $fend,  \@ex, \@cds,  $track, $geneID, $fscore, $CDSonly ? 2 : 1 );
+}
+
 
 sub gff3_encode {
  my ($v) = @_;
