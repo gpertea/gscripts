@@ -318,6 +318,7 @@ sub parseLocations {
   if ($rlst) {
     my @rdata=map { [split(/[\-\.]+/)] } (split(/[\,\;\s]+/,$rlst));
     foreach my $d (@rdata) {
+      $$d[1]=1999999999 if length($$d[1])==0;
       ($$d[0], $$d[1])=($$d[1], $$d[0]) if $$d[0]>$$d[1];
     }
     @$r_intv = sort { $a->[0] <=> $b->[0] } @rdata;
@@ -348,11 +349,14 @@ sub checkOvlDels {
  my $del_acc=0;
  foreach my $x (@$rx) {
    return 1 if ($$rseg[0]<=$$x[1] && $$rseg[1]>=$$x[0]); #overlap with $x
-   last if ($$rseg[1]<$$x[0]); #cannot overlap anymore
-   $del_acc+=$$x[1]-$$x[0];
+   last if ($$x[0]>$$rseg[1]); #cannot overlap anymore
+   $del_acc+=$$x[1]-$$x[0]+1;
  }
- $$rseg[0]-=$del_acc+1;
- $$rseg[1]-=$del_acc+1;
+ if ($del_acc) {
+    $$rseg[0]-=$del_acc;
+    $$rseg[1]-=$del_acc;
+    return 2;
+ }
  return 0;
 }
 
@@ -860,36 +864,43 @@ sub processGffRecs {
   }
   ## --check for chr sequence deletion
   if ($del_chr && $del_chr eq $chr) {
-     my $fspan=[$fstart, $fend];
-     my $fovldel=checkOvlDels($fspan, \@del_intv);
-     if ($fovldel && $isGene) {
-        print STDERR "INFO: gene $recid discarded due to overlapping deleted region.\n"
+    my $fspan=[$fstart, $fend];
+    my $fovldel=checkOvlDels($fspan, \@del_intv);
+    if ($fovldel) {
+     if ($fovldel==1) {
+        print STDERR "INFO: record $recid discarded due to overlapping deleted region.\n"
           if $verbose;
-        my $gdata=$genes{$recid};
-        $gdata->[2]=1 if $gdata;
+        if ($isGene) {
+          my $gdata=$genes{$recid};
+          $gdata->[2]=1 if $gdata;
+        }
         next;
      }
+     ($fstart, $fend)=@$fspan;
      my $exovl; #set if exon overlap detected
      for my $ed (@ex) {
-        $exovl=checkOvlDels($ed, \@del_intv); 
-        last if $exovl;
+        my $xovl=checkOvlDels($ed, \@del_intv); 
+        $exovl+=$xovl;
+        if ($xovl==1) {
+            $exovl=1;
+            last;
+        }
      }
      if ($exovl) {
-        print STDERR "INFO: transcript $recid discarded due to overlapping deleted region.\n"
-          if $verbose;
-        next;
+        if ($exovl==1) {
+          print STDERR "Warning: transcript $recid discarded due to exon overlaps with deleted region.\n"
+            if $verbose;
+          next;
+        }
      }
-     elsif (@cds>0) { #have to adjust CDS coordinates too
+     if (@cds>0) { #have to adjust CDS coordinates too
        for my $cd (@cds) {
-          if (checkOvlDels($cd, \@del_intv)) { 
-            die("Error ($recid): CDS are overlapping deleted regions, even though exons weren't?!\n");
+          my $cdovl=checkOvlDels($cd, \@del_intv);
+          print STDERR "Warning: ($recid) CDS affected by deleted regions, even though exons aren't?!\n"
+              if ($cdovl && !$exovl);
           }
-       }
      }
-     if ($fovldel && @ex>0) {
-       #adjust transcript coordinates
-       ($fstart, $fend)=($ex[0]->[0], $ex[-1]->[1]);
-     }
+    } #if $fovldel
   }
   #filter passed, print output
   #if ($delTinyIntrons) {

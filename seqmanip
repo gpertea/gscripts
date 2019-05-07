@@ -9,7 +9,7 @@ Usage:
  seqmanip [-r<range>] [-C] [-L] [-D|-X] [-I] [-G] [-T|-t <frame>|-Z] \
     [-M|-m <ncount> -D '<defline>'] [-r <seqranges> | -f <ranges_file>]\
     [-d <ranges>] [-u <only_seqids_file>] [-x <exclude_seqids_file>] \
-    [-w <annot_file>] [-p <maxlen>] [-q <minlen>] [fasta file(s)...]
+    [-w <annot_file>] [-p <maxlen>] [-q <minlen>] [-c <xmapfile>] [f.fasta ..]
  The input files should be one or more nucleotide or aminoacid sequences
  in FASTA or raw format; if no files are given, input is expected at STDIN
  Options:
@@ -21,7 +21,7 @@ Usage:
     <ranges> can have one of the formats:
     <seqid> to extract\/target a whole sequence from an indexed multi-FASTA
             (useful for -c or -k options)
-    or
+      or
     [<seqid>:]<start>-<end> (or <start>-<end> or <start>:<len>)
     A terminal '-' character, if added, causes the extract range(s) to be
     reverse complemented,
@@ -61,6 +61,7 @@ Usage:
  -Z raw reverse translate the output (aminoacid to DNA, rather useless)
  -V only output sequences if they translate into a valid, complete CDS (i.e.
     have start and stop codons)
+ -c convert seq IDs according to the provided name mapping table file
  -p only output sequences shorter than or equal to <maxlen>
  -q only output sequences longer than or equal to <minlen>
  -u only output sequences whose names are in the given file <only_seqids_file>
@@ -119,7 +120,7 @@ my %codons=(
 );
 my %mcodons=%codons; #mitochondrial codon translation
 @mcodons{qw(AGA AGG ATA TGA)}=('.', '.', 'M', 'W');
-getopts('AZTUPMEGNRXVCLYOQBD:a:d:w:f:k:l:m:n:p:q:r:t:u:v:x:y') || die "$usage\n";
+getopts('AZTUPMEGNRXVCLYOQBD:a:c:d:w:f:k:l:m:n:p:q:r:t:u:v:x:y') || die "$usage\n";
 #my %ranges; # seqname => [offset, len] only populated by -r or -f option;
 my @ranges; # list of [chr, strand, defline, [[offset1,len1], [offset1,len2], ..]]
             #           0      1       2      3
@@ -152,6 +153,7 @@ my $maxseqlen=$Getopt::Std::opt_p;
 my $minseqlen=$Getopt::Std::opt_q;
 my $maxnspan=$Getopt::Std::opt_y;
 my $fseqdescr=$Getopt::Std::opt_w;
+my $fxmap=$Getopt::Std::opt_c;
 my %seqdescr;
 my $flt_only_file=$Getopt::Std::opt_u;
 my %flt_only;
@@ -165,6 +167,18 @@ if ($flt_only_file) {
   $flt_only{$t[0]}=1;
  }
  close(HF);
+}
+my %xmap; # oldSeqID => newSeqID
+if ($fxmap) {
+ #conver seq IDs according to the given table
+ open(MF, $fxmap) || die("Error opening $fxmap !\n");
+ while (<MF>) {
+   chomp;
+   my @t=split(/[\x01\s]+/, $_, 2);
+   next unless length($t[0])>0 && length($t[1])>0;
+   $xmap{$t[0]}=$t[1];
+ }
+ close(MF);
 }
 
 if ($fseqdescr) {
@@ -787,16 +801,25 @@ sub process_seq {
      }
   unless ($gffout) { #output FASTA record
     if ($defline) { #format back to fasta
+     if ($fxmap || $fseqdescr) {
+        my ($seqid, $descr)=($defline=~m/^>(\S+)[\s\x01]*(.*)/);
+        my $new_id=$seqid;
+        my $new_descr=$descr;
+        if ($fseqdescr) {
+          $new_descr=$seqdescr{$seqid};
+          $new_descr=$descr unless length($new_descr)>0;
+        }
+        if ($fxmap) {
+           $new_id=$xmap{$seqid};
+           $new_id=$seqid unless length($new_id)>0;
+        }
+        $defline = ">$new_id $new_descr";
+     }
      if ($Getopt::Std::opt_U) {
-       #clean up the defline as well
+       ## clean up the defline as well
        $defline=~s/^\s+//;
        $defline=~s/\s+$//;
        $defline=~tr/ \t/ \t/s;
-     }
-     if ($fseqdescr) {
-      my ($seqid)=($defline=~m/^>(\S+)/);
-      my $descr=$seqdescr{$seqid};
-      $defline = ($descr) ? ">$seqid $descr" : ">$seqid";
      }
      my $addLen='';
      $addLen=" $seq_len" if $addSeqLen;
