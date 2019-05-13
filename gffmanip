@@ -72,6 +72,8 @@ Output options:
     specified attribute(s) for each record; special pseudo-attributes (prefixed
     by @) are recognized: 
      @chr, @start, @end, @strand, @numexons, @exons, @cds, @covlen, @cdslen
+    The prefix '^' can be used to specify parent attribute names to be printed
+    for the current record.
     Hint: use with -F option to only show transcript-like records
  -t replace the string in the 2nd column with the given <track> text
  -V (verbose): show warnings or other potentially useful info
@@ -188,7 +190,6 @@ if ($del_range) {
 }
 
 $oattrlist='' if $keepAll;
-#my $tab_attrs=$Getopt::Std::opt_l;
 if ($tab_attrs) {
   @atab_cols=split(/\,/, $tab_attrs);
   @atab{@atab_cols}=();
@@ -911,12 +912,15 @@ sub processGffRecs {
   
   if ($tab_attrs) {
      my @od;
+     my $pck; #parent checked?
+     my $pd;  # if $pcheck and it has a parent, $pd=$$recs{$parentID}
      foreach my $a (@atab_cols) {
        if (uc($a) eq 'ID') {
           push(@od, $recid);
           next;
        }
-       if (substr($a,0, 1) eq '@') {
+       my $fc=substr($a,0, 1);
+       if ($fc eq '@') {
          my $f=substr($a,1);
          if ($f eq 'chr') {
            push(@od, $chr);
@@ -950,6 +954,23 @@ sub processGffRecs {
           map { $cov+=($$_[1]-$$_[0]+1) } @cds;
           push(@od, $cov);
          }
+         next;
+       }
+       if ($fc eq '^') {
+         my $f=substr($a,1);
+         my $av='.';
+         if (!$pck) {
+            my $pID=$attrs->{'Parent'};
+            if (length($pID)>0) {
+               $pd=$$recs{$pID};
+            }
+            $pck=1;
+         }
+         if ($pd) {
+           $av=${$pd->[3]}{$f};
+           $av='.' if length($av)==0;
+         }
+         push(@od, $av);
          next;
        }
        my $av=$attrs->{$a};
