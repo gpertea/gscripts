@@ -349,9 +349,6 @@ sub setupTranscripts {
       map { $s.=substr($ntseq, $_->[0]-1, $_->[1]-$_->[0]+1) } @$CDS;
       $s=reverseComplement($s) if ($strand eq '-');
       my @codons=unpack('(A3)*',$s);
-      if ($tid eq 'Os01t0130100-01') {
-       print STDERR "first codon: $codons[0] | last codon: $codons[-1] (pp=$pp)\n";
-      }
 
       ###special case fix:
       if ($chr=~m/\bmito/) {
@@ -366,7 +363,6 @@ sub setupTranscripts {
       }
       else {
         $pp|=1 if !exists($stop{$codons[-1]});
-        print STDERR "last codon $codons[-1], stop($codons[-1]) is $stop{$codons[-1]}\n" if ($tid eq 'Os01t0130100-01') 
       }
       $pp|=2 if $codons[0] ne 'ATG';
       $gpp|=$pp;
