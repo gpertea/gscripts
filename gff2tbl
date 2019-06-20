@@ -3,22 +3,24 @@ use strict;
 use Getopt::Std;
 #use FindBin;use lib $FindBin::Bin;
 ##
-##TODO: use CDS phase from GFF for partial CDS data (codon_start)
 ##
 
 use Fcntl qw(SEEK_SET SEEK_CUR SEEK_END);
 
 my $usage = q/Usage:
- gff2tbl -f <fasta_file> [-m <seqid_map>] [-A] [-N] [-t <track>] [-o <out_prefix>]
-    [-c <lab_prefix> ] [-x <exclude.lst>] [-n <organism_name>] <gff_file>
+ gff2tbl -f <fasta_file> [-m <id2acc_map>] [-t <track>] [-o <out_prefix>]
+    [-c <lab_prefix> ] [-L] [-x <exclude.lst>] [-n <organism_name>] <gff_file>
 
  Convert GFF to .fsa and .tbl files to be used by tbl2asn
 
- For -m option, <seqid_map> is a 2-column file mapping the genomic sequence IDs
- from the gff file (1st column) to seq_ids from the <fasta_file> (2nd column)
+ For -m option, <id2acc_map> is a 2-column file mapping the genomic sequence IDs
+ from the input gff and fasta_file (1st column) to GenBank accessions (2nd column)
+ Other options:
+    -L   :  use locus attribute for transcripts in order to identify a "gene"
+            and its boundaries
 /;
 umask 0002;
-getopts('NDn:c:x:m:f:t:o:') || die($usage."\n");
+getopts('LDn:c:x:m:f:t:o:') || die($usage."\n");
 my %stop=('TAA'=>1,'TAG'=>1,'TGA'=>1, 'TAR'=>1,'TRA'=>1);
 my %mitostop=('TAA'=>1,'TAG'=>1,'AGA'=>1, 'AGG'=>1);
 
@@ -29,9 +31,8 @@ $defpre=~s/\.\w+$//;
 my @tbl;
 my $orgcode=$Getopt::Std::opt_c || 'jhhlp';
 my $debug=$Getopt::Std::opt_D;
-
+my $useLocus=$Getopt::Std::opt_L;
 my $idmapfile=$Getopt::Std::opt_m;
-#my $accparse=$Getopt::Std::opt_A;
 my $xfile=$Getopt::Std::opt_x;
 my %xclude;
 if ($xfile) {
@@ -70,8 +71,8 @@ my %genetbl; # geneid => [chr, strand, start, end, [@ttbl for gene], $gid]
 
           #                    0      1       2     3    4        5
 my %ttbl; # transcript_id => [chr, strand, start, end, geneID, [product, simacc, psim, qcov, eval],
-          #                               [@exons], [@CDS],   $t_id, $partialness ]
-          #                                   6       7         8        9
+          #                               [@exons], [@CDS],   $t_id, $partialness, featType ]
+          #                                   6       7         8        9           10
 my ($seqid, $ntseq, $ntlen); #current genomic seq data
 
 open(FSA, '>'.$fileprefix.'.fsa') 
@@ -175,33 +176,52 @@ while (<GFF>) {
     print STDERR "Warning: feature line $_ has neither ID nor Parent! skipping..\n";
     next;
   }
-  next if $fid && $ftype eq 'gene'; # skip genes for now
-  $ftype='mRNA' if $ftype eq 'transcript';
-  if ($ftype=~m/RNA$/) { # transcript, *RNA line
+  next if $fid && $ftype =~m/gene$/; # skip genes for now! (no pseudogenes etc.)
+  $ftype='mRNA' if $ftype =~m/transcript$/i;
+  if ($ftype=~m/RNA$/i) { # transcript feature
     my $geneID;
     my ($simprod)=($attrs=~m/protSim\s*=\s*"?([^;"]+)/);
     if (!$simprod) {
-      ($simprod)=($attrs=~m/product\s*=\s*"?([^;"]+)/);
+      ($simprod)=($attrs=~m/\bproduct\s*=\s*"?([^;"]+)/i);
+      if (!$simprod) {
+        ($simprod)=($attrs=~m/\bdescription\s*=\s*"?([^;"]+)/);
+      }
     }
     my ($simacc)=($attrs=~m/protSimAcc\s*=\s*"?([^;"]+)/);
     my ($simdata)=($attrs=~m/protSimData\s*=\s*"?([^;"]+)/);
+    my ($partialness)=($attrs=~m/partialness\s*=\s*"?([^;"]+)/);
     my ($eval, $psim, $qcov);
     if ($simdata) {
        ($eval)=($simdata=~m/val:([\d\.\-\+]+)/);
        ($psim)=($simdata=~m/psim:([\d\.\%]+)/);
        ($qcov)=($simdata=~m/cov:([\d\.\%]+)/);
     }
+    if (!$psim) {
+       ($psim)=($attrs=~m/identity\s*=\s*([\d\.\%]+)/);
+    }
+    if (!$qcov) {
+      ($qcov)=($attrs=~m/coverage\s*=\s*([\d\.\%]+)/);
+      if (!$qcov) {
+        ($qcov)=($attrs=~m/prr=(\w+)/);
+        if ($qcov eq 'low') { $qcov=45; }
+        elsif ($qcov eq 'poor') { $qcov=25; }
+      }
+    }
+    if ($useLocus && $attrs=~m/locus\s*=\s*([^;]+)/) {
+      $fp=$1;
+    }
+    
     if ($fp) {
       $geneID=$fp;
     } else {
       ($geneID)=($attrs=~m/geneID\s*=\s*"?([^;"]+)/);
     }
-    $geneID=$fid if (!$geneID && $ftype ne 'mRNA');
+    #$geneID=$fid if (!$geneID && $ftype !~ '/RNA$/');
     die("Error: could not find a gene ID for transcript $fid\n") unless $geneID;
     #            0       1        2      3      4          
     my $tdata=[$chr, $strand, $fstart, $fend, $geneID, 
-                  [$simprod, $simacc, $psim, $qcov, $eval], [], [], $fid, 0, $ftype];
-                  #  5                                      6   7    8    9
+                  [$simprod, $simacc, $psim, $qcov, $eval], [], [], $fid, $partialness, $ftype];
+                  #  5                                      6   7    8    9        
     ## store the transcript
     die("Error: transcript $fid already added!\n")
      if (exists($ttbl{$fid}));
@@ -209,7 +229,8 @@ while (<GFF>) {
     addToGene($geneID, $fid, $tdata, $chr, $strand, $fstart, $fend);
     next;
   }
-  if ($ftype eq 'exon' || $ftype eq 'CDS') { #only these are recognized
+  #--- non-transcript features
+  if ($ftype eq 'exon' || $ftype eq 'CDS') { #only these are recognized! 
     storeFeature($ftype, $fp, $chr, $strand, $fstart, $fend);
   }
 } #while <GFF>
@@ -219,9 +240,9 @@ close(GFF);
 
 my %gdup;
 
-my $credits='Predicted annotation generated with Maker v3.0 beta or Infernal v1.1.2'.
-  ' by Geo Pertea at the Center for '.
-  ' Computational Biology, Johns Hopkins University';
+#my $credits='Predicted annotation generated by mapping Oryza sativa RNAs with GMAP '.
+#  ' by Geo Pertea at the Center for '.
+#  ' Computational Biology, Johns Hopkins University';
 
 open(FTBL, '>'.$fileprefix.'.tbl') 
   || die("Error creating $fileprefix.tbl file!\n");
