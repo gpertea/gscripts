@@ -112,9 +112,9 @@ open(FA, $fastafile)||die("Error opening $fastafile !\n");
         if ($newid) {
            $seqid=$newid;
         }
-        else {
-         print STDERR "Warning: no new ID found for existing $seqid!\n";
-        }
+        #else {
+        # print STDERR "Warning: no new ID found for existing $seqid!\n";
+        #}
       }
       push(@seqlst, $seqid);
       next;
@@ -177,6 +177,10 @@ while (<GFF>) {
     next;
   }
   next if $fid && $ftype =~m/gene$/; # skip genes for now! (no pseudogenes etc.)
+  if ($xfile) {
+     next if ($fid && exists($xclude{$fid}));
+     next if ($fp && exists($xclude{$fp}));
+  }
   $ftype='mRNA' if $ftype =~m/transcript$/i;
   if ($ftype=~m/RNA$/i) { # transcript feature
     my $geneID;
@@ -186,6 +190,12 @@ while (<GFF>) {
       if (!$simprod) {
         ($simprod)=($attrs=~m/\bdescription\s*=\s*"?([^;"]+)/);
       }
+    }
+    if ($simprod) {
+      my @multi=split(/\%3B/, $simprod);
+      $simprod=$multi[0];
+      $simprod=gff_decode($simprod);
+      $simprod=lcfirst($simprod) if $simprod=~m/^[A-Z][a-z]/;
     }
     my ($simacc)=($attrs=~m/protSimAcc\s*=\s*"?([^;"]+)/);
     my ($simdata)=($attrs=~m/protSimData\s*=\s*"?([^;"]+)/);
@@ -220,7 +230,7 @@ while (<GFF>) {
     die("Error: could not find a gene ID for transcript $fid\n") unless $geneID;
     #            0       1        2      3      4          
     my $tdata=[$chr, $strand, $fstart, $fend, $geneID, 
-                  [$simprod, $simacc, $psim, $qcov, $eval], [], [], $fid, $partialness, $ftype];
+                  [$simprod, $simacc, $psim, $qcov, $eval], [], [], $fid, 0, $ftype];
                   #  5                                      6   7    8    9        
     ## store the transcript
     die("Error: transcript $fid already added!\n")
@@ -339,12 +349,16 @@ sub setupTranscripts {
       map { $s.=substr($ntseq, $_->[0]-1, $_->[1]-$_->[0]+1) } @$CDS;
       $s=reverseComplement($s) if ($strand eq '-');
       my @codons=unpack('(A3)*',$s);
+      if ($tid eq 'Os01t0130100-01') {
+       print STDERR "first codon: $codons[0] | last codon: $codons[-1] (pp=$pp)\n";
+      }
+
       ###special case fix:
       if ($chr=~m/\bmito/) {
-        #mitochondrial STOP codons are different
-        if ($locid eq 'jhhlp_008894' || $locid eq 'jhhlp_008894') {
-          print STDERR "$chr : $locid : ".$codons[-1]."\n";
-        }
+        ## mitochondrial STOP codons are different
+        #if ($locid eq 'jhhlp_008894' || $locid eq 'jhhlp_008894') {
+        #  print STDERR "$chr : $locid : ".$codons[-1]."\n";
+        #}
         if (!exists($mitostop{$codons[-1]})) {
              $pp|=1;
              print STDERR "Warning: stop codon not found for $locid\n";
@@ -352,6 +366,7 @@ sub setupTranscripts {
       }
       else {
         $pp|=1 if !exists($stop{$codons[-1]});
+        print STDERR "last codon $codons[-1], stop($codons[-1]) is $stop{$codons[-1]}\n" if ($tid eq 'Os01t0130100-01') 
       }
       $pp|=2 if $codons[0] ne 'ATG';
       $gpp|=$pp;
@@ -418,6 +433,14 @@ sub writeExons {
   }
   ++$p;
  }
+}
+
+sub gff_decode {
+ #actually decodes any % encoded characters
+ my ($v) = @_;
+ #$v =~ s/\+/ /g; #url decoding would also need this
+ $v =~ s/%(..)/pack('c',hex($1))/ge;
+ return $v;
 }
 
 sub writeTranscripts {
