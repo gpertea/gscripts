@@ -9,7 +9,7 @@ use Fcntl qw(SEEK_SET SEEK_CUR SEEK_END);
 
 my $usage = q/Usage:
  gff2tbl -f <fasta_file> [-m <id2acc_map>] [-t <track>] [-o <out_prefix>]
-    [-c <lab_prefix> ] [-L] [-x <exclude.lst>] [-n <organism_name>] <gff_file>
+    [-c <lab_prefix> ] [-b dbname] [-L] [-x <exclude.lst>] [-n <organism_name>] <gff_file>
 
  Convert GFF to .fsa and .tbl files to be used by tbl2asn
 
@@ -20,16 +20,30 @@ my $usage = q/Usage:
             and its boundaries
 /;
 umask 0002;
-getopts('LDn:c:x:m:f:t:o:') || die($usage."\n");
+getopts('LDn:b:c:x:m:f:t:o:') || die($usage."\n");
 my %stop=('TAA'=>1,'TAG'=>1,'TGA'=>1, 'TAR'=>1,'TRA'=>1);
 my %mitostop=('TAA'=>1,'TAG'=>1,'AGA'=>1, 'AGG'=>1);
-
+my %ncRNAclass=('antisense_RNA'=>1, 
+                 'RNase_P_RNA' =>1, 
+                 'telomerase_RNA'=>1,
+                 'lncRNA'=> 1,
+                 'RNase_MRP_RNA'=>1,
+                 'scRNA'=>1,
+                 'siRNA'=>1,
+                 'miRNA'=>1,
+                 'snoRNA'=>1,
+                 'snRNA'=>1,
+                 'SRP_RNA'=>1,
+                 'vault_RNA'=>1,
+                 'pre_miRNA'=>1
+                 );
 my $fastafile=$Getopt::Std::opt_f || die("$usage A fasta file is required!\n");
 my $defpre;
 ($defpre)=($fastafile=~m{([^/]+)$});
 $defpre=~s/\.\w+$//;
 my @tbl;
 my $orgcode=$Getopt::Std::opt_c || 'jhhlp';
+my $dbname=$Getopt::Std::opt_b || $orgcode.'CGS';
 my $debug=$Getopt::Std::opt_D;
 my $useLocus=$Getopt::Std::opt_L;
 my $idmapfile=$Getopt::Std::opt_m;
@@ -71,8 +85,8 @@ my %genetbl; # geneid => [chr, strand, start, end, [@ttbl for gene], $gid]
 
           #                    0      1       2     3    4        5
 my %ttbl; # transcript_id => [chr, strand, start, end, geneID, [product, simacc, psim, qcov, eval],
-          #                               [@exons], [@CDS],   $t_id, $partialness, featType ]
-          #                                   6       7         8        9           10
+          #                               [@exons], [@CDS],   $t_id, $partialness, RNA_Type,  biotype]
+          #                                   6       7         8        9           10        11
 my ($seqid, $ntseq, $ntlen); #current genomic seq data
 
 open(FSA, '>'.$fileprefix.'.fsa') 
@@ -191,6 +205,10 @@ while (<GFF>) {
         ($simprod)=($attrs=~m/\bdescription\s*=\s*"?([^;"]+)/);
       }
     }
+    my ($biotype)=($attrs=~m/\bbiotype\s*=\s*"?([^;"]+)/);
+    if ($biotype && $ftype ne 'mRNA' && exists($ncRNAclass{$biotype})) {
+      $ftype='ncRNA';
+    }
     if ($simprod) {
       my @multi=split(/\%3B/, $simprod);
       $simprod=$multi[0];
@@ -230,15 +248,15 @@ while (<GFF>) {
     die("Error: could not find a gene ID for transcript $fid\n") unless $geneID;
     #            0       1        2      3      4          
     my $tdata=[$chr, $strand, $fstart, $fend, $geneID, 
-                  [$simprod, $simacc, $psim, $qcov, $eval], [], [], $fid, 0, $ftype];
-                  #  5                                      6   7    8    9        
+                  [$simprod, $simacc, $psim, $qcov, $eval], [], [], $fid, 0, $ftype, $biotype];
+                  #  5                                      6   7    8    9    10      11
     ## store the transcript
     die("Error: transcript $fid already added!\n")
      if (exists($ttbl{$fid}));
     $ttbl{$fid}=$tdata;
     addToGene($geneID, $fid, $tdata, $chr, $strand, $fstart, $fend);
     next;
-  }
+  } #transcript feature
   #--- non-transcript features
   if ($ftype eq 'exon' || $ftype eq 'CDS') { #only these are recognized! 
     storeFeature($ftype, $fp, $chr, $strand, $fstart, $fend);
@@ -280,7 +298,6 @@ foreach $seqid (@seqlst) {
   }
 }
 close(FTBL);
-close(GFFOUT);
 
 ###================ subroutines =================###
 
@@ -333,8 +350,8 @@ sub setupTranscripts {
  my $gpp=0; #gene partialness: 0b01: lacking STOP codon | 0b10: lacking start codon;
  my ($minl, $maxr);
  foreach my $tbl (@$rtbl) {
-    #     0       1        2     3     4         5        6      7      8    9    10
-    my ($chr, $strand, $start, $end, $geneID, $simdata, $exons, $CDS, $tid, $pp, $rnaType)=@$tbl;
+    #     0       1        2     3     4         5        6      7      8    9    10         11
+    my ($chr, $strand, $start, $end, $geneID, $simdata, $exons, $CDS, $tid, $pp, $rnaType, $biotype)=@$tbl;
     #make sure exon and CDS segments are properly sorted
     my @exsrt=sort { $main::a->[0]<=>$main::b->[0] || $main::a->[1]<=>$main::b->[1] } @$exons;
     $exons=[@exsrt];
@@ -347,26 +364,32 @@ sub setupTranscripts {
       $tbl->[7]=$CDS;
       my $s;
       map { $s.=substr($ntseq, $_->[0]-1, $_->[1]-$_->[0]+1) } @$CDS;
-      $s=reverseComplement($s) if ($strand eq '-');
-      my @codons=unpack('(A3)*',$s);
+      if (length($s)>=15) { #Note: we're dropping any CDS shorter than 5aa !
+        $s=reverseComplement($s) if ($strand eq '-');
+        my @codons=unpack('(A3)*',$s);
 
-      ###special case fix:
-      if ($chr=~m/\bmito/) {
-        ## mitochondrial STOP codons are different
-        #if ($locid eq 'jhhlp_008894' || $locid eq 'jhhlp_008894') {
-        #  print STDERR "$chr : $locid : ".$codons[-1]."\n";
-        #}
-        if (!exists($mitostop{$codons[-1]})) {
-             $pp|=1;
-             print STDERR "Warning: stop codon not found for $locid\n";
-          }
+        ###special case fix:
+        if ($chr=~m/\bmito/) {
+          ## mitochondrial STOP codons are different
+          #if ($locid eq 'jhhlp_008894' || $locid eq 'jhhlp_008894') {
+          #  print STDERR "$chr : $locid : ".$codons[-1]."\n";
+          #}
+          if (!exists($mitostop{$codons[-1]})) {
+               $pp|=1;
+               print STDERR "Warning: stop codon not found for $locid\n";
+            }
+        }
+        else {
+          $pp|=1 if !exists($stop{$codons[-1]});
+        }
+        $pp|=2 if $codons[0] ne 'ATG';
+        $gpp|=$pp;
+        $tbl->[9]=$pp;
+      } else {
+        #aminoacid too short!
+        $CDS=[];
+        $tbl->[7]=$CDS;
       }
-      else {
-        $pp|=1 if !exists($stop{$codons[-1]});
-      }
-      $pp|=2 if $codons[0] ne 'ATG';
-      $gpp|=$pp;
-      $tbl->[9]=$pp;
     }
     else { #non-coding RNAs
      if ($start<10) {
@@ -413,6 +436,10 @@ sub writeGenes {
 sub writeExons {
  my ($strand, $rsegs, $pp, $ftype)=@_;
  my @segs=@$rsegs;
+ my $len=0;
+ foreach my $v (@segs) {
+   $len += $v->[1]-$v->[0]+1;
+ }
  if ($strand eq '-') {
    map { $_ = [$_->[1], $_->[0]] } @segs;
    @segs=reverse(@segs);
@@ -429,6 +456,7 @@ sub writeExons {
   }
   ++$p;
  }
+ return $len;
 }
 
 sub gff_decode {
@@ -441,13 +469,20 @@ sub gff_decode {
 
 sub writeTranscripts {
   my ($rtbl, $locid)=@_;
+  my $tnum=0;
   foreach my $tbl (@$rtbl) {
-    my ($chr, $strand, $start, $end, $geneID, $simdata, $exons, $CDS, $tid, $pp, $rnaType)=@$tbl;
+    $tnum++;
+    my ($chr, $strand, $start, $end, $geneID, $simdata, $exons, $CDS, $tid, $pp, $rnaType, $biotype)=@$tbl;
     my ($simprod, $simacc, $psim, $qcov, $eval)=@$simdata;
 
     ($start, $end)=($end, $start) if $strand eq '-';
     my $coding= (@$CDS>0);
-    writeExons($strand, $exons, $pp, $rnaType); #uses global $ntseq
+    my ($ncRNA_class, $lnc);
+    if ($rnaType=~m/lnc_?RNA/) {
+      $rnaType = 'ncRNA';
+      $lnc=1;
+    }
+    my $tlen=writeExons($strand, $exons, $pp, $rnaType); #uses global $ntseq
     if ($coding) {
       print FTBL "\t\t\tproduct\thypothetical protein\n";
     }
@@ -460,340 +495,66 @@ sub writeTranscripts {
           $prod=~s/SSU/small subunit/;
           $prod=~s/LSU/large subunit/;
          }
+         if ($biotype eq 'tRNA') {
+           $prod=~s/^(tRNA\-\w\w\w) for anticodon \w\w\w/$1/;
+         }
          #$prod="putative $simprod";
          #$prod=$simprod if ($simprod=~m/putative|predict/i);
-         if ($rnaType eq 'ncRNA' && $prod=~m/telomerase/) {
-            print FTBL "\t\t\tncRNA_class\ttelomerase_RNA\n";
-         }
+      }
+      if ($rnaType eq 'ncRNA') {
+           if (exists($ncRNAclass{$biotype})) {
+              $ncRNA_class=$biotype;
+           }
+           elsif ($prod=~m/telomerase/ || $biotype=~m/telomerase/) {
+              $ncRNA_class='telomerase_RNA';
+           }
+           elsif ($lnc && $tlen>200) {
+               $ncRNA_class='lncRNA';
+           }
+           #print FTBL ">>>DEBUG: $tid : biotype=$biotype : class=$ncRNA_class\n";
+           if ($ncRNA_class) {
+              print FTBL "\t\t\tncRNA_class\t$ncRNA_class\n";
+           }
       }
       print FTBL "\t\t\tproduct\t$prod\n";
     }
     if ($coding) {
-      print FTBL "\t\t\tprotein_id\tgnl\|$orgcode|$locid\n";
+      print FTBL "\t\t\tprotein_id\tgnl\|$dbname|p$tnum.$locid\n";
     }
-    print FTBL "\t\t\ttranscript_id\tgnl\|$orgcode|t.$locid\n";
-
+    print FTBL "\t\t\ttranscript_id\tgnl\|$dbname|t$tnum.$locid\n";
+        my $note="similar to $tid";
+    ### -----FIXME: if the evidence is based on protein similarity, should better move this "note" block
+    ### after the CDS and its protein_id and transcript_id are written below
+    my $simid=$tid;
+    if ($simprod && $simprod=~s/\.?\s*\(([\w\-\.]+)\)\s*$//) {
+        $simid=$1;
+        $simprod=~s/^\s*similar to\s+//i;
+        $note="similar to $simid, $simprod";
+    }
+    else { $note="similar to $simid" }
+    #.$simprod unless 
+    #       ($simprod=~m/\bsimilar|\bputative\b|\blike/i);
+    print FTBL "\t\t\tnote\t$note\n";
+    #FIXME: just for our particular case here (GMAP alignment-based annotation)
+    my $db='IRGSP';
+    if ($simid =~ m/^ENS/) {
+      $db='ENSEMBL';
+    }
+    #elsif ($simid=~m/^EPlOS/) {
+    #  $db='IRGSP';
+    #}
+    print FTBL "\t\t\tinference\tsimilar to RNA sequence:$db:$simid\n";
+    print FTBL "\t\t\tinference\talignment:GMAP:2019-03-04:$db:$simid\n";
+    
     if ($coding) {
       writeExons($strand, $CDS, $pp, 'CDS'); #uses global $ntseq
       print FTBL "\t\t\tproduct\thypothetical protein\n";
-      print FTBL "\t\t\tprotein_id\tgnl\|$orgcode|$locid\n";
-      print FTBL "\t\t\ttranscript_id\tgnl\|$orgcode|t.$locid\n";
-      if ($simprod && $eval<1e-10) {
-       $simprod="similar to ".$simprod unless 
-           ($simprod=~m/\bsimilar|\bputative\b|\blike/i);
-       print FTBL "\t\t\tnote\t$simprod\n";
-      }
+      print FTBL "\t\t\tprotein_id\tgnl\|$dbname|p$tnum.$locid\n";
+      print FTBL "\t\t\ttranscript_id\tgnl\|$dbname|t$tnum.$locid\n";
     }
-  }
-}
-
-sub writeFeature {
-  my $d=$_[0];
-  my ($parent, $gstrand, $gstart, $gend, $gdescr, $acov, $gname, $ex, 
-                                $xgap, $nostart, $nostop, $qgap)=@$d;
-  print STDERR "writeFeature($parent, $gdescr, $gname)..\n" if $debug;
-  my @cx= sort { $main::a->[0]<=>$main::b->[0] } @$ex;
-  my @gffx = @cx;
-  #if ($gstrand eq '-') { #reverse complement features
-  #   ($gstart, $gend)=($gend, $gstart);
-  #   @cx = map { $_=[$_->[1], $_->[0], $_->[2]] } @cx;
-  #   @cx= reverse(@cx);
-  #   }
- my $s="\t";
- my $cid='';
- my $infrsim;
- my $unipr=0;
- if ($gdescr) {
-   my $hdescr;
-   ($cid, $hdescr)=split(/ /,$gdescr,2);
-   $gdescr=$hdescr if $hdescr;
-   $gdescr=~s/^gid:\S+\s+//;
-   $gdescr=~s/^CDS:\d+\-\d+\s+//;
-   $gdescr=~s/^CDS:join\([\d\,\-]+\)\s+//;
-   $gdescr=~s/UniRef100_\S+\s+//;
-   if ($cid=~m/^UPr?\|(\w+)\|acc\|(\w+)/) {
-     $unipr=1;
-     my ($upid, $upacc)=($1,$2);
-     $cid=up2gb($upid);
-     if ($cid) {
-      $infrsim='AA sequence:INSD:'.$cid;
-      $cid.=' ';
-      }
-     else { #no native GB entry, use SwissProt accession
-      $infrsim='AA sequence:SP:'.$upacc;
-      $cid=$upacc;
-      $cid.=' ';
-      }
-     }
-    elsif ($cid=~m/[modinfpxvr]+\|([\w\.]+)/) { #refseq entry
-     $cid=$1;
-     $cid =~ s/\.[24a-z]+\d+$//;
-     my $refacc=$cid;
-     $refacc.='.1' unless $refacc=~m/\.\d+$/;
-     $infrsim='RNA sequence:RefSeq:'.$refacc;
-     $cid.=' ';
-     }
-    else {
-     $cid='';
-     } 
-   }
- ##print FTBL join($s, '', '', '','locus_tag', $parent)."\n";
- my $note;
- my $product='hypothetical mRNA';
- #my $product='hypothetical protein';
- my $prot_desc;
- my $cdsproduct='hypothetical protein';
- my $gproduct='';
- my $gffnote='';
- if ($gdescr) {
-  #print STDERR " re processing start ($gdescr)..\n" if $debug;
-  # my ($fp)=($gdescr=~m/($re)/); #first note within parentheses
-  #print STDERR "  re m/ processing end.\n" if $debug;
-  # $fp=~s/^\s*\(\s*//;
-  # $fp=~s/\s*\)\s*$//;
-  $gdescr=~tr/[]/()/;
-  $gdescr=~s/$re//g; #remove all parenthetical constructs
-  $gdescr=~tr/ / /s; #squash duplicated spaces
-  if ($acov>50) {
-    my $d=$gdescr; 
-    $d=~s/UniRef100_\S+\s+//;
-    my $species;
-    #remove organism name
-    $species=$1 if ($d=~s/\s+\{([ \.\,\-\"\'\w]+)\}$//);
-    # is the product provided?
-    if ($d=~/\bproduct:\s*(\S[^\:\{\;]+)/i) {
-      my $v=$1;
-      if ($v=~m/\bhypothetical\b/ || $v=~m/\bLOC\d+/ || $v=~m/\bRIKEN\b/) {
-         $d=~s/\s*product:[^\:\{;]+//;
-         }
-        else { $d=$v; }
-      }
-    # make words start with lowercase: (proper names will mess this up)
-    $d =~ s/([A-Z][a-z]{5,})\b/\L$1/g;
-    #-- remove/convert isoform info from product descriptions
-    $d=~s/(?:transcript|splice)\s+variant\s+([\w\.\-\;]{1,5})$/isoform $1/i;
-    $d=~s/\,?\s*full insert(?: sequence)//i;
-    $d=~s/\,?\s*full (?:insert|sequence)//i;
-    $d=~s/\,?\s*\bform\d+//i;
-    $d=~s/phosphorylase\, glycogen[\;\.]\s*muscle/muscle glycogen phosphorylase/i;
-    $d=~s/^\s+//;$d=~s/[\;\:\,\. ]*$//;
-    if ($d=~s/^\s*similar\s+(to|with)\s+//i) {
-      $d=~s/homolog\w*$//i;
-      $d.=' homolog';
-      }
-    $note='similar to '.$cid.$d;
-    $note.=' ('.$species.')' if $species;
-    $gffnote=$note.", $acov\% coverage";
-    $d=~s/\s*\bLOC\d+//;
-    # $d=~s/\s*\bproduct\b//i;
-    # $d=~s/\s*\bC[\dxy]+orf\d+//i;
-    if ($d =~m/\bhypothetical\b/ || $d=~m/_predicted\b/i || $d=~m/\bRIKEN\b/ || $d=~m/\d+RIK\b/i 
-           || $d=~m/predicted gene/i || $d=~m/open reading frame\s+\d+/i || $d=~m/uncharacterized/i 
-           || $d=~m/with sequence similarity/i || $d=~m/conserved gene/i
-           || $d=~m/on chr/i || $d=~m/\bchromosome\b/i || $d=~m/\s*\bC[\dxy]+orf\d+/i
-           || $d=~m/\b[xy\d]+[pq]\d+\b/i  || $d=~m/telomeric to/i || $d=~m/neighbor (?:of|to)/i
-           || $d=~m/^\s*(?:protein|product)\s*$/i
-           || ($unipr && $d=~m/^[A-Z]+\d{9,}$/)
-           ) {
-       $d='';
-       }
-     else {
-      $d=~s/\,?\s*nuclear gene encoding mitochondrial protein//i;
-      $d=~s/^\s+//;$d=~s/[\;\:\,\. ]*$//;
-      $d=~s/\,?\s*\d+\s*kDa\b//i;
-      $d=~s/gene$/protein/;
-      $d=~tr/ / /s;
-      if ($d) {
-        $product=$d.' (predicted)'; #unless $d =~ m/hypothetical/;
-        $cdsproduct=$product;
-        }
-      }
-    $gname='' unless $d; 
-    $gname='' if ($gname=~m/LOC\d+/ || $gname=~m/\s*\bC[\dxy]+orf\d+/i || $gname=~m/\d+RIK$/i);
-    }
-   else {
-    $gname='';
-    }
-  }
- my $lpid; #local protein id
- my $cdsnote;
- if ($gname) {
-   if ($gn{$gname}>1) {
-     my $gnum = ++$gdup{$gname};
-     $gname=~s/[ \-_]?predicted$//i;
-     $cdsnote='distinct genes were predicted for gene locus '.$gname;
-     $gname.='_'.$gnum;
-     }
-   $gname=~s/[ \-_]?predicted$//i;
-   $lpid=$orgcode.'_'.$gname;
-   }
-  else {
-   my $jname=$parent;
-   $jname=~tr/_//d;
-   $jname=~s/tjsm/jsm/;
-   $lpid=$orgcode.'_jsm'.uc(sprintf('%x',$gstart)).($gstrand eq '+' ? 'f':'r');
-   $gname=$lpid;
-   }
-  
- my @xsplit=( 0 );
- #--
- my $encname='NOPE';
- $gffnote = $product unless $gffnote;
- print GFFOUT join("\t", $seqid, 'jigsaw', 'mRNA', $gffx[0]->[0], $gffx[-1]->[1], '.', 
-                       $gstrand, '.', "ID=$parent;Name=$gname;descr=\"$gffnote\"\n");
- foreach my $gex (@gffx) {
-   print GFFOUT join("\t", $seqid, 'jigsaw', 'CDS', $gex->[0], $gex->[1], '.', 
-                       $gstrand, $gex->[2], "Parent=$parent\n");
-   if ($gex->[3]==0) {
-     print STDERR "Warning ($defpre, $encname): no mapping evidence for exon $$gex[0]-$$gex[1] of $parent|$gname;\n";
-     }
-   }
- #--
- my $stopErr="ERROR ($defpre): in-frame stop codon found for $parent|$gname ($product)\n";
- my $revstrand=($gstrand eq '-');
- my $lastCodon='';
- if ($xgap) { # exon gap found
-    my ($splstart, $splend)=split(/:/,$xgap);
-    my @sa = grep { $_->[0]<=$splstart } @cx; #lower part, affected by gap
-    @sa= map { [ @$_ ] } @sa; #convert @sa into a copy, not references to exon data
-    #print STDERR "lower half: ".join(',', ( map { $_->[0]."-".$_->[1] } @sa ))."\n";
-    #print STDERR "$sa[-1]->[1]  vs $splend \n";
-    if ($sa[-1]->[1]>=$splstart) {
-       $sa[-1]->[1]=$splstart-1; # frame will be fixed later?
-       }
-    my @sb = grep { $_->[1]>=$splend } @cx; #upper half
-    @sb= map { [ @$_ ] } @sb;
-    #print STDERR "upper half: ".join(',', ( map { $_->[0]."-".$_->[1] } @sb ))."\n";
-
-    my @sbr= map { $_->[0].'-'.$_->[1] } @sb; 
-    if ($sb[0]->[0]<$splend) {
-       $sb[0]->[0]=$splend+1;
-       }
-    my @cxr= map { $_->[0].'-'.$_->[1] } @cx;
-    
-    if ($sa[-1]->[1]-$sa[0]->[0]<8) { # too short a fragment
-      @cx=@sb;
-      $xgap='';
-      $gstart=$sb[0]->[0];
-      print STDERR "WARNING: dropping short split end $sa[-1]->[1]-$sa[0]->[0] of $parent|$gname\n";
-      goto SHORT_SPLIT;
-      }
-    if ($sb[-1]->[1]-$sb[0]->[0]<8) {
-      @cx=@sa;
-      $xgap='';
-      $gend=$sa[-1]->[1];
-      print STDERR "WARNING: dropping too short split end $sb[-1]->[1]-$sb[0]->[0] of $parent|$gname\n" if $sb[-1]->[1];
-      goto SHORT_SPLIT;
-      }
-    @xsplit=();
-    my $frameCheck=0;
-    if ($revstrand) {
-      @cx = map { $_=[$_->[1], $_->[0], $_->[2]] } @cx;
-      @cx= reverse(@cx);
-      @sa = map { $_=[$_->[1], $_->[0], $_->[2]] } @sa;
-      @sa= reverse(@sa);
-      @sb = map { $_=[$_->[1], $_->[0], $_->[2]] } @sb;
-      @sb= reverse(@sb);
-      #print STDERR "checking Frame for \@sa, stops for \@b\n";
-      $frameCheck=&checkFrame(\@sa, 1, \$lastCodon); # this will also "fix" the frame if needed
-      print STDERR $stopErr if &checkStop(\@sb, 1);
-      push(@xsplit, [[@sb], '_5p',', 5 prime'],[[@sa], '_3p',', 3 prime']);
-      }
-     else { #forward strand
-      $frameCheck=&checkFrame(\@sb,0,\$lastCodon);
-      print STDERR $stopErr if &checkStop(\@sa);
-      push(@xsplit, [[@sa], '_5p',', 5 prime'],[[@sb], '_3p',', 3 prime']);
-      }
-    if ($frameCheck==0) {
-     print STDERR "ERROR ($defpre): in-frame stop found for $parent|$gname ($product) and frame shift fix failed.\n";
-     }
-   } 
-   else { #no intra-exon gaps detected (no split)
-    SHORT_SPLIT:
-    if ($revstrand) { 
-      @cx = map { $_=[$_->[1], $_->[0], $_->[2]] } @cx;
-      @cx= reverse(@cx);
-      }
-    print STDERR $stopErr if &checkStop(\@cx, $revstrand, \$lastCodon);
-   }
-  #-------------- gene ---------------------
-  my @hasNs = checkNs($gstart, $gend);
-  if (@hasNs>0 || $qgap) {
-    my $wmsg="Warning ($defpre, $encname): possible gap in model $parent|$gname : ";
-    my @ev;
-    push(@ev, "sequencing gap at ".join(',',@hasNs)) if @hasNs>0;
-    push(@ev, "mapping-suggested gaps at $qgap") if $qgap;
-    $wmsg.=join("; ",@ev); 
-    print STDERR $wmsg."\n";
-    }
-  if ($revstrand) { #reverse complement features
-    ($gstart, $gend)=($gend, $gstart);
-    }
-  print FTBL join($s, '<'.$gstart, '>'.$gend, 'gene')."\n";
-  print FTBL join($s, '', '', '','gene', $gname)."\n";
-  my $jspredline=join($s,'','','','inference','ab initio prediction:JIGSAW:3.2')."\n";
-  print FTBL $jspredline;
-  if ($infrsim) {
-  print FTBL join($s,'','','','inference','similar to '.$infrsim)."\n";
-  }
-  #---  
-   
- $nostop=1 unless $stop{uc($lastCodon)};
- foreach my $xspl (@xsplit) {
-    #
-    # ------------- mRNA --------------------
-    my ($cdspl_id, $cdspl_prod, $cdspl_note)=('','','');
-    my ($part5, $part3)=($nostart, $nostop); #partial at 5' and/or at 3'
-    
-    if ($xspl) { # if we have split data
-     @cx=@{$xspl->[0]};
-     $cdspl_id=$xspl->[1]; # '_a' or '_b'
-     $cdspl_prod=$xspl->[2]; # ", 5 prime" or ", 3 prime"
-     $cdspl_note='; sequencing gap found within coding sequence';
-     $part5=1 if index($cdspl_prod, '3')>0;
-     $part3=1 if index($cdspl_prod, '5')>0;
-     }
-    my $endrna= $cx[-1]->[1];
-    $cx[-1]->[1]='>'.$endrna;
-    print FTBL join($s, '<'.$cx[0]->[0], $cx[0]->[1], 'mRNA')."\n";
-    my @crx=@cx;shift(@crx);
-    foreach my $xc (@crx) {
-     print FTBL join($s, $$xc[0], $$xc[1])."\n";
-     }
-    print FTBL $jspredline;
-    if ($infrsim) {
-     print FTBL join($s,'','','','inference','similar to '.$infrsim)."\n";
-     }
-    print FTBL join($s, '', '', '','product', $product.$cdspl_prod)."\n";
-
-    #-------------- CDS --------------------- 
-    $cx[-1]->[1]=$endrna;
-    my $cdstart=$cx[0]->[2]+1;
-    #@cx is sorted such that $cx[0] is always the 5' exon
-    $cx[0]->[0]='<'.$cx[0]->[0] if $part5;
-    $cx[-1]->[1]='>'.$cx[-1]->[1] if $part3;
-    print FTBL join($s, $cx[0]->[0], $cx[0]->[1], 'CDS')."\n";
-    @crx=@cx;shift(@crx);
-    foreach my $xc (@crx) {
-     print FTBL join($s, $$xc[0], $$xc[1])."\n";
-     }
-    print FTBL $jspredline; 
-    if ($infrsim) {
-     print FTBL join($s,'','','','inference','similar to '.$infrsim)."\n";
-     }
-
-    print FTBL join($s, '', '', '','codon_start', $cdstart)."\n" if $cdstart>1 || $part5 || $part3;
-    print FTBL join($s, '', '', '','protein_id', 'gnl|NISC-CON|'.$lpid.$cdspl_id)."\n";
-    print FTBL join($s, '', '', '','product', $cdsproduct.$cdspl_prod)."\n";
-    print FTBL join($s, '', '', '','prot_desc', $prot_desc)."\n" if ($prot_desc);
-    my $cnote=$note;
-    if ($cdsnote) {
-      $cnote=$note ? $note.'; '.$cdsnote : $cdsnote;
-      }
-    print FTBL join($s, '', '', '','note', $cnote.$cdspl_note)."\n" if $cnote;
-  } # - for each gap split -------------
-
- print STDERR " => done $gname\n" if $debug;
+    # if our evidence is protein similarity, we should write the 'similar to' 
+    # note here, instead of the ebove
+  } #for each transcript
 }
 
 sub checkFrame {
