@@ -97,25 +97,16 @@ open(FA, $fastafile)||die("Error opening $fastafile !\n");
 {
   my $fsa_offset=0;
   $ntlen=0;
+  my $cnum;
   while (<FA>) {
     if (m/^>(\S+)\s*(.*)/) {
       my ($sid, $rest)=($1, $2);
       if ($seqid && $ntlen>0) {
         #basic consistency check
         if (exists($seqtbl{$seqid})) {
-         die("Error: duplicate genomic sequence $seqid encountered!\n");
+           die("Error: duplicate genomic sequence $seqid encountered!\n");
         }
-        my $fahead='>'.$seqid;
-        $fahead.=" [organism=$orgname]" if $orgname;
-        #$fahead.=" [gcode=1] [primary=$seqid]";
-        #fahead.= " $rest" if $rest;
-        $fahead.="\n";
-        print FSA $fahead;
-        $fsa_offset+=length($fahead);
-        my $faseq=fastafmt(\$ntseq, $ntlen);
-        $seqtbl{$seqid}=[$fsa_offset, $ntlen, length($faseq), [] ];
-        print FSA $faseq;
-        $fsa_offset+=length($faseq);
+        $fsa_offset=writeFastaRecord($seqid, \$ntseq, $ntlen, $fsa_offset); #write to FSA
         $ntseq='';
         $ntlen=0;
         $seqid='';
@@ -140,22 +131,12 @@ open(FA, $fastafile)||die("Error opening $fastafile !\n");
     $ntseq.=uc($_); #includes newlines
     $ntlen+=$llen;
   } #while <FA>
-  if ($seqid && $ntlen>0) {
+  if (length($seqid)>0 && $ntlen>0) {
     #basic consistency check
     if (exists($seqtbl{$seqid})) {
      die("Error: duplicate genomic sequence $seqid encountered!\n");
     }
-    my $fahead='>'.$seqid;
-    $fahead.=" [organism=$orgname]" if $orgname;
-    #$fahead.=" [gcode=1] [primary=$seqid]";
-    #fahead.= " $rest" if $rest;
-    $fahead.="\n";
-    print FSA $fahead;
-    $fsa_offset+=length($fahead);
-    my $faseq=fastafmt(\$ntseq, $ntlen);
-    $seqtbl{$seqid}=[$fsa_offset, $ntlen, length($faseq), []];
-    print FSA $faseq;
-    $fsa_offset+=length($faseq);
+    $fsa_offset=writeFastaRecord($seqid, \$ntseq, $ntlen, $fsa_offset);
   }
 }
 close(FSA);
@@ -300,6 +281,26 @@ foreach $seqid (@seqlst) {
 close(FTBL);
 
 ###================ subroutines =================###
+sub writeFastaRecord {
+  my ($id, $rseq, $slen, $foffset)=@_;
+  my $fahead='>'.$id;
+  my ($cnum)=($id=~m/chr_?(\d+)/);
+  $fahead.=" [organism=$orgname]" if $orgname;
+  $fahead.=" [chromosome=1]" if $cnum;
+  $fahead.=" [moltype=DNA] [tech=wgs]";
+  #$fahead.=" [gcode=1] [primary=$seqid]";
+  #fahead.= " $rest" if $rest;
+  $fahead.="\n";
+  print FSA $fahead;
+  $foffset+=length($fahead);
+  my $faseq=fastafmt($rseq, $slen);
+  $seqtbl{$seqid}=[$foffset, $slen, length($faseq), [] ];
+  print FSA $faseq;
+  $foffset+=length($faseq);
+  return $foffset;
+}
+
+
 
 sub fastafmt {
  my ($s, $slen)=@_;
@@ -470,6 +471,7 @@ sub gff_decode {
 sub writeTranscripts {
   my ($rtbl, $locid)=@_;
   my $tnum=0;
+  my $tcount=scalar(@$rtbl);
   foreach my $tbl (@$rtbl) {
     $tnum++;
     my ($chr, $strand, $start, $end, $geneID, $simdata, $exons, $CDS, $tid, $pp, $rnaType, $biotype)=@$tbl;
@@ -522,18 +524,19 @@ sub writeTranscripts {
       print FTBL "\t\t\tprotein_id\tgnl\|$dbname|p$tnum.$locid\n";
     }
     print FTBL "\t\t\ttranscript_id\tgnl\|$dbname|t$tnum.$locid\n";
-        my $note="similar to $tid";
+    my $note=$tcount>1 ? 'alternatively spliced; ' : '';
     ### -----FIXME: if the evidence is based on protein similarity, should better move this "note" block
     ### after the CDS and its protein_id and transcript_id are written below
     my $simid=$tid;
     if ($simprod && $simprod=~s/\.?\s*\(([\w\-\.]+)\)\s*$//) {
         $simid=$1;
         $simprod=~s/^\s*similar to\s+//i;
-        $note="similar to $simid, $simprod";
+        $note.="similar to $simid, $simprod";
     }
-    else { $note="similar to $simid" }
-    #.$simprod unless 
-    #       ($simprod=~m/\bsimilar|\bputative\b|\blike/i);
+    else { 
+       #FIXME: this is NOT usually the case! (the transcript ID may not be a known protein/transcript ID)
+       $note.="similar to $simid";
+    }
     print FTBL "\t\t\tnote\t$note\n";
     #FIXME: just for our particular case here (GMAP alignment-based annotation)
     my $db='IRGSP';
@@ -543,7 +546,8 @@ sub writeTranscripts {
     #elsif ($simid=~m/^EPlOS/) {
     #  $db='IRGSP';
     #}
-    print FTBL "\t\t\tinference\tsimilar to RNA sequence:$db:$simid\n";
+    
+    #print FTBL "\t\t\tinference\tsimilar to RNA sequence:$db:$simid\n";
     print FTBL "\t\t\tinference\talignment:GMAP:2019-03-04:$db:$simid\n";
     
     if ($coding) {
@@ -551,6 +555,7 @@ sub writeTranscripts {
       print FTBL "\t\t\tproduct\thypothetical protein\n";
       print FTBL "\t\t\tprotein_id\tgnl\|$dbname|p$tnum.$locid\n";
       print FTBL "\t\t\ttranscript_id\tgnl\|$dbname|t$tnum.$locid\n";
+      print FTBL "\t\t\tnote\t$note\n";
     }
     # if our evidence is protein similarity, we should write the 'similar to' 
     # note here, instead of the ebove
