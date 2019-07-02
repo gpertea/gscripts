@@ -363,9 +363,21 @@ sub setupTranscripts {
       my @cdsrt=sort { $main::a->[0]<=>$main::b->[0] || $main::a->[1]<=>$main::b->[1] } @$CDS;
       $CDS=[@cdsrt];
       $tbl->[7]=$CDS;
+      my $okCDS=1;
+      #NCBI requires introns at least 10 nt long
+      for (my $i=1;$i<@$CDS;$i++) {
+          if ($$CDS[$i]->[0]-$$CDS[$i-1]->[1]<11) {
+            $okCDS=0;
+            last;
+          }
+      }
       my $s;
-      map { $s.=substr($ntseq, $_->[0]-1, $_->[1]-$_->[0]+1) } @$CDS;
-      if (length($s)>=15) { #Note: we're dropping any CDS shorter than 5aa !
+      if ($okCDS) {
+        map { $s.=substr($ntseq, $_->[0]-1, $_->[1]-$_->[0]+1) } @$CDS;
+        $okCDS=0 if length($s)<15;
+      }
+      
+      if ($okCDS) { #Note: we're dropping any CDS shorter than 5aa !
         $s=reverseComplement($s) if ($strand eq '-');
         my @codons=unpack('(A3)*',$s);
 
@@ -514,9 +526,10 @@ sub writeTranscripts {
                $ncRNA_class='lncRNA';
            }
            #print FTBL ">>>DEBUG: $tid : biotype=$biotype : class=$ncRNA_class\n";
-           if ($ncRNA_class) {
-              print FTBL "\t\t\tncRNA_class\t$ncRNA_class\n";
+           if (length($ncRNA_class)==0) {
+              $ncRNA_class='other';
            }
+           print FTBL "\t\t\tncRNA_class\t$ncRNA_class\n";
       }
       print FTBL "\t\t\tproduct\t$prod\n";
     }
@@ -530,7 +543,9 @@ sub writeTranscripts {
     my $simid=$tid;
     if ($simprod && $simprod=~s/\.?\s*\(([\w\-\.]+)\)\s*$//) {
         $simid=$1;
+        $simprod=~s/\s*\(EC[ :]*\d+\.[\-\d]+\.[\-\d]+\.[\-\d]+\).*$//;
         $simprod=~s/^\s*similar to\s+//i;
+        $simprod=~tr/ / /s;
         $note.="similar to $simid, $simprod";
     }
     else { 
