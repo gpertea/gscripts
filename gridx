@@ -28,7 +28,7 @@ my $F_WRKDIR='workdir';
 my $F_NOTIFY='notify';
 my $F_TASKDB='taskDb';
 my $GRID_DEBUG;
-my $starting_dir;
+my $starting_dir; #the initial working directory (where gridx was launched)
 my $STARTED_GRID_TASK;
 my $SMPChildren=0; #SMP case: number of children running
 my %SMPChildren=(); #set of child PIDs
@@ -46,9 +46,7 @@ $ENV{HOST}=$HOST;
 $ENV{MACHINE}=$HOST;
 $ENV{HOSTNAME}=$HOSTNAME;
 $ENV{USER}=$USER;
-#&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&! - site specific -
-#---------- modify the SITE-SPECIFIC paths here if needed:
-#&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&! 
+
 # ===== PATH management ====
 # default: assume architecture/PATH/LIB uniformity across nodes
 # you can change this by adding your own worker/server paths here
@@ -1034,7 +1032,8 @@ if ($tasksdone!=$numtasks) {
      $subj="gridx job $jobid Done (all $numtasks tasks)";
       }
 $msg.=$sig;
-send_mail( { to=>$mail, subj=>$subj, body=>$msg }) if $mail;
+#send_mail( { to=>$mail, subj=>$subj, body=>$msg }) if $mail;
+send_mail( $mail, $subj, $msg ) if $mail;
 return $msg;
 }
 
@@ -1291,20 +1290,22 @@ sub beginWorker {
      die "Error at chdir($GRID_JOBDIR/$GRID_WRKDIR) ($!)\n";
 
  open(STDERR, ">wrk_err.log");
- print STDERR "worker $GRID_WORKER fully assigned to host $HOST PID $$\n" if $GRID_DEBUG;
+ print STDERR "worker $GRID_WORKER assigned to host $HOST PID $$ (wd: $starting_dir)\n"; # if $GRID_DEBUG;
  open(STDOUT, ">wrk_log.log");
  local *WRKGRAB;
  open(WRKGRAB, ">.on_$HOST");
  print WRKGRAB join("\t",$GRID_WRKDIR, $HOST, $$, 'start: '.getTime())."\n";
  close(WRKGRAB);
  $ENV{GRID_WORKER}=$GRID_WORKER;
- if ($SwitchDir) {
-     chdir($starting_dir) || die "Error at chdir($starting_dir)!\n";
-    }
-  elsif ($GRID_LOCAL_JOBDIR) {
-     chdir($GRID_LOCAL_JOBDIR/$GRID_WRKDIR) || die "Error at chdir($starting_dir)!\n";
-     }
- }
+ #
+ # -- the stuff below should be done in runTask()
+ #if ($SwitchDir) {
+ #    chdir($starting_dir) || die "Error at chdir($starting_dir)!\n";
+ # }
+ # elsif ($GRID_LOCAL_JOBDIR) {
+ #    chdir($GRID_LOCAL_JOBDIR/$GRID_WRKDIR) || die "Error at chdir($starting_dir)!\n";
+ # }
+} #beginWorker
 
 sub endWorker {
  return -1 unless $GRID_WORKER && $GRID_WRKDIR; 
@@ -1481,15 +1482,21 @@ sub runTask {
  my $runcmd; #the actuall command run using system();
  
  catchSigs(1); #install signal handler (should have been done already in getNextTask())
- if ($GRID_LOCAL_JOBDIR) {
-   wrkDie("Fatal: cannot chdir to local dir $GRID_LOCAL_JOBDIR/$GRID_WRKDIR!")
-      unless chdir("$GRID_LOCAL_JOBDIR/$GRID_WRKDIR");
-   }
+ my $chdir='';
+ if ($SwitchDir) {
+    $chdir=$starting_dir;
+    chdir($chdir) || die "Error at chdir($chdir)!\n";
+ }
+ elsif ($GRID_LOCAL_JOBDIR) {
+    $chdir=$GRID_LOCAL_JOBDIR/$GRID_WRKDIR;
+    chdir($chdir) || die "Error at chdir($chdir)!\n";
+ }
 
- #if ($SwitchDir) {
-   # we are currently in a wrk_* directory
- #  chdir('../..'); #change to the original directory (where gridx was launched from)
- #  }
+ #if ($GRID_LOCAL_JOBDIR) {
+ #  wrkDie("Fatal: cannot chdir to local dir $GRID_LOCAL_JOBDIR/$GRID_WRKDIR!")
+ #     unless chdir("$GRID_LOCAL_JOBDIR/$GRID_WRKDIR");
+ #}
+
  if ($GRID_PSXFASTA) { #psx emulation
    #prepare the fasta slice here
    my $fslice=sprintf('%s.slice-%08d',getFName($GRID_PSXFASTA), $GRID_TASK);
@@ -1524,7 +1531,6 @@ sub runTask {
    $runcmd.=' '.join(' ',$fslice, $seqcount, $GRID_TASK, $islast,
    #                               5                             6                     7
                                 $GRID_PSXSKIP, $GRID_PSXTOTAL, @cmd);
-   
    }
   elsif ($GRID_USECMDLIST) {
    # $TASK_DATA is the actual command to run
@@ -1532,14 +1538,15 @@ sub runTask {
    }
   else { #normal repeat cmd -- let the cmd use the ENV accordingly
    $runcmd=join(" ",@cmd);
-   }
+ }
  
  #... get $exitstatus for the system() call
- print STDERR ">starting-task-$GRID_TASK by worker $GRID_WORKER (on $HOST): '$runcmd'\n" if $GRID_DEBUG;
+ my $cwd=cwd();
+ print STDERR ">starting-task-$GRID_TASK by worker $GRID_WORKER (wd: $cwd): '$runcmd'\n"; # if $GRID_DEBUG;
  $exitstatus=system($runcmd);
- if ($SwitchDir) {
+ if ($chdir) {
    chdir("$GRID_JOBDIR/$GRID_WRKDIR");
-   }
+ }
  endTask($exitstatus); #taskID is taken from $GRID_TASK
 }
 
@@ -1835,19 +1842,26 @@ sub readFile {
 
 #===================================================
 # Mailer subroutine
-#--- only works for some Linux installations.. as it requires sendmail
+#
+# This requires a proper msmtp setup, the program should be in the PATH
+# and ~/.msmtprc should be properly configured
 sub send_mail {
+ my ($to, $subj, $body)=@_;
+ open(MSMTP, "| msmtp --tls-certcheck=off -t '$to'") 
+   || die("Error opening the msmtp pipe!\n");
+ print MSMTP "To: <$to>\nSubject: $subj\n\n$body\n";
+ close(MSMTP);
+}
+
+
+#--- only works for some Linux installations as it requires sendmail
+sub send_mail_old {
  my $hash=shift;
  $hash->{'from'}=$USER.'@'.$HOSTNAME
     unless defined($hash->{'from'});
  my $to=$hash->{'to'};
- unless ($to) {
-    $hash->{'to'}=$USER.'@'.$DOMAIN;
-    }
-   else {
-    $hash->{'to'}=$to.'@'.$DOMAIN unless $to =~ m/@/;
-    }
-    
+ unless ($to) { $hash->{'to'}=$USER.'@'.$DOMAIN; }
+   else { $hash->{'to'}=$to.'@'.$DOMAIN unless $to =~ m/@/; }
  my $file;
  local *ADDFILE;
  if (defined($hash->{file})) {
@@ -1856,10 +1870,9 @@ sub send_mail {
    open(ADDFILE, '<'.$hash->{file}) || return "Cannot open file ".$hash->{file}."\n";
    $file=<ADDFILE>;
    close ADDFILE;
-   }
+ }
  my $body = $hash->{'body'};
  $body.=$file;
- #my $fh;
  local* FH;
  open(FH, '| /usr/lib/sendmail -t -oi') || die "Error: cannot open sendmail pipe!\n";
  print(FH "To: $hash->{to}\n");
