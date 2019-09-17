@@ -15,7 +15,7 @@ host=$(hostname -s)
 wikidir=/ccb/salz7-data/www/ccb.jhu.edu/html/wiki
 
 #rdirs=( "geom.us.to:/mylocal/geo/backups/igmwiki" "igm3.pha.jhu.edu:/home/gpertea/backups/wiki" )
-rdirs=( "home:/mylocal/geo/backups/ccbwiki" "maestro:/mylocal/geo/backups/ccbwiki" "gwork:/mylocal/geo/backups/ccbwiki")
+rdirs=( "home:/mylocal/geo/backups/ccbwiki" "maestro:/data/backups/ccbwiki" "gwork:/mylocal/geo/backups/ccbwiki")
 
 ferr=~/backups/wiki/$bn.stderr
 
