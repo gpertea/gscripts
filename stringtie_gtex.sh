@@ -1,8 +1,10 @@
 #!/bin/bash
+guides='/home/gpertea/GTEx_redo/refseq_vs_gencode_intersection.prot_lnc.no_alts.clean.gff'
 if [[ -z "$1" || $1 = '-h' || $1 = '--help' ]]; then
  echo "Usage: "
  echo "    stringtie_gtex.sh /full/path/to/tissue/SRAxxxxxx.bam"
  echo "Warning: must be run in the base output directory!"
+ echo "Using guides: $guides"
  exit 1
 fi
 fp="$1"
@@ -22,5 +24,5 @@ fi
 
 # run stringtie now
 cd "$tissue"
-stringtie -p2 -o $sra.gtf $fp > $sra.stringie_err.log 2>&1
+stringtie -p2 -o $sra.gtf -G $guides $fp > $sra.stringie_err.log 2>&1
 
