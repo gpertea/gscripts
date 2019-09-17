@@ -549,7 +549,9 @@ sub prepareTaskDb {
   }
  elsif ($GRID_CMDFILE) { # -f option given
   return if ($GRID_RESUME); #taskDb must already be there!
-  $TASKDB="gridx.$GRID_CMDFILE.taskDb";
+  my ($cmdname)=($GRID_CMDFILE=~m/([^\/+]+)$/);
+  $cmdname=~s/\.\w+$//;
+  $TASKDB="gridx.$cmdname.taskDb";
   local *TASKDB;
   open(CMDFILE, $GRID_CMDFILE) || die "Error opening file $GRID_CMDFILE\n";
   open(TASKDB, '>'.$TASKDB) || die "Error creating file $TASKDB ($!)\n";
