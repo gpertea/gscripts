@@ -525,7 +525,7 @@ sub writeTranscripts {
     }
     else { # lacks CDS
       my $prod="putative $rnaType";
-      if ($simprod && $$prod !~ m/protein/) {
+      if ($simprod && $prod !~ m/protein/) {
          $prod=$simprod;
          $prod=~s/^(predicted|putative)\s*//;
          if ($prod=~s/\brRNA/ribosomal RNA/) {
