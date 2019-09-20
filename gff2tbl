@@ -9,7 +9,7 @@ use Fcntl qw(SEEK_SET SEEK_CUR SEEK_END);
 
 my $usage = q/Usage:
  gff2tbl -f <fasta_file> [-m <id2acc_map>] [-t <track>] [-o <out_prefix>]
-    [-c <lab_prefix> ] [-b dbname] [-L] [-x <exclude.lst>] [-n <organism_name>] <gff_file>
+    [-c <lab_prefix> ] [-b dbname] [-L] [-x <exclude.lst>] [-G] [-n <organism_name>] <gff_file>
 
  Convert GFF to .fsa and .tbl files to be used by tbl2asn
 
@@ -18,9 +18,10 @@ my $usage = q/Usage:
  Other options:
     -L   :  use locus attribute for transcripts in order to identify a "gene"
             and its boundaries
+    -G   : also output <out_prefix>.gff for table2asn
 /;
 umask 0002;
-getopts('LDn:b:c:x:m:f:t:o:') || die($usage."\n");
+getopts('LGDn:b:c:x:m:f:t:o:') || die($usage."\n");
 my %stop=('TAA'=>1,'TAG'=>1,'TGA'=>1, 'TAR'=>1,'TRA'=>1);
 my %mitostop=('TAA'=>1,'TAG'=>1,'AGA'=>1, 'AGG'=>1);
 my %ncRNAclass=('antisense_RNA'=>1, 
@@ -38,6 +39,7 @@ my %ncRNAclass=('antisense_RNA'=>1,
                  'pre_miRNA'=>1
                  );
 my $fastafile=$Getopt::Std::opt_f || die("$usage A fasta file is required!\n");
+my $gffout=$Getopt::Std::opt_G; 
 my $defpre;
 ($defpre)=($fastafile=~m{([^/]+)$});
 $defpre=~s/\.\w+$//;
@@ -176,7 +178,7 @@ while (<GFF>) {
      next if ($fid && exists($xclude{$fid}));
      next if ($fp && exists($xclude{$fp}));
   }
-  $ftype='mRNA' if $ftype =~m/transcript$/i;
+  # $ftype='mRNA' if $ftype =~m/transcript$/i;
   if ($ftype=~m/RNA$/i) { # transcript feature
     my $geneID;
     my ($simprod)=($attrs=~m/protSim\s*=\s*"?([^;"]+)/);
@@ -255,6 +257,10 @@ my %gdup;
 
 open(FTBL, '>'.$fileprefix.'.tbl') 
   || die("Error creating $fileprefix.tbl file!\n");
+if ($gffout) {
+  open(GFFOUT, '>'.$fileprefix.'.gff') 
+  || die("Error creating $fileprefix.gff file!\n");
+}
 #open(GFFOUT, ">$fileprefix.tbl.gff3") 
 #   || die("Error creating $fileprefix.tbl.gff3 file!\n");
 my $re;
@@ -279,6 +285,7 @@ foreach $seqid (@seqlst) {
   }
 }
 close(FTBL);
+close(GFFOUT) if $gffout;
 
 ###================ subroutines =================###
 sub writeFastaRecord {
@@ -349,7 +356,8 @@ sub addToGene {
 sub setupTranscripts {
  my ($rtbl, $locid)=@_; 
  my $gpp=0; #gene partialness: 0b01: lacking STOP codon | 0b10: lacking start codon;
- my ($minl, $maxr);
+ my ($minl, $maxr, $hasCoding);
+ ## must return: ($gpp, $minl, $maxr, $hasCoding)
  foreach my $tbl (@$rtbl) {
     #     0       1        2     3     4         5        6      7      8    9    10         11
     my ($chr, $strand, $start, $end, $geneID, $simdata, $exons, $CDS, $tid, $pp, $rnaType, $biotype)=@$tbl;
@@ -374,13 +382,12 @@ sub setupTranscripts {
       my $s;
       if ($okCDS) {
         map { $s.=substr($ntseq, $_->[0]-1, $_->[1]-$_->[0]+1) } @$CDS;
-        $okCDS=0 if length($s)<15;
+        $okCDS=0 if length($s)<15; #too short, we want at least 5aa
       }
       
       if ($okCDS) { #Note: we're dropping any CDS shorter than 5aa !
         $s=reverseComplement($s) if ($strand eq '-');
         my @codons=unpack('(A3)*',$s);
-
         ###special case fix:
         if ($chr=~m/\bmito/) {
           ## mitochondrial STOP codons are different
@@ -403,6 +410,7 @@ sub setupTranscripts {
         $CDS=[];
         $tbl->[7]=$CDS;
       }
+      $hasCoding=1 if $okCDS;
     }
     else { #non-coding RNAs
      if ($start<10) {
@@ -423,7 +431,7 @@ sub setupTranscripts {
      $tbl->[9]=$pp;
    }
  }
- return ($gpp, $minl, $maxr);
+ return ($gpp, $minl, $maxr, $hasCoding);
 }
 
 sub writeGenes {
@@ -433,7 +441,7 @@ sub writeGenes {
     ++$$rcounter;
     my $locid=$orgcode.'_'.sprintf("%06d", $$rcounter);
     if (!exists($xclude{$locid})) {
-      my ($gpp, $minl, $maxr)=setupTranscripts($rtbl, $locid); #updates partialness, product info
+      my ($gpp, $minl, $maxr, $hasCoding)=setupTranscripts($rtbl, $locid); #updates partialness, product info
       ($start, $end)=($minl, $maxr);
       ($start, $end)=($end, $start) if ($strand eq '-'); 
       $start='<'.$start if ($gpp & 2);
@@ -441,7 +449,7 @@ sub writeGenes {
       #$gpp must already be reversed
       print FTBL "$start\t$end\tgene\n";
       print FTBL "\t\t\tlocus_tag\t$locid\n";
-      writeTranscripts($rtbl, $locid);
+      writeTranscripts($rtbl, $locid, $hasCoding);
     }
   }
 }
@@ -481,96 +489,137 @@ sub gff_decode {
 }
 
 sub writeTranscripts {
-  my ($rtbl, $locid)=@_;
+  my ($rtbl, $locid, $hasCoding)=@_;
   my $tnum=0;
   my $tcount=scalar(@$rtbl);
   foreach my $tbl (@$rtbl) {
     $tnum++;
     my ($chr, $strand, $start, $end, $geneID, $simdata, $exons, $CDS, $tid, $pp, $rnaType, $biotype)=@$tbl;
     my ($simprod, $simacc, $psim, $qcov, $eval)=@$simdata;
-
     ($start, $end)=($end, $start) if $strand eq '-';
-    my $coding= (@$CDS>0);
+    my $hasCDS= (@$CDS>0);
     my ($ncRNA_class, $lnc);
     if ($rnaType=~m/lnc_?RNA/) {
       $rnaType = 'ncRNA';
       $lnc=1;
     }
+
+    if ($rnaType eq 'mRNA' && !$hasCDS) {
+        $rnaType='misc_RNA'; # FIXME: should it be 'transcript' if $hasCoding ?
+    }
+
     my $tlen=writeExons($strand, $exons, $pp, $rnaType); #uses global $ntseq
-    if ($coding) {
+    my $simid=$tid;
+    if ($simprod) {
+        if ($simprod=~s/\.?\s*\(([\w\-\.]+)\)\s*$//) {
+          $simid=$1;
+        }
+        $simprod=~s/\s*\(EC[ :]*\d+\.[\-\d]+\.[\-\d]+\.[\-\d]+\).*$//;
+        if ($simprod=~s/^\s*similar to\s+//i) {
+          $simprod.=' homolog' unless $simprod=~m/homolog/i;
+        }
+        $simprod=~tr/ / /s;
+    }
+    if ($hasCDS) {
       print FTBL "\t\t\tproduct\thypothetical protein\n";
     }
-    else { #not coding
+    else { # lacks CDS
       my $prod="putative $rnaType";
-      if ($simprod) {
+      if ($simprod && $$prod !~ m/protein/) {
          $prod=$simprod;
-         $prod=~s/^(predicted|putative) //;
+         $prod=~s/^(predicted|putative)\s*//;
          if ($prod=~s/\brRNA/ribosomal RNA/) {
           $prod=~s/SSU/small subunit/;
           $prod=~s/LSU/large subunit/;
+          $prod=~s/^\s*eukaryotic\s+//i;
          }
          if ($biotype eq 'tRNA') {
            $prod=~s/^(tRNA\-\w\w\w) for anticodon \w\w\w/$1/;
          }
+         #if ($prod =~m/^hypothetical / && $prod =~m/protein/) {
+         #  $prod="putative $rnaType";
+         #}
          #$prod="putative $simprod";
          #$prod=$simprod if ($simprod=~m/putative|predict/i);
       }
-      if ($rnaType eq 'ncRNA') {
-           if (exists($ncRNAclass{$biotype})) {
-              $ncRNA_class=$biotype;
-           }
-           elsif ($prod=~m/telomerase/ || $biotype=~m/telomerase/) {
-              $ncRNA_class='telomerase_RNA';
-           }
-           elsif ($lnc && $tlen>200) {
-               $ncRNA_class='lncRNA';
-           }
-           #print FTBL ">>>DEBUG: $tid : biotype=$biotype : class=$ncRNA_class\n";
-           if (length($ncRNA_class)==0) {
-              $ncRNA_class='other';
-           }
-           print FTBL "\t\t\tncRNA_class\t$ncRNA_class\n";
+      if ($rnaType eq 'mRNA' || $rnaType eq 'transcript' || $rnaType eq ' misc_RNA') {
+         $prod='putative transcript';
       }
-      print FTBL "\t\t\tproduct\t$prod\n";
-    }
-    if ($coding) {
+      else {
+       if ($rnaType eq 'ncRNA') {
+            if (exists($ncRNAclass{$biotype})) {
+               $ncRNA_class=$biotype;
+            }
+            elsif ($prod=~m/telomerase/ || $biotype=~m/telomerase/) {
+               $ncRNA_class='telomerase_RNA';
+            }
+            elsif ($lnc && $tlen>200) {
+                $ncRNA_class='lncRNA';
+            }
+            #print FTBL ">>>DEBUG: $tid : biotype=$biotype : class=$ncRNA_class\n";
+            if (length($ncRNA_class)==0) {
+               $ncRNA_class='other';
+            }
+            print FTBL "\t\t\tncRNA_class\t$ncRNA_class\n";
+       }
+      }
+      if ($prod) {
+        $prod=~s/^\s*similar to\s+//i;
+        $prod=~s/ homolog$//i;
+        print FTBL "\t\t\tproduct\t$prod\n";
+      }
+    } # <- does not have CDS
+    if ($hasCDS) {
       print FTBL "\t\t\tprotein_id\tgnl\|$dbname|p$tnum.$locid\n";
     }
     print FTBL "\t\t\ttranscript_id\tgnl\|$dbname|t$tnum.$locid\n";
-    my $note=$tcount>1 ? 'alternatively spliced; ' : '';
-    ### -----FIXME: if the evidence is based on protein similarity, should better move this "note" block
-    ### after the CDS and its protein_id and transcript_id are written below
-    my $simid=$tid;
-    if ($simprod && $simprod=~s/\.?\s*\(([\w\-\.]+)\)\s*$//) {
-        $simid=$1;
-        $simprod=~s/\s*\(EC[ :]*\d+\.[\-\d]+\.[\-\d]+\.[\-\d]+\).*$//;
-        $simprod=~s/^\s*similar to\s+//i;
-        $simprod=~tr/ / /s;
-        $note.="similar to $simid, $simprod";
+    my $note = $tcount>1 ? 'alternatively spliced' : '';
+    
+    if ($hasCoding && !$hasCDS) {
+      #a non-coding transcript in a coding gene ! NCBI doesn't like this
+      $note.= '; ' if $note;
+      $note.= 'unknown coding status';
     }
-    else { 
-       #FIXME: this is NOT usually the case! (the transcript ID may not be a known protein/transcript ID)
-       $note.="similar to $simid";
-    }
-    print FTBL "\t\t\tnote\t$note\n";
+
     #FIXME: just for our particular case here (GMAP alignment-based annotation)
-    my $db='IRGSP';
+    my $simdb='RAP-DB'; #FIXME: this should be changed accordingly
     if ($simid =~ m/^ENS/) {
-      $db='ENSEMBL';
+      $simdb='ENSEMBL';
     }
     #elsif ($simid=~m/^EPlOS/) {
     #  $db='IRGSP';
     #}
-    
-    #print FTBL "\t\t\tinference\tsimilar to RNA sequence:$db:$simid\n";
-    print FTBL "\t\t\tinference\talignment:GMAP:2019-03-04:$db:$simid\n";
-    
-    if ($coding) {
+
+    ### -----FIXME: if the evidence is based on protein similarity, should better move this "note" block
+    ### after the CDS and its protein_id and transcript_id are written below
+    my $simto;
+    if ($simid) {
+      $simto = $simdb ? "$simdb:$simid" : $simid ;
+      $simto .= ", $simprod" if $simprod;
+    }
+    if ($simto) {
+     # $note.="similar to $simid, $simprod";
+     $note.= '; ' if $note;
+     $note.="similar to $simto";
+    }
+    #else { 
+    #   #FIXME: this is NOT usually the case! (the transcript ID may not be a known protein/transcript ID)
+    #   $note.="similar to $simid";
+    #}
+    print FTBL "\t\t\tnote\t$note\n" if $note;
+    ##FIXME: these should be changed, now hard-coded for rice CG annotation
+    #print FTBL "\t\t\tinference\tsimilar to RNA sequence, mRNA:$simdb:$simid\n";
+    if ($simdb && $simid) { #FIXME: this just applies to rice transplanted annotation:
+      print FTBL "\t\t\tdb_xref\t$simdb:$simid\n";
+    }
+    #print FTBL "\t\t\tinference\tsimilar to RNA sequence\n"; #FIXME: change this as needed!
+    print FTBL "\t\t\tinference\talignment:GMAP:2019-03-04:$simdb:$simid\n";
+    if ($hasCDS) {
       writeExons($strand, $CDS, $pp, 'CDS'); #uses global $ntseq
       print FTBL "\t\t\tproduct\thypothetical protein\n";
       print FTBL "\t\t\tprotein_id\tgnl\|$dbname|p$tnum.$locid\n";
       print FTBL "\t\t\ttranscript_id\tgnl\|$dbname|t$tnum.$locid\n";
-      print FTBL "\t\t\tnote\t$note\n";
+      print FTBL "\t\t\tnote\t$note\n" if $note;
     }
     # if our evidence is protein similarity, we should write the 'similar to' 
     # note here, instead of the ebove
