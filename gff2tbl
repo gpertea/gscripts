@@ -528,11 +528,6 @@ sub writeTranscripts {
       if ($simprod && $prod !~ m/protein/) {
          $prod=$simprod;
          $prod=~s/^(predicted|putative)\s*//;
-         if ($prod=~s/\brRNA/ribosomal RNA/) {
-          $prod=~s/SSU/small subunit/;
-          $prod=~s/LSU/large subunit/;
-          $prod=~s/^\s*eukaryotic\s+//i;
-         }
          if ($biotype eq 'tRNA') {
            $prod=~s/^(tRNA\-\w\w\w) for anticodon \w\w\w/$1/;
          }
@@ -541,6 +536,12 @@ sub writeTranscripts {
          #}
          #$prod="putative $simprod";
          #$prod=$simprod if ($simprod=~m/putative|predict/i);
+      }
+      if ($rnaType eq 'rRNA') {
+          $prod=~s/\brRNA/ribosomal RNA/;
+          $prod=~s/SSU/small subunit/;
+          $prod=~s/LSU/large subunit/;
+          $prod=~s/^\s*eukaryotic\s+//i;
       }
       if ($rnaType eq 'mRNA' || $rnaType eq 'transcript' || $rnaType eq ' misc_RNA') {
          $prod='putative transcript';
