@@ -2,9 +2,8 @@ These shell scripts were used for the procedure of remapping the Oryza sativa re
 to the new Carolina Gold genome assembly.
 
 * **prep_chrs.sh** : prepares the per-chromosome data (indexed FASTA 
-  files with DNA and peptide sequences as found on the reference rice genome)
-* **proc_chrs.sh** : processes the per-chromosome data, transferring the annotation to the new assembled chromosome sequences; 
-  uses other scripts from the __gscripts__ parent directory and repository:
+  files with DNA and peptide sequences from the reference rice genome and its annotation)
+* **proc_chrs.sh** : processes the per-chromosome data, transferring the annotation to the newly assembled Carolina Gold chromosome sequences; uses these other scripts from the __gscripts__ parent directory (and repository):
   * paftools.js
   * gff_liftover.pl 
   * gffcount
