@@ -7,7 +7,7 @@ to the new Carolina Gold genome assembly.
   * paftools.js
   * gff_liftover.pl 
   * gffcount
-  * cds2rna_blat.pl
+  * [cds2rna_blat.pl](https://github.com/gpertea/gscripts/blob/master/cds2rna_blat.pl) 
   
   These scripts also require other programs like **gffread**, **cbdfasta/cdbyank**, **samtools**, **gmap**, **minimap2** 
   and **blat**.
