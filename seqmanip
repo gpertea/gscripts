@@ -562,7 +562,11 @@ sub processRanges {
     }
  }
  $txt_intvs.=$chr_strand if $txt_intvs && $chr_strand eq '-';
- $defline.=$txt_intvs unless $udefline;
+ ##defline can be the full defline, not just the , make sure 
+ # we add the range after the sequence ID
+ unless ($udefline) {
+    $defline=~s/^(\S+)/$1$txt_intvs/;
+ }
  process_seq(\@rdata, $rstart, $revC);
 }
 
@@ -798,7 +802,7 @@ sub process_seq {
      $seq=''; # signal that it was processed
      $seq_len=0;
      return;
-     }
+  }
   unless ($gffout) { #output FASTA record
     if ($defline) { #format back to fasta
      if ($fxmap || $fseqdescr) {
