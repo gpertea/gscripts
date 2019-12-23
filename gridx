@@ -1026,13 +1026,13 @@ my $sig='';
 # $sig.=" =-\n";
 # }
 if ($tasksdone!=$numtasks) {
-     $msg="Summary of gridx job $jobid: $tasksdone tasks done out of $numtasks\n".
+     $msg="Summary of gridx job $jobid ($HOST):\nFinished $tasksdone tasks out of $numtasks\n".
                       "Check $wrkdir for more details.\n";
-     $subj="gridx job $jobid (done $tasksdone out of $numtasks)";
+     $subj="gridx [$HOST] $jobid done ($tasksdone out of $numtasks)";
      }
  else{
-     $msg="gridx job $jobid - done all $numtasks tasks\n";
-     $subj="gridx job $jobid Done (all $numtasks tasks)";
+     $msg="gridx job $jobid on $HOST in $wrkdir:\nFinished all $numtasks tasks.\n";
+     $subj="gridx [$HOST] $jobid Done ($numtasks)";
       }
 $msg.=$sig;
 #send_mail( { to=>$mail, subj=>$subj, body=>$msg }) if $mail;
