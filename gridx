@@ -209,7 +209,7 @@ my @ar=@ARGV;
 while ($ar[0] eq '-Z') { shift(@ar); shift(@ar); }
 my $CMDLINE="$FindBin::Script\t".join("\t",@ar);
 # parse script options
-print STDERR "Running on $HOST (domain: $DOMAIN): $0 ".join(' ',@ARGV)."\n";
+#print STDERR "Running on $HOST (domain: $DOMAIN): $0 ".join(' ',@ARGV)."\n";
 getopts('USWHM:O:NKRDTqvaJZ:L:u:r:x:y:i:Ff:n:t:d:s:p:m:g:b:e:c:C:') || die($usage."\n");
 umask 0002;
 if ($Getopt::Std::opt_H) {
@@ -451,7 +451,8 @@ if ($Getopt::Std::opt_T) { #wait for all children to finish
  do {
   sleep(5);
   } until (-e $F_ALLDONE);
- my $msg=jobSummary($mailnotify);
+ #my $msg=jobSummary($mailnotify);
+ my $msg=jobSummary();
  my $exitcode = (-s $F_ERRTASKS) ? `wc -l $F_ERRTASKS` : 0;
  chomp($exitcode);
  print STDOUT $msg."\n";
@@ -1017,13 +1018,13 @@ close(CMDFILE);
 unlink($F_NOTIFY) if -s $F_NOTIFY;
 my ($msg, $subj);
 my $sig='';
-if ($mail) {
- $sig = "\n\n-------------------------\n -= mail sent from $HOST";
- $sig.=" (worker $GRID_WORKER)" if $GRID_WORKER; 
- $sig.=" \nWorking directory: $wrkdir]\n" if $wrkdir;
- $sig.=" \nCommand line: \n $cmdline\n" if $cmdline;
- $sig.=" =-\n";
- }
+#if ($mail) {
+# $sig = "\n\n-------------------------\n -= mail sent from $HOST";
+# $sig.=" (worker $GRID_WORKER)" if $GRID_WORKER; 
+# $sig.=" \nWorking directory: $wrkdir]\n" if $wrkdir;
+# $sig.=" \nCommand line: \n $cmdline\n" if $cmdline;
+# $sig.=" =-\n";
+# }
 if ($tasksdone!=$numtasks) {
      $msg="Summary of gridx job $jobid: $tasksdone tasks done out of $numtasks\n".
                       "Check $wrkdir for more details.\n";
