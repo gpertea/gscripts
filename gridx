@@ -367,7 +367,7 @@ if ($Getopt::Std::opt_J) {
   my @cmd=@ARGV; # cmd and cmdargs
   while (my $taskId = getNextTask()) {
     runTask($taskId, @cmd);
-    }
+  }
   my $runningworkers=endWorker();
   my $exitcode=0;
   if ($runningworkers==0) { #this was the last worker!
@@ -674,7 +674,8 @@ sub removeJob_condor {
 }
 
 
-sub smpTaskReaper {   # takes care of dead children      $SIG{CHLD} = \&taskReaper;
+sub smpTaskReaper {   
+  # takes care of dead children  $SIG{CHLD} = \&taskReaper;
   my $childpid;
   while (($childpid = waitpid(-1, WNOHANG)) > 0) {
    $SMPChildren --;
@@ -685,12 +686,18 @@ sub smpTaskReaper {   # takes care of dead children      $SIG{CHLD} = \&taskReap
   
 sub smpTaskKiller {               # signal handler for SIGINT
   local($SIG{CHLD}) = 'IGNORE';   # we're going to kill our children
+  print STDERR timeStamp()." ($$) received TERM kill, send kill INT all children\n";
+  kill 'INT' => keys %SMPChildren;
+ }
+
+sub smpTaskKillerINT {               # signal handler for SIGINT
+  local($SIG{CHLD}) = 'IGNORE';   # we're going to kill our children
+  print STDERR timeStamp()." ($$) received INT kill, send kill INT all children\n";
   kill 'INT' => keys %SMPChildren;
  }
 
 sub removeJob_smp {
- taskKiller();
- 
+ smpTaskKiller(); 
 }
 
 sub submitJob_sge {
@@ -812,7 +819,7 @@ if ($GRID_LOGDIR) {
           exec("$PERL_BIN $0 $otherflags -W $GRID_CMD"); #never returns
       }
    }
-$SIG{INT}=\&smpTaskKiller;
+$SIG{INT}=\&smpTaskKillerINT;
 $SIG{TERM}=\&smpTaskKiller;
 return $jobid;
 }
@@ -927,7 +934,7 @@ if ($logdir) {
 
 sub jobDie {
  my $jobid=shift @_;
- print STDERR "Error: ".join("\n",@_)."\n";
+ print STDERR 'Error: '.timeStamp().' '.join("\n",@_)."\n";
  &$removeJob($jobid);
  die();
  }
@@ -1248,12 +1255,12 @@ sub beginWorker {
  my $fh=setXLock($F_WRKSTART,120) || die $errmsg; #update the count of started workers
  $GRID_WORKER=incFValue($fh, $F_WRKSTART);
  endXLock($fh);
- print STDERR "D: worker $GRID_WORKER assigned to host $HOST pid $$ at ".getTime()."\n" if $GRID_DEBUG;
+ print STDERR "D: worker $GRID_WORKER assigned to host $HOST pid $$ ".timeStamp()."\n" if $GRID_DEBUG;
  $GRID_WRKDIR=sprintf("wrk_%04d",$GRID_WORKER);
  $starting_dir=$GRID_JOBDIR;
  $starting_dir=~s/[^\/]+\/?$//;
  if ($GRID_LOCAL_JOBDIR) {   
-   print STDERR "D: creating local dir on $HOST: $GRID_LOCAL_JOBDIR/$GRID_WRKDIR\n" if $GRID_DEBUG;
+   #print STDERR "D: creating local dir on $HOST: $GRID_LOCAL_JOBDIR/$GRID_WRKDIR\n" if $GRID_DEBUG;
    mkdir("$GRID_LOCAL_JOBDIR") unless -d $GRID_LOCAL_JOBDIR;
    system("/bin/rm -f $GRID_LOCAL_JOBDIR/$GRID_WRKDIR");
    mkdir("$GRID_LOCAL_JOBDIR/$GRID_WRKDIR") unless -d $GRID_LOCAL_JOBDIR;
@@ -1293,7 +1300,7 @@ sub beginWorker {
      die "Error at chdir($GRID_JOBDIR/$GRID_WRKDIR) ($!)\n";
 
  open(STDERR, ">wrk_err.log");
- print STDERR "worker $GRID_WORKER assigned to host $HOST PID $$ (wd: $starting_dir)\n"; # if $GRID_DEBUG;
+ print STDERR timeStamp()." worker $GRID_WORKER assigned to host $HOST PID $$ (wd: $starting_dir)\n"; # if $GRID_DEBUG;
  open(STDOUT, ">wrk_log.log");
  local *WRKGRAB;
  open(WRKGRAB, ">.on_$HOST");
@@ -1326,7 +1333,7 @@ sub endWorker {
      die("Error: invalid number of workers ($v) reported in $GRID_JOBDIR/$F_WRKCOUNT\n")
      }
  endXLock($fh);
- print STDERR join("\t","D. worker $GRID_WRKDIR", $HOST, $$, 'finished at:',getTime())."\n" if $GRID_DEBUG;
+ print STDERR join(' ',"D: worker $GRID_WRKDIR", $HOST, "pid $$", timeStamp())."\n" if $GRID_DEBUG;
 
  local *WRKGRAB;
  sysopen(WRKGRAB, ".on_$HOST", O_RDWR | O_SYNC );
@@ -1428,7 +1435,7 @@ sub getNextTask {
  $TASK_LOCKH=setXLock($TASK_LOCKF, 70, 3);
  unless ($TASK_LOCKH) { #this SHOULD be available immediately.. 
      my $lockedby=`cat $TASK_LOCKF`;chomp($lockedby);
-     print STDERR "WARNING: lock-fail on task $taskID $sourcemsg (previously locked in $TASK_LOCKF by [$lockedby])\n";
+     print STDERR 'WARNING: '.timeStamp()." lock-fail on task $taskID $sourcemsg (previously locked in $TASK_LOCKF by [$lockedby])\n";
      #wrkDie("Error: couldn't get a lock on task $taskID..\n");
      undef($taskID);
      goto SKIP_DONE; # don't kill the worker, just move on
@@ -1437,10 +1444,10 @@ sub getNextTask {
  # check the status of this task:
  my ($tstatus, $tuserdata, $tdirno, $thost, $terrcount, 
      $texcode, $tstartmin)=taskDbStat("$GRID_JOBDIR/$F_TASKDB.cidx", $taskID);
- print STDERR ">task-$taskID assigned to worker $GRID_WORKER (on $HOST) $sourcemsg\n";
+ #print STDERR '>'.timeStamp()." task-$taskID assigned to worker $GRID_WORKER (on $HOST) $sourcemsg\n";
  if ($GRID_RESUME && $tstatus eq '.') {
    #skip this one, it's finished (according to taskDb!)
-   print STDERR ">SKIP-done:$taskID \{$tstatus|$terrcount|$texcode|$tdirno|$tstartmin\}\t\{$thost\}\n";
+   print STDERR '>'.timeStamp()." SKIP-done:$taskID \{$tstatus|$terrcount|$texcode|$tdirno|$tstartmin\}\t\{$thost\}\n";
    undef $taskID;
    undef $GRID_TASK;
    endXLock($TASK_LOCKH);
@@ -1483,8 +1490,7 @@ sub runTask {
  my @cmd=@_;
  my $exitstatus;
  my $runcmd; #the actuall command run using system();
- 
- catchSigs(1); #install signal handler (should have been done already in getNextTask())
+ #catchSigs(1); #install signal handler (should have been done already in getNextTask())
  my $chdir='';
  if ($SwitchDir) {
     $chdir=$starting_dir;
@@ -1545,7 +1551,7 @@ sub runTask {
  
  #... get $exitstatus for the system() call
  my $cwd=cwd();
- print STDERR ">starting-task-$GRID_TASK by worker $GRID_WORKER (wd: $cwd): '$runcmd'\n"; # if $GRID_DEBUG;
+ print STDERR '>'.timeStamp()." begin task $GRID_TASK by worker $GRID_WORKER ($$ wd: $cwd): '$runcmd'\n"; # if $GRID_DEBUG;
  $exitstatus=system($runcmd);
  if ($chdir) {
    chdir("$GRID_JOBDIR/$GRID_WRKDIR");
@@ -1567,7 +1573,7 @@ sub catchSigs { # true/false
 
 sub sigHandler {
  my $signame=shift;
- wrkDie("Signal $signame caught for worker $$ on $HOST, aborting..\n");
+ wrkDie(timeStamp()." Signal $signame caught for worker $$ on $HOST, aborting..\n");
  }
 
 sub toRetry {
@@ -1592,9 +1598,9 @@ sub endTask {
  # we MUST be in GRID_WRKDIR
  chdir("$GRID_JOBDIR/$GRID_WRKDIR") || die("Error: failed to chdir to $GRID_JOBDIR/$GRID_WRKDIR!");
  my ($exitstatus)=@_;
- 
+ print STDERR '<'.timeStamp()." task $GRID_TASK finished with exit status $exitstatus\n"; # if $GRID_DEBUG;
  if (!$exitstatus && !$STARTED_GRID_TASK) { # could be a premature failure, like cdbyank not found, etc.
-   print STDERR "scheduling $GRID_TASK for retry..\n";
+   print STDERR ".. scheduling $GRID_TASK for retry..\n";
    toRetry($GRID_TASK, $TASK_ERRCOUNT);
    endXLock($TASK_LOCKH) if $TASK_LOCKH;
    unlink($TASK_LOCKF);
@@ -1603,7 +1609,7 @@ sub endTask {
    catchSigs(0);
    undef $GRID_TASK;
    return;
-   }
+ }
  my $dbstatus;
  if (defined($exitstatus)) {
    if ($exitstatus==0) { #success
@@ -1617,7 +1623,7 @@ sub endTask {
     }
   else { #error status 
      $TASK_ERRCOUNT++;
-     print STDERR "task $GRID_TASK failed on $HOST (PID=$$, status='$exitstatus') (worker $GRID_WORKER); error count=$TASK_ERRCOUNT\n" if $GRID_DEBUG;
+     print STDERR timeStamp()." task $GRID_TASK failed on $HOST (PID=$$, status='$exitstatus') (worker $GRID_WORKER); error count=$TASK_ERRCOUNT\n" if $GRID_DEBUG;
      if ($TASK_ERRCOUNT>$MAX_RETRIES) { #trash it
           my $he=setXLock($F_ERRTASKS, 70, 3);
           fappend($he, join("\t",$GRID_TASK,$exitstatus,$HOST,$GRID_WRKDIR)."\n");
@@ -1632,12 +1638,12 @@ sub endTask {
   endXLock($TASK_LOCKH) if $TASK_LOCKH;
   unlink($TASK_LOCKF) if $TASK_LOCKF;
   undef($TASK_LOCKH);undef($TASK_LOCKF);
-  print STDERR "]task $GRID_TASK ended - updating taskDb with status code '$dbstatus'\n" if $GRID_DEBUG;
+  print STDERR timeStamp()." task $GRID_TASK ended - updating taskDb with status code '$dbstatus'\n" if $GRID_DEBUG;
   taskDbStat("$GRID_JOBDIR/$F_TASKDB.cidx", $GRID_TASK, $dbstatus,
                $GRID_WORKER, $HOST, $TASK_ERRCOUNT, $exitstatus);  
  } # defined $exitstatus
 else { #no exitstatus given, it was an interrupt signal or otherwise failed task
- print STDERR "task $GRID_TASK ended with undefined exit status\n" if $GRID_DEBUG;
+ print STDERR timeStamp()." task $GRID_TASK ended with undefined exit status\n" if $GRID_DEBUG;
  toRetry($GRID_TASK, $TASK_ERRCOUNT);
  endXLock($TASK_LOCKH) if $TASK_LOCKH;
  unlink($TASK_LOCKF) if $TASK_LOCKF;
@@ -1887,7 +1893,16 @@ sub send_mail_old {
 
 sub getTime {
  my $date=localtime();
- #get rid of the day so Sybase will accept it
+ #get rid of the day
  (my $wday,$date)=split(/\s+/,$date,2);
  return $date;
+}
+
+sub timeStamp {
+    my ($s,$m,$h,$md,$mo,$y,$wd,$yd,$dst)=localtime(time);
+    #my $t=sprintf("[%04d.%02d.%02d %02d:%02d:%02d]",
+    #                    $y+1900,$mo+1,$md,$h,$m,$s);
+    my $t=sprintf("[%02d-%02d_%02d:%02d:%02d]",
+                   $mo+1, $md,  $h,  $m, $s);
+    return $t;
 }
