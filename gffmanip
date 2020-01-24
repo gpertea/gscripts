@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use IO::Uncompress::Gunzip qw(gunzip $GunzipError);
+use Data::Dumper;
 use Getopt::Long;
 Getopt::Long::Configure ("gnu_getopt", "no_ignore_case");
 my $usage = q/Usage:
@@ -530,8 +531,9 @@ sub loadGff {
            my ($attr, $value)=split(/\s*=\s*/,$a,2);
            next if !$keepAll && !exists($oattrs{$attr});
            $value=~s/[" ]+$//;$value=~s/^[" ]+//;
-           push(@$alstref, $attr) unless $attr eq 'ID';
            $attrs{$attr}=$value;
+           next if $tFix && $attr eq 'Note';
+           push(@$alstref, $attr) unless $attr eq 'ID';
         }
         if ($tFix) {
             #very specific fix for the horribly broken MONAX annotation GFF
@@ -568,7 +570,21 @@ sub loadGff {
                 die("Error: duplicate feature $rID\n") if ($recData->[11] & 4 )== 0 ;
                 #feature created by exon (should only happen for basic GTF)
                 $recData->[2]=$f;
-                $recData->[3]={%{$recData->[3]}, %attrs };
+                #add each exon attribute, if novel
+                #print STDERR "combining attributes for $f $rID:\n";
+                #print STDERR ">recData->3: ", Dumper $recData->[3];
+                #print STDERR ">attrs: ", Dumper \%attrs;
+                my $xattrs=$recData->[3];
+                foreach my $a (@{$xattrs->{'.'}}) {
+                  #add each exon attr to the parent, if new
+                  next if $a eq 'ID' || $a eq 'Parent' || exists $attrs{$a};
+                  $attrs{$a}=$xattrs->{$a};
+                  push(@$alstref, $a);
+                }
+                $recData->[3] = {%attrs};
+                #print STDERR ">after combining: ", Dumper $recData->[3];
+                
+                
                 $recData->[4] = $fstart;
                 $recData->[5] = $fend;
                 $recData->[10] = $fscore;
@@ -673,11 +689,16 @@ sub loadGff {
        if ($ld) { ## existing parent (transcript/gene) entry, add this exon
          if ($tFix) { #add exon attributes to parent transcript, if they are new
            my $tattrs=$ld->[3];
+           $attrs{'Parent'}=$recID if $tFix;
+           #print STDERR "attempt to add exon attrs:", Dumper \%attrs;
+           #print STDERR "    to transcript attrs:", Dumper $tattrs;
            foreach my $a (@$alstref) {
-              #add each exon attr to the parent
+              #add each exon attr to the parent, if new
               next if $a eq 'ID' || $a eq 'Parent' || exists $tattrs->{$a};
               $tattrs->{$a}=$attrs{$a};
+              push(@{$tattrs->{'.'}}, $a);
            }
+           #print STDERR " =>  result: ", Dumper $tattrs;
          }
          my $i=($xf eq 'CDS') ? 7 : 6;
          my ($lstart, $lend)=($$ld[4], $$ld[5]);
@@ -703,6 +724,7 @@ sub loadGff {
          if ($isGFF3) { #this should NOT happen usually, parent should already be there
            #print STDERR "Warning: exon feature found before/without parent $recID:\n$line\n";
            $attrs{'ID'}=$recID;
+           $attrs{'Parent'}=$recID if $tFix;
          }
          #else { # GTF input
          #  #die("Error: found exon/CDS entry without parent!\n$line\n") if ($isGFF3);
@@ -826,7 +848,7 @@ sub processGffRecs {
    }
    my $td=$$recs{$recid};
    die("Error: cannot find GFF record for $recid\n") unless $td;
-   processExons($recid, $td);
+   processExons($recid, $td) unless $tFix;
    #     0       1       2        3        4      5       6    7      8       9      10         11
    my ($chr, $strand, $feature, $attrs, $fstart, $fend,  $er, $cr,  $track, $geneID, $fscore, $xflags) = @$td;
    my $newchr=($chr ne $lastchr);
@@ -865,7 +887,7 @@ sub processGffRecs {
         foreach my $tid (@{$gdata->[1]}) {
           my $tdata=$$recs{$tid};
           if ($tdata) {
-             processExons($tid, $tdata);
+             processExons($tid, $tdata) unless $tFix;
              if ($tdata->[0] eq $chr) {
                 $min=$tdata->[4] if $tdata->[4]<$min || !$min;
                 $max=$tdata->[5] if $tdata->[5]>$max;
@@ -877,7 +899,20 @@ sub processGffRecs {
              #  print STDERR ("Warning:    not fixing transcript $tid of gene $recid !\n");
              #  next;
              #}
-             if ($tFix && (@ex>0 || @cds>0) ) { #parent gene also parents exons directly!
+             if ($tFix) {
+               my @tex=@{$tdata->[6]};
+               my ($tstart, $tend)=($tdata->[4], $tdata->[5]);
+               if (@tex>1) {
+                  for (my $i=0;$i<@tex; $i++) {
+                    if ($tex[$i]->[0]==$tstart && $tex[$i]->[1]==$tend) {
+                      splice(@{$tdata->[6]}, $i, 1);
+                      last;
+                    }
+                  }
+               }
+             }
+             
+             if (0 && $tFix && (@ex>0 || @cds>0) ) { #parent gene also parents exons directly!
                my @tex=@{$tdata->[6]};
                my @tcd=@{$tdata->[7]};
                if (@tex == 1) { #single exon transcript
