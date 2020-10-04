@@ -1,4 +1,4 @@
-#!/bin/env perl
+#!/usr/bin/perl
 use strict;
 use Getopt::Std;
 use FindBin;use lib $FindBin::Bin;
