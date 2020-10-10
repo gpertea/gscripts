@@ -4,7 +4,7 @@ use Getopt::Std;
 use FindBin;use lib $FindBin::Bin;
 
 my $usage = q{Usage:
-  ls /full/path/*/fastq.gz | ls2manifest.pl > samples.manifest
+  ls `pwd -P`/*/*.fastq.gz | ls2manifest.pl > samples.manifest
   
   Quickly build a samples.manifest file for SPEAQeasy (for paired reads)
 };
