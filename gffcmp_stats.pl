@@ -8,7 +8,7 @@ my $usage = q/Usage:
  
  Collect the relevant stats from the gffcompare *.stats output
  in a tab-delimited table:
- qfname rtnum rlocnum qtnum qlocnum matchICnum matchTnum iSn iPr icSn icPr tSn tPr locSn locPr
+ qfname rtnum rlocnum qtnum qlocnum matchICnum matchTnum iSn iPr icSn icPr tSn tPr
  Use -H option to print the header like the above
 /;
 umask 0002;
@@ -21,7 +21,7 @@ if ($outfile) {
 # --
 if ($Getopt::Std::opt_H) {
  print join("\t", 
-  split(q/qfname rtnum rlocnum qtnum qlocnum matchICnum matchTnum iSn iPr icSn icPr tSn tPr locSn locPr/))."\n";
+  split(/\s+/, q/queryFileName rtnum rlocnum qtnum qlocnum matchIC matchT iSn iPr icSn icPr tSn tPr/))."\n";
 }
 my ($qf, $rtnum, $rlocnum, $qtnum, $qlocnum, $icMatch, $tMatch, $iSn, $iPr, $icSn, $icPr, 
   $tSn, $tPr);
