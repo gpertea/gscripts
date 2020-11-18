@@ -92,7 +92,7 @@ NEXTQ:
     #same read, check how it does not match
     #TODO: check if it's a qbs or qus?
     #also try disregard the soft clipping
-    if ($cmp>0) {
+    if ($cmp>0) { #advance to the next query alignment
        $t_qonly++;
        undef($ql);@qd=();
        goto NEXTQ;
