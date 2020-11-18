@@ -59,14 +59,14 @@ while (1) {
     next;
   }
   chomp($rl);
-  $rl=~s/\t\d+$//;      #   0      1      2       3      4
+  @rd=split(/\t/,$rl);#readID, start, strand, cigar, exons
+  $rl=join("\t",@rd[0..5]);
   die("Error: ref data out of order:\n$prev_rl\n$rl\n")
         if $prev_rl && ($prev_rl cmp $rl)>0;
-  @rd=split(/\t/,$rl);#readID, start, strand, cigar, exons
+  #                       0      1      2       3      4
   #print STDERR "rl=$rl\n";
 NEXTQ:
   unless ($ql) { #read next qry line
-     $prev_ql=$ql;
      $ql=<$fq>;
      unless ($ql) {
        $qeof=1;
@@ -75,25 +75,28 @@ NEXTQ:
      }
      $q_total++;
      chomp($ql);
-     $ql=~s/\t\d+$//;
+     @qd=split(/\t/,$ql);
+     $ql=join("\t",@qd[0..5]);
      #print STDERR "ql=$ql\n";
      #order check:
      die("Error: query data out of order:\n$prev_ql\n$ql\n")
         if $prev_ql && ($prev_ql cmp $ql)>0;
-     @qd=split(/\t/,$ql);
   }
   my $cmp = ($rl cmp $ql);
   if ($cmp == 0) {#same alignment
     $t_match++;
     
+    $prev_ql=$ql;
     undef($ql);@qd=();
     next;
-  } elsif ($qd[0] eq $rd[0]) {
+  }
+  elsif ($qd[0] eq $rd[0]) {
     #same read, check how it does not match
     #TODO: check if it's a qbs or qus?
     #also try disregard the soft clipping
     if ($cmp>0) { #advance to the next query alignment
        $t_qonly++;
+       $prev_ql=$ql;
        undef($ql);@qd=();
        goto NEXTQ;
     }
@@ -107,6 +110,8 @@ NEXTQ:
       # extra q line found; should only happen if there are 
       #   multiple q alignments for a read
       $t_qonly++;
+
+      $prev_ql=$ql;
       undef($ql);@qd=();
       goto NEXTQ;
     } else {
