@@ -41,7 +41,7 @@ my @cols;
 my $cols=$Getopt::Std::opt_c;
 @cols=split(/\,/,$cols);
 
-my ($rl, $prev_rl, @rd, $rni, $ql, $prev_ql, @qd, $qni);
+my ($rl, $rlo, $prev_rl, @rd, $rni, $ql, $qlo, $prev_ql, @qd, $qni);
 my ($r_total, $rj_total, $q_total, $qj_total);
 my $t_match=0; #total alignment matches (query TP)
 my $tj_match=0; #total spliced alignment matches
@@ -51,7 +51,7 @@ my $t_ronly=0;
 my $t_qonly=0;
 my $qeof=0;
 while (1) {
-  $prev_rl=$rl;
+  $prev_rl=$rlo;
   $rl=<$fr>;
   last unless $rl;
   $r_total++;
@@ -62,15 +62,17 @@ while (1) {
     next;
   }
   chomp($rl);
+  $rlo=$rl; #original line
   @rd=split(/\t/,$rl);#readID, start, strand, cigar, exons
   $rl=join("\t",@rd[0..4]);
   $rni=($rd[5]=~tr/,//);
   $rj_total++ if $rni;
-  die("Error: ref data out of order:\n$prev_rl\n$rl\n")
-        if $prev_rl && ($prev_rl cmp $rl)>0;
+  die("Error: ref data out of order:\n$prev_rl\n$rlo\n")
+        if $prev_rl && ($prev_rl cmp $rlo)>0;
   #                       0      1      2       3      4
   #print STDERR "rl=$rl\n";
 NEXTQ:
+  my $newq=0;
   unless ($ql) { #read next qry line
      $ql=<$fq>;
      unless ($ql) {
@@ -80,6 +82,7 @@ NEXTQ:
      }
      $q_total++;
      chomp($ql);
+     $qlo=$ql; #keep a copy of the original line
      @qd=split(/\t/,$ql);
      if ($qd[4]=~m/^(\d+)S\d+M/) {
       $qd[2]-=$1;
@@ -90,14 +93,16 @@ NEXTQ:
      $qj_total++ if $qni>0;
      #print STDERR "ql=$ql\n";
      #order check:
-     die("Error: query data out of order:\n$prev_ql\n$ql\n")
-        if $prev_ql && ($prev_ql cmp $ql)>0;
+     die("Error: query data out of order:\n$prev_ql\n$qlo\n")
+        if $prev_ql && ($prev_ql cmp $qlo)>0;
+     $newq=1;
   }
-  my $cmp = ($rl cmp $ql);
+  my $cmp = $rl cmp $ql;
+  my $cmpo = $rlo cmp $qlo;
   if ($cmp == 0) {#same alignment
     $t_match++;
     $tj_match++ if $rni>0;
-    $prev_ql=$ql;
+    $prev_ql=$qlo if $newq;
     undef($ql);@qd=();undef($qni);
     next;
   }
@@ -105,23 +110,23 @@ NEXTQ:
     #same read, check how it does not match
     $t_qus++ if $rni>$qni; #missed spliced alignment
     $t_qbs++ if $qni>$rni; #incorrectly spliced alignment
-    if ($cmp>0) { #advance to the next query alignment
+    if ($cmpo>0) { #advance to the next query alignment
        $t_qonly++; #incorrect (misplaced) alignment
-       $prev_ql=$ql;
+       $prev_ql=$qlo if $newq;
        undef($ql);@qd=();undef($qni);
        goto NEXTQ;
     }
-    #$cmp < 0 
+    #$cmpo < 0 
     $t_ronly++; #missed alignment
     next;
   }
   else { #different reads
-    if ($cmp>0) {
+    if ($cmpo>0) {
       # r>q, read next q
       # extra q line found; should only happen if there are 
       #   multiple q alignments for a read
       $t_qonly++;
-      $prev_ql=$ql;
+      $prev_ql=$qlo if $newq;
       undef($ql);@qd=();undef($qni);
       goto NEXTQ;
     } else {
