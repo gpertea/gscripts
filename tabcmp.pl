@@ -9,16 +9,16 @@ my $usage = q/Compare accuracy of sam alignments.
 Input is compressed samread -T alignment data, sorted 
 alphanumerically (with LC_ALL=C sort)
 Usage:
-  tabcmp.pl [-o summary.txt] ref.tab.gz test.tab.gz
+  tabcmp.pl [-o summary.txt] [-c col1,col2..] ref.tab.gz test.tab.gz
 /;
 umask 0002;
-getopts('o:') || die($usage."\n");
+getopts('o:c:') || die($usage."\n");
 
 my $outfile=$Getopt::Std::opt_o;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
-  }
+}
 # --
 die("$usage\n") unless @ARGV==2 && -f $ARGV[0] && -f $ARGV[1];
 
@@ -37,13 +37,16 @@ if ($ARGV[1]=~m/\.gz$/) {
   $fq=IO::File->new();
   $fq->open("< $ARGV[1]") || die("Error: could not open $ARGV[1]!\n");
 }
+my @cols;
+my $cols=$Getopt::Std::opt_c;
+@cols=split(/\,/,$cols);
 
-my ($rl, $prev_rl, @rd, $ql, $prev_ql, @qd);
-my $r_total;
-my $q_total;
-my $t_match=0; #total matches (query TP)
-my $t_qbs=0; #query badly spliced (should align as unspliced)
-my $t_qus=0; #query unspliced (should align as spliced)
+my ($rl, $prev_rl, @rd, $rni, $ql, $prev_ql, @qd, $qni);
+my ($r_total, $rj_total, $q_total, $qj_total);
+my $t_match=0; #total alignment matches (query TP)
+my $tj_match=0; #total spliced alignment matches
+my $t_qbs=0; #query badly spliced (should be unspliced)
+my $t_qus=0; #query unspliced (should be spliced)
 my $t_ronly=0;
 my $t_qonly=0;
 my $qeof=0;
@@ -60,7 +63,9 @@ while (1) {
   }
   chomp($rl);
   @rd=split(/\t/,$rl);#readID, start, strand, cigar, exons
-  $rl=join("\t",@rd[0..5]);
+  $rl=join("\t",@rd[0..4]);
+  $rni=($rd[5]=~tr/,//);
+  $rj_total++ if $rni;
   die("Error: ref data out of order:\n$prev_rl\n$rl\n")
         if $prev_rl && ($prev_rl cmp $rl)>0;
   #                       0      1      2       3      4
@@ -76,7 +81,13 @@ NEXTQ:
      $q_total++;
      chomp($ql);
      @qd=split(/\t/,$ql);
-     $ql=join("\t",@qd[0..5]);
+     if ($qd[4]=~m/^(\d+)S\d+M/) {
+      $qd[2]-=$1;
+      $qd[4]='101M';
+     }
+     $ql=join("\t",@qd[0..4]);
+     $qni=($qd[5]=~tr/,//);
+     $qj_total++ if $qni>0;
      #print STDERR "ql=$ql\n";
      #order check:
      die("Error: query data out of order:\n$prev_ql\n$ql\n")
@@ -85,23 +96,23 @@ NEXTQ:
   my $cmp = ($rl cmp $ql);
   if ($cmp == 0) {#same alignment
     $t_match++;
-    
+    $tj_match++ if $rni>0;
     $prev_ql=$ql;
-    undef($ql);@qd=();
+    undef($ql);@qd=();undef($qni);
     next;
   }
   elsif ($qd[0] eq $rd[0]) {
     #same read, check how it does not match
-    #TODO: check if it's a qbs or qus?
-    #also try disregard the soft clipping
+    $t_qus++ if $rni>$qni; #missed spliced alignment
+    $t_qbs++ if $qni>$rni; #incorrectly spliced alignment
     if ($cmp>0) { #advance to the next query alignment
-       $t_qonly++;
+       $t_qonly++; #incorrect (misplaced) alignment
        $prev_ql=$ql;
-       undef($ql);@qd=();
+       undef($ql);@qd=();undef($qni);
        goto NEXTQ;
     }
     #$cmp < 0 
-    $t_ronly++; 
+    $t_ronly++; #missed alignment
     next;
   }
   else { #different reads
@@ -110,9 +121,8 @@ NEXTQ:
       # extra q line found; should only happen if there are 
       #   multiple q alignments for a read
       $t_qonly++;
-
       $prev_ql=$ql;
-      undef($ql);@qd=();
+      undef($ql);@qd=();undef($qni);
       goto NEXTQ;
     } else {
       # r<q, read next r 
@@ -127,11 +137,8 @@ undef $fr;
 $fq->close;
 undef $fq;
 
-print join("\t", $t_ronly, $t_qonly, $t_match)."\n";
-print "qtotal=$q_total, rtotal=$r_total\n";
-
-
-
+print join("\t", @cols, $r_total, $rj_total, $q_total, $qj_total,  
+                $t_match, $tj_match,  $t_ronly, $t_qonly, $t_qbs, $t_qus)."\n";
 # --
 if ($outfile) {
  select(STDOUT);
