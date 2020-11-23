@@ -4,7 +4,7 @@ use Getopt::Std;
 use FindBin;use lib $FindBin::Bin;
 
 my $usage = q/Usage:
- gffcmp_stats.pl <gffcmp.stats>
+ gffcmp_stats.pl [-H] [-s <set>] <gffcmp.stats>
  
  Collect the relevant stats from the gffcompare *.stats output
  in a tab-delimited table:
@@ -12,16 +12,19 @@ my $usage = q/Usage:
  Use -H option to print the header like the above
 /;
 umask 0002;
-getopts('Ho:') || die($usage."\n");
+getopts('Hs:o:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
+my $set=$Getopt::Std::opt_s;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
   }
 # --
 if ($Getopt::Std::opt_H) {
+ print "Set\t" if $set;
  print join("\t", 
   split(/\s+/, q/queryFileName rtnum rlocnum qtnum qlocnum matchIC matchT iSn iPr icSn icPr tSn tPr/))."\n";
+  
 }
 my ($qf, $rtnum, $rlocnum, $qtnum, $qlocnum, $icMatch, $tMatch, $iSn, $iPr, $icSn, $icPr, 
   $tSn, $tPr);
@@ -29,6 +32,7 @@ while (<>) {
   if (m/^#= Summary for dataset:\s+(\S+)/) {
     my $f=$1;
     if ($qf) {
+      print "$set\t" if $set;
       print join("\t", ($qf, $rtnum, $rlocnum, $qtnum, $qlocnum, $icMatch, $tMatch, $iSn, $iPr, 
                        $icSn, $icPr, $tSn, $tPr))."\n";
     }
@@ -69,6 +73,7 @@ while (<>) {
 } #while <>
 
 if ($qf && $tMatch) {
+  print "$set\t" if $set;
   print join("\t", ($qf, $rtnum, $rlocnum, $qtnum, $qlocnum, $icMatch, $tMatch, $iSn, $iPr, $icSn, $icPr, 
      $tSn, $tPr))."\n";
 }
