@@ -1,0 +1,160 @@
+#!/usr/local/bin/perl
+#
+# this is intended for use with a repeated SQL query based 
+# on rows of data fetched from a tab delimited file
+# either dynamic SQL or simple repeated SQL is used
+#
+use strict;
+use Getopt::Std;
+
+use FindBin;
+use lib "$FindBin::Bin"; 
+#the two lines above were needed just for this:
+use dbi_syb;
+
+my $usage = <<'-=-';
+Repeats an SQL command with data taken from each line of a specified file. 
+Resulting rows (if any) are written to stdout, tab delimited. Total number
+of rows affected is reported at stderr.
+
+Usage: 
+  batchsql [<sqlcmdfile>] -b <db> -f <datafile> [-t '<char>']  [-p <pwdfile>] 
+           [-YFCAM] [-a <auth_file>]
+
+  <sqlcmdfile>   is a file containing an SQL command to be executed for 
+                 each line in the <datafile>; if missing, the query is 
+                 taken interactively from the standard input (use Ctrl+D to 
+                 end the text input). Columns taken from <datafile> should 
+                 be specified by placeholders like ':0', ':1', .. ':9' 
+                 or ?. The ? method is faster but less flexible and 
+                 it does not work for TEXT fields
+      -b         <db> will select a database to log in and use for execution of
+                 SQL commands. It may have the format <db>[@<server>][:<user>]
+                 (complete login information is taken from ~/.db_pass, the 
+                 global authentication file, see note below)
+      -f         <datafile> should contain rows of tab delimited columns;
+                 these columns will replace the placeholders specified in the 
+                 SQL command (? or :0, :1 .. :9)
+      -p         you may still specify the obsolete Sybase password file format
+                 in case you do not have a ~/.db_pass file setup properly
+      -t         '<char>' will be used instead of tab character for separating
+                 data read from <datafile>
+      -a         use alternate dbpass file instead of ~/.db_pass           
+      -Y         override initial confirmation prompt for insert/delete/update
+                 operations. Required when this kind of SQL command is not 
+                 provided interactively.                
+      -F         format the results as fasta output if the first two columns
+                 are seq_name, sequence 
+      -C         same as -F but tries to get only clear range, 
+                 assuming end5, end3 are also provided by the query, 
+                 in this order, after seq_name and sequence
+      -A         only one row is returned/affected for each line 
+                 (by setting rowcount to 1 before the execution)
+      -M         send an e-mail to the current user @tigr.org when the 
+                 script terminates
+      -I <table> set identity insert ON for <table>
+NOTE: ~/.db_pass is the default global Sybase authentication file. Ask Geo 
+about its format or use ~gpertea/.db_pass.template or read the 
+explanation for db_perm function in dbi_syb.pm
+
+-=-
+my $no_error=1;
+my $qfile;
+$qfile=shift if (substr($ARGV[0],0,1) ne '-');
+
+$no_error=1;
+getopts('b:f:p:t:a:hYFCAMI:') || die $usage;
+
+if ($Getopt::Std::opt_h) { print $usage; exit;}
+
+my $datafile=$Getopt::Std::opt_f;
+
+my $errmsg="Error: ";
+my $sep=$Getopt::Std::opt_p;
+my $iitable=$Getopt::Std::opt_I;
+$sep="\t" unless $sep;
+&ErrExit($usage.$errmsg."Data file $datafile not found.") unless (-e $datafile);
+my $tdb=$Getopt::Std::opt_b;
+my $pwdfile=$Getopt::Std::opt_p;
+my ($user, $db, $pwd, $server); 
+if ($pwdfile) {
+  ($server, $user, $pwd, $db)=&db_pass($pwdfile);
+  $db=$tdb if $tdb; #override it 
+  }
+ else {
+  &ErrExit($usage.$errmsg."Target database not specified!") unless $tdb;
+  ($server, $user, $pwd, $db) = &db_perm($tdb, $Getopt::Std::opt_a);
+  }
+
+&ErrExit($usage.$errmsg."SQL command file not found.") 
+               unless (!$qfile || -e $qfile);
+
+$no_error=0;
+my $query='';
+if ($qfile) {
+    local $/=undef;#one sip
+    open(INFILE, '<'.$qfile);
+    $query=<INFILE>;
+    close(INFILE);
+    }
+ else {
+   print STDERR ">Enter SQL command for $server/$db to be executed for\n".
+                " each line of $datafile (Ctrl+D to end):\n";
+   local $/="\n";
+   $query.=$_ while (<STDIN>); 
+   }
+&ErrExit("No placeholders given. Do you know what you're doing ?!\nBatch canceled.") 
+    unless ($query =~ m/\:\d+/  || $query=~ m/\?/);
+&ErrExit("Multiple independent commands are not accepted\n".
+ "with '?' placeholders.\nUse :0, :1, :2 ... placeholders instead.\n")
+   if ($query =~/\ngo\n/s && $query=~/\?/);
+#print STDERR "Batch operation requested on database $db, server $server..\n";
+unless ($Getopt::Std::opt_Y) {
+     my $test=0;
+     if ((($test) = ($query =~m/(insert)/i)) || 
+         (($test) = ($query =~m/(update)/i)) ||
+         (($test) = ($query =~m/(delete)/i))
+         ) {
+       &ErrExit("\nBatch operation aborted.\n") 
+        unless &confirm("Are you sure it's safe to run this '$test' command ?");
+        }
+     }
+
+print STDERR "Sending command to $server...\n";
+my $dbh=&db_login($server, $user, $pwd, $db);
+
+my $opt;
+$opt='F' if $Getopt::Std::opt_F;
+$opt='C' if $Getopt::Std::opt_C;
+ 
+&sql_do($dbh, "set identity_insert $iitable on") if ($iitable);
+
+&sql_do($dbh, "set rowcount 1") if $Getopt::Std::opt_A;
+$opt.='|'.$sep if $sep;
+my $rows=&sql_execlist($dbh, $query, $datafile, $opt);
+
+print STDERR ($rows.' rows affected (Summing results from each cycle)'."\n");
+
+$no_error=1;
+
+&db_logout($dbh);
+undef $dbh;
+
+#---------------------------------
+END { #to be execute on exit
+ if ($Getopt::Std::opt_M)  {
+   unless ($no_error) {
+      system("echo '".$dbi_syb::last_error."'|".
+         "mail -s 'ERROR: batchsql [$db,$datafile]' ".$dbi_syb::mailaddr)
+      }
+    else {
+      system("echo 'batchsql [$db, $datafile]'|mail -s 'batchsql - Done' ".
+       $dbi_syb::mailaddr)  
+    }
+   }
+ else {
+   if ($no_error) {print STDERR "*** Done ***\n"; }
+       else { print STDERR "Error: \n ".$dbi_syb::last_error."\n";}
+   }
+ &db_logout($dbh) if ($dbh) ;  
+}
