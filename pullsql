@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use Getopt::Std;
+use lib "$ENV{HOME}/gscripts";
 use strict;
 # {
 #  my $sd=$ENV{'SCRIPT_FILENAME'};
@@ -28,9 +29,7 @@ my $usage = q/
                  a given range from the sequence, end5 and end3 
                  coordinates being expected as the third and fourth 
                  result columns (seq_name, sequence, end5, end3)
-      -o         send the output to <outputfile> instead of stdout           
-  If no authentication information is found, the read-only 'access' account
-  will be used, using probably SYBTIGR as a server.
+      -o         send the output to <outputfile> instead of stdout
 /;
 
 my $qfile;

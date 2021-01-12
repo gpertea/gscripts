@@ -20,6 +20,7 @@ dbSession - a DBI wrapper with various db helpers and utils
   my $ds = dbSession->new([$server[:$port], $user, $pass, $server_type]);  
 
   #direct connection:
+  my $ds = dbSession->postgres($server, $user, $password, $db);
   my $ds = dbSession->oracle($server, $user, $password, $db);
   my $ds = dbSession->sybase($server, $user, $password, $db);
   my $ds = dbSession->mysql($serverhost, $user, $password, $db);
@@ -221,10 +222,10 @@ sub db_askpass {
   
      <dbschema>[@<server>[/<server_type>]][:<user>]
      
-    ..where <server_type> can be 'oracle', 'sybase' or 'mysql'. None of
-    <server>,<user>,<server_type> are necessary except to avoid ambiguity
-    when multiple servers with the same name (but different DBMS) exist in
-    the <auth_file>
+    ..where <server_type> can be 'postgres', 'oracle', 'sybase' or 'mysql'. 
+    None of <server>,<user>,<server_type> are necessary except to avoid 
+    ambiguity when multiple servers with the same name (but different DBMS)
+    exist in <auth_file>
 
   If a server name is not found for the current <dbname>, the [Default]
   section  is looked-up in <auth_file>; if that section is missing,
@@ -444,44 +445,46 @@ sub db_perm {
  #$srvtype=$def_srvtype unless $srvtype;
  $server=uc($server);
  $srvtype=lc($srvtype);
+
  #========> now retrieve the password for this db@server [ / srv_type ] 
  #========  and if the $user was given, try to retrieve the password
  #                                      for that $user and that $server.. 
- #          else try the Unix user
  #          otherwise fall back to $DBDEF_USER/PASS
  #VVVVVVVVVVVVVVVVVVVVVVVVVVVV
- $user=$ENV{'USER'} unless $user;
+ #$user=$ENV{'USER'} unless $user;
  my $srvkey = $server;
  #my $srvname= $server;
- $server=$srvhost if $srvhost; # why?!
- my $authd=$srvauth{$srvkey.':'.$user};
- $authd=$srvauth{$srvkey.'/'.$srvtype.':'.$user} unless $authd;
- $authd=$srvauth{$server.':'.$user} unless $authd;
- my ($encpass, $auth_srvtype)=@$authd if $authd;
+ $server=$srvhost if $srvhost;
+ my ($encpass, $auth_srvtype);
+ if ($user) {
+   my $authd=$srvauth{$srvkey.':'.$user};
+   $authd=$srvauth{$srvkey.'/'.$srvtype.':'.$user} unless $authd;
+   $authd=$srvauth{$server.':'.$user} unless $authd;
+   ($encpass, $auth_srvtype)=@$authd if $authd;
+ }
  $srvtype=$auth_srvtype if $auth_srvtype;
  unless ($encpass) {
-   if ($askflag) {
+   if ($askflag && $user) {
       return (&db_askpass($server, $srvtype, $user, $db));
-      }
-    warn("WARNING: $dblocator authentication not found for user $user on server $srvkey\n");
-    warn($db_advice."\n");
+    }
     #look for any other authentication for this server:
     my $alternate=$srvauth{$srvkey};
     $alternate=$srvauth{$server} unless $alternate;
-    if ($alternate) {        
+    if ($alternate) {
         ($user, $pass)=($$alternate[0], &sdecrypt($$alternate[1],$srvkey));
         $srvtype=$$alternate[2] unless $srvtype;
-        warn("..Found and returned user '$user' authentication instead.\n");
-        }
-      else {
+        #warn("..Found and returned user '$user' authentication instead.\n");
+    }
+    else {
         warn("..Returning default user ($DBDEF_USER) authentication instead.\n");
         ($user, $pass)=($DBDEF_USER, $DBDEF_PASS);
-        }
+    }
     $srvtype=$def_srvtype unless $srvtype;
     return ($server, $user, $pass, $db, $srvtype, $srvport);
-    }
+ }
  #else return the authentication data found
  $srvtype=$def_srvtype unless $srvtype;
+ print STDERR "found server $server of type $srvtype, user $user, pass $encpass\n";
  return ($server, $user, &sdecrypt($encpass, $srvkey), $db, $srvtype, $srvport);
 }
 
@@ -683,7 +686,7 @@ sub ask_cpass {
  return $_;
 }
 
-#returns the server type (oracle/sybase/mysql) for 
+#returns the server type (postgres/oracle/sybase/mysql) for 
 #a given dbh
 sub db_srvtype {
  my $dbhdata=$dbhs{$_[0]};
@@ -714,7 +717,9 @@ sub db_login {
  $pass=$DBDEF_PASS unless $pass;
  $srvtype=$DBDEF_SRV_TYPE unless $srvtype;
  my $dbh;
- if ($srvtype eq 'oracle') { 
+ if ($srvtype eq 'postgres') { 
+     $dbh=postgres('.', $server, $user, $pass, $db); }
+  elsif ($srvtype eq 'oracle') { 
      $dbh=oracle('.', $server, $user, $pass, $db); }
   elsif ($srvtype eq 'sybase') {
      $dbh=sybase('.', $server, $user, $pass, $db); }
@@ -1568,7 +1573,9 @@ sub new {
    $srvtype=$DBDEF_SRV_TYPE unless $srvtype;
    }
   $server.=':'.$srvport if ($srvport);
-  if ($srvtype eq 'oracle') { 
+  if ($srvtype eq 'postgres') { 
+     return dbSession->postgres($server, $user, $pass, $db); }
+  elsif ($srvtype eq 'oracle') { 
      return dbSession->oracle($server, $user, $pass, $db); }
   elsif ($srvtype eq 'sybase') {
      return dbSession->sybase($server, $user, $pass, $db); }
@@ -1634,7 +1641,7 @@ sub last_sth {
 sub bless_dbSession {
   my $class=shift;
   #keep the object data in an array, to make it more compact and faster  
-  #srv_type can be 'oracle', 'sybase', 'mysql'  
+  #srv_type can be 'postgres', 'oracle', 'sybase', 'mysql'  
   #             0        1         2         3          4       5       6           7    
   #            dbh    srv_type    server   srv_port    user,   pass, initial_db, last_sth
   my $self  = [                                     @_                                   ];
@@ -1734,6 +1741,29 @@ sub mysql {
   }
 }
 
+sub postgres {
+ my $class=shift;
+ my ($pserver, $user, $pass, $db)=@_;
+ my ($server, $srvport)=split(/:/,$pserver);
+ die("Error: for postgres connect() a database must always be specified!\n") unless $db;
+ #in mysql, a database must always be specified
+ my $dsn="DBI:Pg:dbname=$db;host=$server";
+ $dsn.=";port=$srvport" if $srvport && $srvport>0;
+ my $dbh=DBI->connect($dsn, $user, $pass, { RaiseError => 1 } ) ||
+                 die("Error at connect($dsn, $user, ...)\n");
+ $dbhs{$dbh} = [1, $pserver, $user, $pass, $db, 'postgres'];
+ if (ref($class)) { #called from instance (reconnect)
+   $class->[0]=$dbh;
+   return $class;
+   }
+  elsif ($class eq '.') { #called as plain subroutine from db_login
+   return $dbh;
+   }
+  else { #called as constructor
+  return bless_dbSession($class, $dbh, 'postgres', $server, $srvport, $user, $pass, $db, undef);
+  }
+}
+
 sub dbms {
  my $self=shift;
  #my $dbh=$self->dbh();
@@ -1742,13 +1772,15 @@ sub dbms {
  return $self->servertype();
 }
 
-
 sub use {
  return unless $_[1];
  my ($self, $db)=@_;
  my $dbh=$self->dbh();
  my $srvtype=$self->servertype();
- if ($srvtype eq 'oracle') {
+ if ($srvtype eq 'postgres') {
+   die("Error: cannot change database in postgres!\n");
+ }
+ elsif ($srvtype eq 'oracle') {
    &sql_do($dbh, "alter session set current_schema = $db ");
    }
   else {
@@ -1878,7 +1910,9 @@ sub lastlogin {
     ($self->servertype(), $self->servername(), $self->serverport(), 
              $self->user(),    $self->pass(), $self->initial_db());
   $server.=':'.$srvport if ($srvport);
-  if ($srvtype eq 'oracle') { 
+  if ($srvtype eq 'postgres') { 
+     return $self->oracle($server, $user, $pass, $db); }
+  elsif ($srvtype eq 'oracle') { 
      return $self->oracle($server, $user, $pass, $db); }
   elsif ($srvtype eq 'sybase') {
      return $self->sybase($server, $user, $pass, $db); }
