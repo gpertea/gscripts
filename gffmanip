@@ -65,6 +65,7 @@ Genomic deletion processing:
 Output options:
  --nbg discard "bare" gene records that do not parent any other features
  --tfix attempt to fix malformed transcripts with whole-transcript exons
+ -j <outfname.tab> - write junction info to <outfname.tab>
  -K keep all GFF\/GTF attributes and preserve the input format
  -E for -K, discard exon\/CDS attributes (only keep transcript\/gene attrs)
  -Z merge close exons into a single exon (for intron size<4)
@@ -93,7 +94,7 @@ my ($outfile, $verbose, $keepCmts, $inSorted, $sort_gff, $Udecode, $CDSdatafile,
   $only_ifCDS, $discard_exons, $discardBareGenes, $idfile, $avflt, $featlist, $xflist, 
   $oattrlist, $minIntron, $keepAll, $discardExonAttrs, $avflt_AND, $check_range, 
   $strict_ovl, $exon_ovl, $del_range, $chrmapping, $tab_attrs, $exlen2score, 
-  $exlen2attr, $minEndExon, $tFix
+  $exlen2attr, $minEndExon, $tFix, $jOut
   );
 GetOptions('o:s' => \$outfile, 'V'=>\$verbose, 'P'=>\$keepCmts, 'Q'=>\$inSorted, 'S'=>\$sort_gff, 
    'U'=>\$Udecode,'y:s'=>\$CDSdatafile, 'Y:s'=>\$CDSaddonly, 'F'=> \$trOnly,
@@ -102,7 +103,8 @@ GetOptions('o:s' => \$outfile, 'V'=>\$verbose, 'P'=>\$keepCmts, 'Q'=>\$inSorted,
    'x:s'=>\$xflist, 'k:s'=>\$oattrlist, 'Z'=>\$minIntron, 'K'=>\$keepAll, 'E'=>\$discardExonAttrs,
    'A'=>\$avflt_AND, 'r:s'=>\$check_range, 'R'=>\$strict_ovl, 'X'=>\$exon_ovl, 'tfix'=>\$tFix,
    'd:s'=>\$del_range, 'm:s'=>\$chrmapping, 'table:s'=>\$tab_attrs, 'nbg'=>\$discardBareGenes,
-   'exonlen2score'=>\$exlen2score, 'exonlen2attr'=>\$exlen2attr, 'trim-exons:6'=>\$minEndExon
+   'exonlen2score'=>\$exlen2score, 'exonlen2attr'=>\$exlen2attr, 'trim-exons:6'=>\$minEndExon, 
+   'j:s'=>\$jOut
    ) || die($usage."\n");
    
 die("${usage}Error: no input file(s) given (use '-' for stdin)\n") unless @ARGV>0;
@@ -124,6 +126,7 @@ my %attrflt; # attribute=>value filter
 my %idflt;   # hash with IDs to keep
 my %atab;    # hash with attribute names whose values will be listed as tab delimited
 my %chrmap; #if -m option was provided, maps chrID => new_chrID
+my %jData; # 'chr:start~end:strand => [tID1, tID2,..]
 my @atab_cols; 
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
@@ -290,12 +293,25 @@ if ($sort_gff) {
  else {
    $mtgs=processGffRecs(\%gffrecs, \@gff_IDs);
 }
+
 print STDERR "  $mtgs multi-transcript genes found.\n" if $mtgs>0;
+if ($jOut) {
+  open(JOUT, '>'.$jOut) || die("Error creating file $jOut\n");
+  my @sorted_js = sort sortJByLoc keys(%jData);
+  foreach my $k (@sorted_js) {
+    my $jd=$jData{$k};
+    my @loc=split(/[\:~]/, $k);
+    my @ts=sort { $a cmp $b } @$jd;
+    print JOUT join("\t",@loc)."\t".join(',',@ts)."\n";
+  }
+  close(JOUT);
+}
+
 # --
 if ($outfile) {
  select(STDOUT);
  close(OUTF);
- }
+}
 
 #************ Subroutines **************
 sub sortByLoc {
@@ -306,6 +322,19 @@ sub sortByLoc {
     }
   else { return $$da[0] cmp $$db[0] ; }
 }
+
+sub sortJByLoc {
+ my @da=split(/[\:~]/,$a);
+ my @db=split(/[\:~]/,$b);
+ my $c=$da[0] cmp $db[0];
+ return $c if $c;
+ $c=$da[1] <=> $db[1];
+ return $c if $c;
+ $c=$da[2] <=> $db[2];
+ return $c if $c;
+ return (ord($da[3]) <=> ord($db[3]));
+}
+
 sub parseLocations {
   my ($s_range, $r_intv)=@_;
   my ($l_chr, $rlst)=split(/\:/,$s_range,2);
@@ -1237,6 +1266,23 @@ sub processGffRecs {
      $tattrs='Parent='.$tid;
   }
   { local $/=';'; chomp($tattrs); }
+  if ($jOut) {
+     my ($is, $ie)=(0,0);
+     foreach my $ed (@ex) {
+       $ie=$$ed[0]-1;
+       if ($is) {
+         #store this intron (junction) info
+         my $jn=join(':',$chr, $is.'~'.$ie, $strand);
+         my $ts=$jData{$jn};
+         if (!$ts) {
+            $ts=[];
+            $jData{$jn}=$ts;
+         }
+         push(@$ts, $tid);
+       }
+       $is=$$ed[1]+1;
+     }
+  }
   if ($CDSonly==0) { #write exons only when they're also found in the input
         foreach my $ed (@ex) {
             my $xattrs=$tattrs;

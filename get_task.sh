@@ -35,10 +35,10 @@ while read -r line; do
  if [[ $line == '>'* ]]; then
    t=( $line )
    rnum=${t[1]}
-   prot=${t[2]}
-   mkdir -p "${t[3]}/$rnum"
-   
-   cd "${t[3]}/${t[1]}"
+   prot=${t[3]}
+   mkdir -p "${t[2]}/$rnum"
+   #echo "created ${t[2]}/$rnum (protocol $prot)"
+   cd "${t[2]}/$rnum"
    continue
  fi
  t=( $line )
