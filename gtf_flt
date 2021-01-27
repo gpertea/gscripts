@@ -1,0 +1,74 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+use FindBin;use lib $FindBin::Bin;
+
+my $usage = q/Usage:
+ gtf_flt [-n <min_samples>] [-c '<class_codes>'] [-S] combined.gtf
+
+Filter a combined.gtf file produced by gffcompare by various criteria.
+Options:
+  -n <min_samples>   transcript has to be present in at least
+                     this number of samples (num_samples attribute)
+  -c '<class_codes>' transcript must have one of the given class codes
+                     (e.g. -c jmnkou to look for novel transcripts)
+  -S                 do not discard single-exon transcripts
+
+/;
+umask 0002;
+getopts('Sho:n:c:') || die($usage."\n");
+die($usage."\n") if $Getopt::Std::opt_h;
+my $outfile=$Getopt::Std::opt_o;
+my $codes=$Getopt::Std::opt_c;
+my $snum=$Getopt::Std::opt_n ;
+my $kS=$Getopt::Std::opt_S;
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+  }
+
+# --
+
+my ($t, @td, $ne);
+while (<>) {
+  next unless m/^chr/;
+  my ($tid)=(m/transcript_id "([^"]+)/);
+  if ($tid ne $t) { #new transcript, flush the
+    tflush() if $t;
+    @td=();$ne=0;
+    $t=$tid;
+  }
+  if (m/\texon\t/) {
+    $ne++;
+    s/\s*exon_number "\d+";//;
+    #s/\s*gene_id "[^"]+";//;
+  }
+  push(@td, $_);
+}
+
+tflush() if $t;
+
+# -- epilogue
+if ($outfile) {
+ select(STDOUT);
+ close(OUTF);
+ }
+
+
+#************ Subroutines **************
+
+sub tflush {
+  # if min samples must be 2
+  return if !$kS && $ne<2;
+  if ($snum) {
+    my ($n)=($td[0]=~m/num_samples "(\d+)"/);
+    return if $n<$snum;
+  }
+  if ($codes) {
+    my ($c)=($td[0]=~m/class_code "([^"]+)"/);
+    return if index($codes, $c)<0;
+  }
+  $td[0]=~s/(num_samples "\d+";)/$1 num_exons "$ne";/;
+  print join('',@td);
+}
+
