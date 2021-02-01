@@ -1,10 +1,10 @@
 #!/usr/bin/perl
 use strict;
 use Getopt::Std;
-use FindBin;use lib $FindBin::Bin;
 
 my $usage = q/Usage:
- gtf_flt [-n <min_samples>] [-c '<class_codes>'] [-S] combined.gtf
+ gtf_flt [-n <min_samples>] [-x xloc.tab] [-c '<class_codes>'] [-S] \
+   combined.gtf
 
 Filter a combined.gtf file produced by gffcompare by various criteria.
 Options:
@@ -13,40 +13,93 @@ Options:
   -c '<class_codes>' transcript must have one of the given class codes
                      (e.g. -c jmnkou to look for novel transcripts)
   -S                 do not discard single-exon transcripts
-
+  -x <xloc.out.tab>  write a table with gathered XLOC information
+             xlocID, chr, strand, start, end, numTs, numRefTs, 
+             lstRefOvlGeneNames, codes_summary, lstRefTs
 /;
 umask 0002;
-getopts('Sho:n:c:') || die($usage."\n");
+getopts('Sho:x:n:c:') || die($usage."\n");
 die($usage."\n") if $Getopt::Std::opt_h;
 my $outfile=$Getopt::Std::opt_o;
 my $codes=$Getopt::Std::opt_c;
-my $snum=$Getopt::Std::opt_n ;
+my $snum=$Getopt::Std::opt_n;
+my $xloc=$Getopt::Std::opt_x;
 my $kS=$Getopt::Std::opt_S;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
-  }
-
+}
+#                     0      1      2     3     4         5           6          7
+my %xh; # xlocID => [chr, strand, start, end, num_tids, \%refids,  \%refgenes, \%codes]
+# the %codes hash is simply code=>count, $refids, %refgenes are just string sets
 # --
-
+my ($maxnum, $tcount, $ttotal);
 my ($t, @td, $ne);
 while (<>) {
   next unless m/^chr/;
   my ($tid)=(m/transcript_id "([^"]+)/);
-  if ($tid ne $t) { #new transcript, flush the
+  next unless $tid;
+  if ($tid ne $t) { #new transcript, flush the previous one
+    #this MUST be a transcript line 
     tflush() if $t;
     @td=();$ne=0;
     $t=$tid;
-  }
-  if (m/\texon\t/) {
+    $ttotal++;
+    if ($xloc) {
+      my @t=split(/\t/);
+      my ($x)=(m/\b(XLOC_\d+)/);
+      my ($r)=(m/\bcmp_ref "([^"]+)/);
+      my ($g)=(m/\bgene_name "([^"]+)/); #overlapping, otherwise it's cmp_ref_gene
+      my ($c)=(m/\bclass_code "([^"]+)/);
+      my $xd=$xh{$x};
+      if (!$xd) {
+         $xd=[$t[0], $t[6], $t[3], $t[4], 0, {}, {}, {}];
+         $xh{$x}=$xd;
+      }
+      $$xd[4]++;
+      die("Error at line: ${_}Locus $x was on ".$$xd[0]."\n") if $$xd[0] ne $t[0];
+      $$xd[1] = $t[6] if $t[6] ne '.' && $$xd[1] eq '.';
+      $$xd[2]=$t[3] if $t[3]<$$xd[2];
+      $$xd[3]=$t[4] if $t[4]>$$xd[3];
+      my ($rh, $gh, $ch)=@$xd[5..7];
+      $$ch{$c}++ if $c;
+      $$rh{$r}=1 if $r;
+      $$gh{$g}=1 if $g;
+    }
+  } else { #exon
+    #if (m/\texon\t/) {
     $ne++;
     s/\s*exon_number "\d+";//;
-    #s/\s*gene_id "[^"]+";//;
+    s/\s*gene_id "[^"]+";//;
   }
   push(@td, $_);
 }
-
 tflush() if $t;
+
+my @class=('=','c', 'k', 'm', 'n', 'j', 'e', 'o', 's', 'x', 'i', 'y', 'p', 'r', 'u');
+if ($xloc) {
+  open(FX, ">$xloc") || die("Error creating file $xloc !\n");
+  my @xk=sort(keys(%xh));
+  foreach my $k (@xk) {
+    my $xd=$xh{$k};
+    my @rs=keys(%{$$xd[5]});
+    my @gs=keys(%{$$xd[6]});
+    my $ch=$$xd[7];
+    my $ct=''; #table codes here
+    foreach my $c (@class) {
+      my $n=$$ch{$c};
+      $ct.=$n.$c if $n;
+    }
+    $ct='.' unless $ct;
+    print FX join("\t", $k, @$xd[0..4], @rs>0 ? scalar(@rs):'.' , 
+        @gs>0? join(',', @gs) : '.', $ct, @rs>0 ? join(',', @rs) : '.')."\n";
+  }
+  close(FX);
+}
+
+print STDERR "Memory usage ".qx{ fgrep VmRSS /proc/$$/status };
+print STDERR "Wrote $tcount transcripts out of $ttotal\n";
+print STDERR "Maximum number of samples found for a transcript: $maxnum\n" if $maxnum;
 
 # -- epilogue
 if ($outfile) {
@@ -58,17 +111,18 @@ if ($outfile) {
 #************ Subroutines **************
 
 sub tflush {
-  # if min samples must be 2
   return if !$kS && $ne<2;
   if ($snum) {
     my ($n)=($td[0]=~m/num_samples "(\d+)"/);
     return if $n<$snum;
+    $maxnum=$n if $n>$maxnum;
   }
   if ($codes) {
     my ($c)=($td[0]=~m/class_code "([^"]+)"/);
     return if index($codes, $c)<0;
   }
   $td[0]=~s/(num_samples "\d+";)/$1 num_exons "$ne";/;
+  $tcount++;
   print join('',@td);
 }
 
