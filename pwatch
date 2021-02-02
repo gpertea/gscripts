@@ -29,7 +29,9 @@ my $usage=q/
 die("$usage\n") if ($ARGV[0] eq '-h' || $ARGV[0] eq '--help');
 my $home=$ENV{HOME};
 my $isTerm=-t STDOUT;
-my $memdir='/dev/shm/'.$ENV{USER}.'-pwatch';
+my $user=$ENV{USER} || $ENV{LOGNAME};
+my $memdir='/dev/shm/'.$user.'-pwatch';
+
 if (!-d $memdir) {
  mkdir($memdir) || die("Error: cannot create directory $memdir ($!)!\n");
 }
@@ -97,8 +99,9 @@ if ($cmd eq 'add') { #this is meant to be interactive (in the shell)
   my $wd=`readlink -e /proc/$pid/cwd`;
   chomp($wd);
   open(LST, ">>$lstfile") || die("Error opening file $lstfile\n");
-  print LST join("\t",$pid, $label, $wd)."\n";
-  wlog("Process $label ($pid, $wd) added to watch list.");
+  unless ($host) { $host = qx{ hostname }; chomp($host) }
+  print LST join("\t",$pid, $label, $wd, $host)."\n";
+  wlog("Process $label ($pid, $wd) on $host added to watch list.");
   close(LST);
   exit 0;
 }
@@ -113,11 +116,11 @@ sub wlog {
 }
 
 sub notify {
- my ($pid, $name, $wd, $st)=@_;
+ my ($pid, $name, $wd, $st, $h)=@_;
  my $status = $st ? "stopped ($st)" : 'ended';
  wlog("process $name ($pid) $status");
- send_email($email, "[pwatch] $name ".$status." on $host", 
-  "Process '$name' (pid $pid) $status on host $host\nWorking directory: $wd");
+ send_email($email, "[pwatch] $name ".$status." on $h", 
+  "Process '$name' (pid $pid) $status on host $h\nWorking directory: $wd");
 }
 
 sub checkProcesses {
@@ -131,25 +134,26 @@ sub checkProcesses {
  while(<LST>) {
    next if m/^#/ || length($_)<2;
    my $l=$_;
-   my ($pid, $name, $wd)=split(/\t/,$_);
+   my ($pid, $name, $wd, $h)=split(/\t/,$_);
    my $st=`ps -p $pid -o state=`;
    chomp($st);
    if (!$st || $st =~ m/[ZTtXxKP]/) {
      $changed=1;
-     notify($pid, $name, $wd, $st);
+     notify($pid, $name, $wd, $st, $h);
    }
    else {
     push(@procs, $l);
    }
  }
  close(LST);
- return if !$changed || @procs>0;
- if (!open(LST, '>'.$lstfile)) {
-   wlog("Error creating file $lstfile!\n");
-   exit(1);
+ if ($changed) {
+   if (!open(LST, '>'.$lstfile)) {
+     wlog("Error creating file $lstfile!\n");
+     exit(1);
+   }
+   print LST join('', @procs);
+   close(LST);
  }
- print LST join('', @procs);
- close(LST);
 }
 
 sub loadConfig {
