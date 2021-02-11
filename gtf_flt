@@ -88,7 +88,8 @@ if ($xloc) {
     my $ct=''; #table codes here
     foreach my $c (@class) {
       my $n=$$ch{$c};
-      $ct.=$n.$c if $n;
+      next unless $n;
+      $ct.=($n>1 ? $n : '').$c;
     }
     $ct='.' unless $ct;
     print FX join("\t", $k, @$xd[0..4], @rs>0 ? scalar(@rs):'.' , 
