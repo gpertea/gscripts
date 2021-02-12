@@ -33,6 +33,7 @@ if ($outfile) {
 my %xh; # xlocID => [chr, strand, start, end, num_tids, \%refids,  \%refgenes, \%codes]
 # the %codes hash is simply code=>count, $refids, %refgenes are just string sets
 # --
+
 my ($maxnum, $tcount, $ttotal);
 my ($t, @td, $ne);
 while (<>) {
@@ -79,6 +80,7 @@ tflush() if $t;
 my @class=('=','c', 'k', 'm', 'n', 'j', 'e', 'o', 's', 'x', 'i', 'y', 'p', 'r', 'u');
 if ($xloc) {
   open(FX, ">$xloc") || die("Error creating file $xloc !\n");
+  print FX join("\t", qw(xloc chr strand start end numTx numrefTx genes codes refTxs))."\n";
   my @xk=sort(keys(%xh));
   foreach my $k (@xk) {
     my $xd=$xh{$k};
