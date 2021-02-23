@@ -30,11 +30,11 @@ while (<P>) {
   if ($owner && index($owner, $user)==0) {
    $exit=~tr/ / /s;
    printf('>%s job:%d task:%d slots:%d %s - %s'."\n".
-      ' CMD: %s '."\n".' Req: %s'."\n".' Res: wall:.%s maxrss:%s maxvmem:%s'."\n", 
+      ' CMD: %s |%s exit_status: %s'."\n".' Req: %s'."\n".
+      ' Res: wall:.%s maxrss:%s maxvmem:%s'."\n",
       $owner, $jobnum,  $taskid, $slots, $start, $end,
-      $jobnam,  $categ, $wallclock, $maxrss, $maxvmem,
-      $failed>0 ?'FAILED':'', $exit )
-       if ($incFailed || $failed>0)
+      $jobnam, $failed>0 ?'FAILED':'', $exit, $categ, 
+      $wallclock, $maxrss, $maxvmem ) if ($incFailed || $failed>0)
   }
   ($owner, $failed, $exit)=('',0,0);
   next;
