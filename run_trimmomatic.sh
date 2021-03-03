@@ -1,4 +1,4 @@
-#!/bin/bash -x
+#!/bin/bash
 prog="/opt/Trimmomatic-0.39/trimmomatic-0.39.jar"
 adir="${prog%/*}/adapters"
 if [[ ! -f $prog ]]; then
@@ -42,6 +42,12 @@ while getopts "hSl:" OPT; do
    esac
 done
 
+## on the cluster:
+##  java -Xmx512M -jar ... PE -threads 4 -phred33 *.f*q* \
+##  ${fpre}_trimmed_paired_1.fastq ${fpre}_unpaired_1.fastq ${fpre}_trimmed_paired_2.fastq ${fpre}_unpaired_2.fastq \
+##  ILLUMINACLIP:$adapter_fa:2:30:10:1:TRUE LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:45
+##
+
 shift $((OPTIND-1)) #shift $@
 f1="$1"
 f2="$2"
@@ -77,7 +83,7 @@ fi
 java -Xmx512M \
  -jar $prog $tmode \
  -threads 4 -quiet \
- -phred33 -trimlog "${f1%.f*q*}.trim.log" \
+ -phred33 \
  -summary "${f1%.f*q*}.summary.txt" \
  $@ \
  $fouts \
