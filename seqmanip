@@ -33,8 +33,8 @@ Usage:
     multi-FASTA; <ranges> can be a comma delimited list of intervals
        <start>-<end> or <start>..<end> or <start>:<length>
    ..where the first interval can have a <seqid>: prefix
- -k mask (with Ns) the given sequence ranges; expects a single input sequence
-    or -r <seqid> to target a specific sequence from an indexed multi-FASTA
+ -k mask (with Ns) the given sequence ranges which should be comma delimited
+    chr:start-end format (or just start-end for a single input sequence)
  -f same as -r but for multi-fasta\/seq input; expects a file containing
     lines of this format:
     <seqname> <range>
@@ -312,19 +312,35 @@ if ($Getopt::Std::opt_r) {
      $rangetarget=1 if @ranges>0;
      close(FRNG) unless $using_stdin;
   }
- my @maskranges;
+ my @maskranges; #only ranges without ref specified
+ my %maskrefs; # refID => [ [start, len], ...]
  if (my $rangetext=$Getopt::Std::opt_k) {
-   #requires a 
    my @ar=split(/[\,\s]+/,$rangetext); #multiple regions separated by comma, space or tab
+   my $pref; #last ref id
    foreach my $r (@ar) { #special range end 'e' can be used as end-of-sequence (seq length)
-    $r=~s/end/e/i;
-    if ($r=~m/^(\d+)[\-\.\_]+([\de]+)$/) {
-      my ($ks, $ke)=($1,$2);
+    $r=~s/end$/e/i;
+    if ($r=~m/([^\:]+):(\d+)[\-\.\_]+([\de]+)$/) {
+      my ($kref, $ks, $ke)=($1, $2, $3);
       my $rlen=($ke eq 'e' || $ke eq '0')? 0 : $ke-$ks+1 ;
       die("Error: invalid range given: $ks..$ke?)\n") if $rlen<0;
-      push(@maskranges, [$ks, $rlen]);
+      $pref=$kref;
+      my $mr=$maskrefs{$kref};
+      if ($mr) { push(@$mr, [$ks, $rlen]) }
+      else { $maskrefs{$kref}=[ [$ks, $rlen] ]; }
+    } elsif ($r=~m/(\d+)[\-\.\_]+([\de]+)$/) {
+      my ($ks, $ke)=($1, $2);
+      my $rlen=($ke eq 'e' || $ke eq '0')? 0 : $ke-$ks+1 ;
+      die("Error: invalid range given: $ks..$ke?)\n") if $rlen<0;
+      my $kref='';
+      if (length($pref)>0) {
+          $kref=$pref;
+          push(@{$maskrefs{$kref}}, [$ks, $rlen]);
+      } else {
+         push(@maskranges, [$ks, $rlen]);
+         print STDERR "Warning: range $ks-$ke will be N-masked for all sequences!\n";
+      }
     }
-     else { die("Error parsing ranges to mask ($rangetext)\n"); }
+     else { die("Error parsing ranges to be masked ($rangetext)\n"); }
    }
  } #masking ranges
  #sequence deletion(s) (cutting out intervals):
@@ -635,15 +651,14 @@ sub process_seq {
    $m_linerest='';
    $seq_len=length($seq);
    for (my $p=0;$p<$seq_len;$p+=$linelen) {
-      my $sline=substr($seq, $p, $linelen);
-      if (length($sline)==$linelen) {
+     my $sline=substr($seq, $p, $linelen);
+     if (length($sline)==$linelen) {
            print $sline."\n";
-           }
-         else {
+     } else {
            $m_linerest=$sline;
            last;
-           }
-      }
+     }
+   }
    $seq='';
    $seq_len=0;
    return;
@@ -681,8 +696,7 @@ sub process_seq {
           }
       }#for each range
    #print STDERR "intr_ends=$intr_ends\n";
-  }
-  else { #no ranges requested, create a dummy one with the whole sequence
+ } else { #no ranges requested, create a dummy one with the whole sequence
     push(@seqranges, $seq); 
     push(@gfdata, [1, length($seqranges[-1]),0, '']);
   }
@@ -714,24 +728,24 @@ sub process_seq {
      else {
       $splseq.=$sq; 
       }
-    } # for each range
+ } # for each range
    
-  if (length($intr_ends)>4) { # have introns
+ if (length($intr_ends)>4) { # have introns
     $intr_ends=substr($intr_ends,2,-2);
     if ($revC) {
        $intr_ends=reverseComplement($intr_ends);
        }
-    }
-    
-   if ($revC) {
+ }
+ 
+ if ($revC) {
     @gfdata=reverse(@gfdata);
     ($fcodon, $lcodon)=(reverseComplement($lcodon), 
                               reverseComplement($fcodon));
-    }
+ }
    # determine CDS phases
-   my $initphase=0; #could be provided
-   my $acclen=3-$initphase;
-   foreach my $x (@gfdata) {
+ my $initphase=0; #could be provided
+ my $acclen=3-$initphase;
+ foreach my $x (@gfdata) {
          #$$x[2]=($initframe+$acclen) % 3;
          $$x[2]=(3-$acclen%3) % 3;
          $acclen+=$$x[1];
@@ -804,43 +818,45 @@ sub process_seq {
      return;
   }
   unless ($gffout) { #output FASTA record
+    my @maskdata=@maskranges; #mask ranges for the current sequence
     if ($defline) { #format back to fasta
-     if ($fxmap || $fseqdescr) {
-        my ($seqid, $descr)=($defline=~m/^>(\S+)[\s\x01]*(.*)/);
-        my $new_id=$seqid;
-        my $new_descr=$descr;
-        if ($fseqdescr) {
-          $new_descr=$seqdescr{$seqid};
-          $new_descr=$descr unless length($new_descr)>0;
-        }
-        if ($fxmap) {
-           $new_id=$xmap{$seqid};
-           $new_id=$seqid unless length($new_id)>0;
-        }
-        $defline = ">$new_id $new_descr";
-     }
-     if ($Getopt::Std::opt_U) {
-       ## clean up the defline as well
-       $defline=~s/^\s+//;
-       $defline=~s/\s+$//;
-       $defline=~tr/ \t/ \t/s;
-     }
-     my $addLen='';
-     $addLen=" $seq_len" if $addSeqLen;
-     print $defline.$addLen."\n" unless ($Getopt::Std::opt_X);
+       my ($seqid, $descr)=($defline=~m/^>(\S+)[\s\x01]*(.*)/);
+       die("Error parsing sequence id from defline: $defline\n") unless length($seqid)>0;
+       my $mr=$maskrefs{$seqid};
+       push(@maskdata, @$mr) if ($mr);
+       if ($fxmap || $fseqdescr) {
+          my $new_id=$seqid;
+          my $new_descr=$descr;
+          if ($fseqdescr) {
+            $new_descr=$seqdescr{$seqid};
+            $new_descr=$descr unless length($new_descr)>0;
+          }
+          if ($fxmap) {
+             $new_id=$xmap{$seqid};
+             $new_id=$seqid unless length($new_id)>0;
+          }
+          $defline = ">$new_id $new_descr";
+       }
+       if ($Getopt::Std::opt_U) {
+         ## clean up the defline as well
+         $defline=~s/^\s+//;
+         $defline=~s/\s+$//;
+         $defline=~tr/ \t/ \t/s;
+       }
+       my $addLen='';
+       $addLen=" $seq_len" if $addSeqLen;
+       print $defline.$addLen."\n" unless ($Getopt::Std::opt_X);
+       
+    } else { #no defline found in the original file
+      if ($Getopt::Std::opt_D && !$Getopt::Std::opt_X) {
+        #my $defl='>SEQ'.$seqcount.'_'.length($seq);
+        my $defl='>SEQ'.$seqcount.'_'.$seq_len;
+        print "$defl\n";
+      }
     }
-    else { #no defline found in the original file
-     if ($Getopt::Std::opt_D && !$Getopt::Std::opt_X) {
-       #my $defl='>SEQ'.$seqcount.'_'.length($seq);
-       my $defl='>SEQ'.$seqcount.'_'.$seq_len;
-       print "$defl\n";
-     }
-    }
-  #} #print defline here
-  #unless ($gffout) { #print sequence
-    if (@maskranges) {
+    if (@maskdata) {
      #replace mask ranges with Ns
-     foreach my $mr (@maskranges) {
+     foreach my $mr (@maskdata) {
        my ($rstart, $rlen)=@$mr;
        $rlen=length($splseq)-$rstart+1 if ($rlen==0);
        substr($splseq, $rstart-1, $rlen)= 'N' x $rlen;
@@ -853,7 +869,7 @@ sub process_seq {
          for (my $p=0;$p<length($splseq);$p+=$linelen) {
            my $pl=substr($splseq, $p, $linelen)."\n";
            print( ($trframe && $ansicolors) ? &colorize($pl, '.') : $pl );
-           }
+         }
     }
   } #print FASTA record
   my @wmsg;
