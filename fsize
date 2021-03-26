@@ -12,16 +12,19 @@ my $usage=q/
   ..where <seq_description> is the rest of the text following
   the sequence name in the defline, if any
   Options:
-    -S  print a basic summary of the sequences found
-    -M  print MD5 checksum instead of the sequence description
-  Use '-S' to get a summary of the sequences read.
+    -S  print a summary of the sequence data found
+    -M  print a MD5 checksum instead of the sequence description 
+        (MD5 is computed on the uppercase sequence, soft-masking it ignored)
+    -C  print soft-masked bases count, N count and MD5 checksum instead
+        of the sequence description
   /;
 die $usage."\n" if ($ARGV[0]=~m/^\-+h/);
-getopts('SM') || die($usage."\n");
+getopts('CSM') || die($usage."\n");
 my $summary=$Getopt::Std::opt_S;
 my $checksum=$Getopt::Std::opt_M;
+my $seqck=$Getopt::Std::opt_C;
 local $/="\n>";
-my ($minlen, $min, $max, $maxlen, $total, $totlc, $avg, $std);
+my ($minlen, $min, $max, $maxlen, $total, $totlc, $totn, $avg, $std);
 $minlen=2000000000;
 my @v; #
 while (<>) {
@@ -33,16 +36,22 @@ while (<>) {
  $seq =~ tr/\t \n\r//d;
  my $len=length($seq);
  my $lc=($seq=~tr/a-z//);
+ my $nb=($seq=~tr/Nn//);
  my @ol=($seqname, $len);
  if ($checksum) {
    my $md5=md5_hex(uc($seq));
    push(@ol, $md5);
- } else {
+ } elsif ($seqck) {
+   my $md5=md5_hex(uc($seq));
+   push(@ol, $lc, $nb, $md5);
+ }
+ else {
    push(@ol,$ann) if $ann;
  }
  push(@v, $len);
  $total+=$len;
  $totlc+=$lc;
+ $totn+=$nb;
  ($minlen, $min)=($len, $seqname) if ($len<$minlen);
  ($maxlen, $max)=($len, $seqname) if ($len>$maxlen);
  print join("\t", @ol)."\n";
@@ -50,7 +59,7 @@ while (<>) {
 my $numseqs=@v;
 if ($summary) {
   #TODO: calculate variance
-  print STDERR "Total $total bases in $numseqs sequences ($totlc lowercase).\n";
+  print STDERR "Total $total bases in $numseqs sequences ($totlc lower-case, $totn Ns).\n";
   print STDERR "Max length: $maxlen (sequence $max)\n";
   print STDERR "Min length: $minlen (sequence $min)\n";
   print STDERR "Average   : ".int($total/$numseqs)."\n";

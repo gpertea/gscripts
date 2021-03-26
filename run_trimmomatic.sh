@@ -1,5 +1,5 @@
 #!/bin/bash
-prog="/opt/Trimmomatic-0.39/trimmomatic-0.39.jar"
+prog="$HOME/sw/Trimmomatic-0.39/trimmomatic-0.39.jar"
 adir="${prog%/*}/adapters"
 if [[ ! -f $prog ]]; then
   echo "Error: path $prog is invalid!"
