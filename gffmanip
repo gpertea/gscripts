@@ -5,16 +5,18 @@ use Data::Dumper;
 use Getopt::Long;
 Getopt::Long::Configure ("gnu_getopt", "no_ignore_case");
 my $usage = q/Usage:
- gffmanip [-v] [-o <outfile>] [-i [<attr>:]<tids.lst>] [-K] [-t <track>] \
- [-f <feature>[,..]] [-x <exclude-feature>[,..]] [-r <region> [-R][-E]] \
- [-a [feat:]<attr>=<value>[;..] [-A] [-k <attr1>[,..]] [--table <attrlist..>]\
- [-m <IDchange.tab>] [-d <regdata>] [[-y|-Y] <CDSdata.tab>] [-T] [-C|--cds] \
-  <gff\/gtf-input-files..>
+ gffmanip [-v] [-o <outfile>] [-i [<attr>:]<tids.lst>] [--refs <refs.lst>] \
+ [-K] [-t <track>] [-f <feature>,..] [-x <no-feature>[,..]] [-r <region> \
+ [-R][-E]] [-a [feat:]<attr>=<value>[;..] [-A] [-k <attr1>[,..]] [-C|--cds]\
+ [--table <attrlist..>] [-m <IDmap.tab>] [-d <regdata>] \
+ [[-y|-Y] <CDSdata.tab>] [-T] <gff\/gtf-input-files..>
 
 Filtering options:
  -Q assume input is sorted or at least grouped by genomic sequence
  -S sort GFF records by location
  -C output only those transcripts having CDS features (protein coding)
+ --refs : only let pass records that are found on reference sequences
+          (chromosomes) listed in the given file refs.lst
  --cds like -C but output only the CDS features of the coding transcripts
     (discarding exon features)
  -r show only transcripts overlapping any of the region intervals given in 
@@ -66,7 +68,7 @@ Output options:
  --nbg discard "bare" gene records that do not parent any other features
  --tfix attempt to fix malformed transcripts with whole-transcript exons
  -j <outfname.tab> - write junction info to <outfname.tab>
- -K keep all GFF\/GTF attributes and preserve the input format
+ -K keep all GFF\/GTF attributes, preserve the input format
  -E for -K, discard exon\/CDS attributes (only keep transcript\/gene attrs)
  -Z merge close exons into a single exon (for intron size<4)
  -M adjust transcript boundaries to match min\/max coordinates of their exons
@@ -94,12 +96,12 @@ my ($outfile, $verbose, $keepCmts, $inSorted, $sort_gff, $Udecode, $CDSdatafile,
   $only_ifCDS, $discard_exons, $discardBareGenes, $idfile, $avflt, $featlist, $xflist, 
   $oattrlist, $minIntron, $keepAll, $discardExonAttrs, $avflt_AND, $check_range, 
   $strict_ovl, $exon_ovl, $del_range, $chrmapping, $tab_attrs, $exlen2score, 
-  $exlen2attr, $minEndExon, $tFix, $jOut
+  $exlen2attr, $minEndExon, $tFix, $jOut, $frefs
   );
 GetOptions('o:s' => \$outfile, 'V'=>\$verbose, 'P'=>\$keepCmts, 'Q'=>\$inSorted, 'S'=>\$sort_gff, 
-   'U'=>\$Udecode,'y:s'=>\$CDSdatafile, 'Y:s'=>\$CDSaddonly, 'F'=> \$trOnly,
+   'U'=>\$Udecode,'y:s'=>\$CDSdatafile, 'Y:s'=>\$CDSaddonly, 'F'=> \$trOnly, 'f:s'=>\$featlist, 
    'v'=>\$fltinvert, 'T'=>\$printGTF, 't:s'=>\$out_track, 'G'=>\$adjGeneSpan, 'M'=>\$adjTSpan,
-   'C'=>\$only_ifCDS, 'cds'=>\$discard_exons, 'i:s'=>\$idfile, 'a:s'=>\$avflt, 'f:s'=>\$featlist, 
+   'C'=>\$only_ifCDS, 'cds'=>\$discard_exons, 'i:s'=>\$idfile, 'refs:s'=>\$frefs, 'a:s'=>\$avflt, 
    'x:s'=>\$xflist, 'k:s'=>\$oattrlist, 'Z'=>\$minIntron, 'K'=>\$keepAll, 'E'=>\$discardExonAttrs,
    'A'=>\$avflt_AND, 'r:s'=>\$check_range, 'R'=>\$strict_ovl, 'X'=>\$exon_ovl, 'tfix'=>\$tFix,
    'd:s'=>\$del_range, 'm:s'=>\$chrmapping, 'table:s'=>\$tab_attrs, 'nbg'=>\$discardBareGenes,
@@ -122,6 +124,7 @@ my @tFixAttrs=qw(Name product protein_id Note);
 if ($tFix) {
   @oattrs{@tFixAttrs}=();
 }
+my %fltrefs; # hash with chr IDs from $frefs file
 my %attrflt; # attribute=>value filter
 my %idflt;   # hash with IDs to keep
 my %atab;    # hash with attribute names whose values will be listed as tab delimited
@@ -229,6 +232,17 @@ if ($idfile) {
   }
   close($idf);
 }
+
+if ($frefs) {
+  die("Error: no such ref id list file: $frefs\n") unless -f $frefs;
+  open(F, $frefs) || die("Error: cannot open $frefs $!\n");
+  while (<F>) {
+    my ($id)=(m/^(\S+)/);
+    $fltrefs{$id}=1 if length($id)>0;
+  }
+  close(F);
+}
+
 if ($avflt) {
   my @avl=split(/\;/, $avflt);
   foreach my $avpair (@avl) {
@@ -503,6 +517,7 @@ sub loadGff {
      }
      chomp;
      my ($chr, $track, $f, $fstart, $fend, $fscore, $strand, $frame, $atr)=split(/\t/);
+     next if ($frefs && !exists($fltrefs{$chr}));
      if ($chr ne $lastChr) {
        if ($inSorted && $lastChr && keys(%gffrecs)>0) {
          print STDERR "contig $lastChr loaded, now processing it..\n";
