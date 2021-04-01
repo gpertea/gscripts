@@ -1,19 +1,26 @@
 #!//usr/bin/env bash
 #
 refbase=/data/gpertea/work/ref/hg38mod
-hsref=$refbase/hisat2_hg38mod/hg38mod_noPARs
+hsrefM=$refbase/hisat2_hg38mod/hg38mod_noPARs
+hsrefF=$refbase/hisat2_hg38mod_noY/hg38mod_noY
 gref=$refbase/hg38mod_noPARs.fa
 
 #path having libd_bsp1 subdirs with fastq dirs 
 indir=/data2/cbrain/data
 
 ## final .cram files will be written in subdirectories here:
-outdir=/data/gpertea/work/cbrain-alns
+outdir=/data/gpertea/work/cbrain-alns/new
 
-err_exit () {
+# could be on /dev/shm/$USER/$SLURM_JOB_ID/
+#tmpdir=$HOME/scratch/$SLURM_JOB_ID/$SLURM_ARRAY_TASK_ID
+tmpdir=/data2/cbrain/data/tmp
+
+function err_exit {
  echo -e "Error: $1"
  exit 1
 }
+
+mkdir -p $tmpdir || err_exit "failed to create $tmpdir"
 
 fdb="$1"
 if [[ -z "$fdb" ]]; then
@@ -36,7 +43,7 @@ if [[ -z "$id" ]]; then
  id="$2"
  if [[ -z "$id" ]]; then
    err_exit "no task ID given or found in the environment!"
- fi 
+ fi
 fi
 
 rnum=""
@@ -49,6 +56,10 @@ fi
 t=( $line )
 sub=${t[1]}
 rnum=${t[2]}
+hsref=$hsrefM
+if [[ ${t[3]} == "F" ]]; then
+ hsref=$hsrefF
+fi
 osub="${sub/#libd_/}"
 osub="${osub//\/fastq/}"
 outpath="$outdir/$osub/$rnum"
@@ -100,6 +111,10 @@ cd $outpath || err_exit "failed at cd $outpath"
 
 # echo '['$(date '+%m/%d %H:%M')"] starting.."
 cram=$fn.cram
+#bam could be in a different/temp path 
+#  e.g. /dev/shm/$USER/$SLURM_JOB_ID/$SLURM_ARRAY_TASK_ID
+bam=$fn.bam 
+
 if [[ -f $cram ]]; then
   err_exit " $cram already exists in $PWD!"
 fi
@@ -107,15 +122,21 @@ rlog=$fn.rlog
 echo '['$(date '+%m/%d %H:%M')"]:" > $rlog
 echo -e "hisat2 --mm -p 4 --phred33 --min-intronlen 20 $params | \
 samtools view -b -o $fn.bam -" >> $rlog
+tmpsrt=$tmpdir/$fn.srt_tmp
 
 hisat2 --mm -p 4 --phred33 --min-intronlen 20 $params | \
- samtools view -b -o $fn.bam
+ samtools view -b -o $bam
 ## now sort it and convert to BAM
- echo '['$(date '+%m/%d %H:%M')"]:" >> $rlog
- echo "samtools sort -T tmpsrt -l 4 -m 7G --no-PG -@ 4 $fn.bam | \
+ echo '['$(date '+%m/%d %H:%M')"] running:" >> $rlog
+ echo "samtools sort -T $fn.srttmp -l 4 -m 7G --no-PG -@ 4 $bam | \
 scramble -B -I bam -O cram -8 -r $gref -X small -t 4 -n -! - $cram" >> $rlog
- samtools sort -T tmpsrt -l 4 -m 7G --no-PG -@ 4 $fn.bam | \
+ samtools sort -T $tmpsrt -l 4 -m 7G --no-PG -@ 4 $bam | \
   scramble -B -I bam -O cram -8 -r $gref -X small -t 4 -n -! - $cram
+if [[ $? -eq 0 ]]; then
+ rm -f $bam
+else
+ echo "sort|scramble error exit detected!" >> $rlog
+fi
 echo '['$(date '+%m/%d %H:%M')"] done." >> $rlog
 
 #echo "$cmd" >> $ofn.info
