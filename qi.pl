@@ -21,8 +21,13 @@ my $incFailed=$Getopt::Std::opt_F;
 
 my $user=$Getopt::Std::opt_u || $ENV{USER};
 
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+  }
+# --
 my ($owner, $jobnam, $jobnum, $taskid, $slots, $failed, $exit, 
-    $start, $end, $wallclock, $maxrss, $maxvmem, $categ);
+    $start, $end, $wallclock, $maxrss, $maxvmem, $categ, $host);
 open(P, 'qacct -j |') || die("Error opening pipe!\n");
 while (<P>) {
  chomp;
@@ -31,12 +36,12 @@ while (<P>) {
    $exit=~tr/ / /s;
    printf('>%s job:%d task:%d slots:%d %s - %s'."\n".
       ' CMD: %s | %s exit_status: %s'."\n".' Req: %s'."\n".
-      ' Res: wall:.%s maxrss:%s maxvmem:%s'."\n",
+      ' Res: wall:.%s maxrss:%s maxvmem:%s [%s]'."\n",
       $owner, $jobnum,  $taskid, $slots, $start, $end,
       $jobnam, $failed>0 ?'FAILED':'OK', $exit, $categ, 
-      $wallclock, $maxrss, $maxvmem ) if ($incFailed || $failed>0)
+      $wallclock, $maxrss, $maxvmem, $host ) if ($incFailed || $failed>0)
   }
-  ($owner, $failed, $exit)=('',0,0);
+  ($owner, $failed, $exit, $host)=('',0,0,'');
   next;
  }
  if (m/^owner\s+(\S+)/) {
@@ -65,23 +70,15 @@ while (<P>) {
    $maxvmem=$1; next; }
  if (m/^category\s+(\S.+)/) {
    $categ=$1; next; }
+ if (m/^hostname\s+(\S+)/) {
+   $host=$1; next; }
 }
 
 close(P);
-
-if ($outfile) {
-  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
-  select(OUTF);
-  }
-# --
-
-
 
 # --
 if ($outfile) {
  select(STDOUT);
  close(OUTF);
  }
-
-#************ Subroutines **************
 
