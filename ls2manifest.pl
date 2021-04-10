@@ -30,6 +30,7 @@ if ($outfile) {
 ## with the same prefix before _R[12]_ and sort the group out 
 my (@r1, @r2); #list of file names for R1 and R2 respectively
 my (@sid, @fc1, @fc2); #sample_id, common pattern between pairs
+my (@fn1, @fn2); #sample_id, common pattern between pairs
 my $ppre; #previous prefix
 while (<>) {
  chomp;
@@ -52,29 +53,37 @@ while (<>) {
  my @s=split(/_/,$fc);
  my $si=(@s>1)?$s[0].'_'.$s[1] : $s[0];
  my $pre=$d.'/'.$si; # last dir + rnum + flow cell
+ print STDERR "processing: $pre $fn ($fc)\n";
  if ($pre ne $ppre) {
    if (@r1>0) {
      flushData();
      @r1=();@r2=();@sid=();
      @fc1=();@fc2=();
+     @fn1=();@fn2=();
    }
    $ppre=$pre;
  }
- push (@sid, $si);
+
  if ($mate) {
    if ($mate==1) {
      push(@r1, $_);
      push(@fc1, $fc);
+     push(@fn1, $fn);
+     push (@sid, $si);
    } else {
      push(@r2, $_);
-     # mate 2 always follows mate 1:
-     die("Error: pair mismatch between $fc and $fc1[-1]\n")
-       unless $fc eq $fc1[-1];
+     # mate 2 always follows mate 1, but it may be after other mate 1s
+     my $m=scalar(@fc2);
+     die("Error: pair mismatch between $fc ($fn) and\n".
+         "                             $fc1[$m] ($fn1[$m]\n")
+       unless $fc eq $fc1[$m];
      push(@fc2, $fc);
+     push(@fn2, $fn);
    }
    #print "$_\t0\t$_\t0\t$sID\n";
  } else {
    push(@r1, $_);
+   push (@sid, $si);
    #print "" 
  }
 } #while (<>)
