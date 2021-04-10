@@ -52,10 +52,12 @@ while (<>) {
  my @s=split(/_/,$fc);
  my $si=(@s>1)?$s[0].'_'.$s[1] : $s[0];
  my $pre=$d.'/'.$si; # last dir + rnum + flow cell
- if ($pre ne $ppre && @r1>0) {
-   flushData();
-   @r1=();@r2=();@sid=();
-   @fc1=();@fc2=();
+ if ($pre ne $ppre) {
+   if (@r1>0) {
+     flushData();
+     @r1=();@r2=();@sid=();
+     @fc1=();@fc2=();
+   }
    $ppre=$pre;
  }
  push (@sid, $si);
@@ -66,7 +68,7 @@ while (<>) {
    } else {
      push(@r2, $_);
      # mate 2 always follows mate 1:
-     die("Error: pair mismatch between $fc and $fc1[-1])\n")
+     die("Error: pair mismatch between $fc and $fc1[-1]\n")
        unless $fc eq $fc1[-1];
      push(@fc2, $fc);
    }
