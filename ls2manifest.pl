@@ -41,7 +41,15 @@ while (<>) {
  $fn=~s/\.[gx]z$//i;
  $fn=~s/\.bz2$//i;
  $fn=~s/[._](fq|fastq)$//i;
- my @s=split(/_/,$fn);
+ my $fc=$fn; #common pattern 
+ my $mate;
+ if ($fc=~s/_([12])$//) { 
+   $mate=$1;
+ } elsif ($fc=~s/_R([12])(_[^_]+)$/$2/) {
+   $mate=$1;
+ }# else { die("Error parsing the mate # from $fn \n"); }
+
+ my @s=split(/_/,$fc);
  my $si=(@s>1)?$s[0].'_'.$s[1] : $s[0];
  my $pre=$d.'/'.$si; # last dir + rnum + flow cell
  if ($pre ne $ppre && @r1>0) {
@@ -50,13 +58,6 @@ while (<>) {
    @fc1=();@fc2=();
    $ppre=$pre;
  }
- my $mate;
- my $fc=$fn; #common pattern 
- if ($fc=~s/_([12])$//) { 
-   $mate=$1;
- } elsif ($fc=~s/_R([12])(_[^_]+)$/$2/) {
-   $mate=$1;
- }# else { die("Error parsing the mate # from $fn \n"); }
  push (@sid, $si);
  if ($mate) {
    if ($mate==1) {
