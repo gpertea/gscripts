@@ -53,7 +53,7 @@ while (<>) {
  my @s=split(/_/,$fc);
  my $si=(@s>1)?$s[0].'_'.$s[1] : $s[0];
  my $pre=$d.'/'.$si; # last dir + rnum + flow cell
- print STDERR "processing: $pre $fn ($fc)\n";
+ #print STDERR "processing: $pre $fn ($fc)\n";
  if ($pre ne $ppre) {
    if (@r1>0) {
      flushData();
