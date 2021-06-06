@@ -3,13 +3,15 @@ use strict;
 use Getopt::Std;
 
 my $usage = q/Usage:
- gtf_flt [-n <min_samples>] [-x xloc.tab] [-c '<class_codes>'] [-S] \
+ gtf_flt [-n <min_samples>] [-M] [-x xloc.tab] [-c '<class_codes>'] [-S] \
    combined.gtf
 
 Filter a combined.gtf file produced by gffcompare by various criteria.
 Options:
   -n <min_samples>   transcript has to be present in at least
                      this number of samples (num_samples attribute)
+  -M                 never filter out matching transcripts, i.e. those
+                     with class_code "=" (to be used with -n option)
   -c '<class_codes>' transcript must have one of the given class codes
                      (e.g. -c jmnkou to look for novel transcripts)
   -S                 do not discard single-exon transcripts
@@ -18,13 +20,14 @@ Options:
              lstRefOvlGeneNames, codes_summary, lstRefTs
 /;
 umask 0002;
-getopts('Sho:x:n:c:') || die($usage."\n");
+getopts('SMho:x:n:c:') || die($usage."\n");
 die($usage."\n") if $Getopt::Std::opt_h;
 my $outfile=$Getopt::Std::opt_o;
 my $codes=$Getopt::Std::opt_c;
 my $snum=$Getopt::Std::opt_n;
 my $xloc=$Getopt::Std::opt_x;
 my $kS=$Getopt::Std::opt_S;
+my $kM=$Getopt::Std::opt_M;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
@@ -114,18 +117,30 @@ if ($outfile) {
 #************ Subroutines **************
 
 sub tflush {
+  if ($kM) {
+    my ($c)=($td[0]=~m/class_code "([^"]+)"/);
+    if ($c eq '=') {
+      if ($td[0] !~ m/\bnum_exons\b/) {
+        $td[0] =~ s/(num_samples "\d+";)/$1 num_exons "$ne";/;
+      }
+      $tcount++;
+      print join('',@td);
+      return;
+    }
+  }
   return if !$kS && $ne<2;
   if ($snum) {
     my ($n)=($td[0]=~m/num_samples "(\d+)"/);
     return if $n<$snum;
     $maxnum=$n if $n>$maxnum;
   }
-  if ($codes) {
+  if ($codes) {  
     my ($c)=($td[0]=~m/class_code "([^"]+)"/);
     return if index($codes, $c)<0;
   }
-  $td[0]=~s/(num_samples "\d+";)/$1 num_exons "$ne";/;
+  if ($td[0] !~ m/\bnum_exons\b/) { 
+    $td[0] =~ s/(num_samples "\d+";)/$1 num_exons "$ne";/;
+  }
   $tcount++;
   print join('',@td);
 }
-
