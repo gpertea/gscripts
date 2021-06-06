@@ -52,6 +52,14 @@ while (<>) {
 
  my @s=split(/_/,$fc);
  my $si=(@s>1)?$s[0].'_'.$s[1] : $s[0];
+ if (@s>2 && $s[0]=~m/^\d+$/) { 
+   ## for situations like this: 
+   #   10_Br5460_SLC17A7pos_HGW2VBBXY_S43..
+   #   10_Br5460_SLC17A7pos_HGW2VBBXY_S43..
+   #   11_Br5460_SNAP25pos_HGW2VBBXY_S44..
+   #   11_Br5460_SNAP25pos_HGW2VBBXY_S44..
+   $si.='_'.$s[2];
+ }
  my $pre=$d.'/'.$si; # last dir + rnum + flow cell
  #print STDERR "processing: $pre $fn ($fc)\n";
  if ($pre ne $ppre) {
