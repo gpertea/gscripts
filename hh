@@ -4,10 +4,11 @@ use Getopt::Std;
 use FindBin;use lib $FindBin::Bin;
 
 my $usage = q/Usage:
- hh [-n<numlines> [-c<numcols>] [-q] [-t] file.tab
+ hh [-n<numlines> [-c<numcols>] [-q] file.tab
  Options:
-  -t : <numlines> are shown from the end of the file
-  -q : do not show the info line at the end
+  -n : number of lines to show
+  -c : number of columns to show
+  -q : do not show the info line
 /;
 umask 0002;
 getopts('qto:n:c:') || die($usage."\n");
@@ -22,6 +23,7 @@ if ($outfile) {
 $nc--;
 my $tc;
 while(<>) {
+ chomp;
  my @t=split(/\t/);
  unless ($tc) {
   $tc=scalar(@t);
