@@ -54,10 +54,10 @@ ferr=${fpre}stderr
 echo "Backing up $db into: $LDIR/${bfn}*"
 cd $LDIR
 
-mkdir $bfn
-if [[ $? -ne 0 ]] ; then
-    err_mail "could not create dir $bfn in $LDIR"
-fi
+#mkdir $bfn
+#if [[ $? -ne 0 ]] ; then
+#    err_mail "could not create dir $bfn in $LDIR"
+#fi
 ## postgres password for server $PGSRV must be in ~/.pgpass
 pg_dump -Fc -h $PGSRV -U postgres -f $bfn  2>$ferr
 
