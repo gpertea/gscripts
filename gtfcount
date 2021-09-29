@@ -2,44 +2,50 @@
 if [[ "x"$1 == "x-h" ]]; then
  echo "Usage: gtfcount [-g][-c][-l] <gtfile>"
  echo "  Show the count of distinct transcript names.\n  Options:"
- echo " -g : report distinct gene names count (gene_id attribute)"
- echo " -c : report transcript counts per reference sequence"
- echo " -C : show count of coding transcripts"
- echo " -l : list transcripts"
- echo " -Cl : list coding transcripts"
- echo " -f : report transcript counts per gene_id"
+ echo " -l  : list transcripts (unique transcript_ids)"
+ echo " -g  : report distinct gene names count (gene_id attribute)"
+ echo " -gl : list distinct gene names (gene_id attribute)"
+ echo " -C  : list coding transcripts (=having CDS features)"
+ echo " -r  : report transcript counts per reference sequence"
+ echo " -f  : report transcript counts per gene_id"
  exit 1
 fi
-if [[ "x"$1 == "x-g" ]]; then
-  shift
-  perl -ne 'print "$1\n" if m/gene_id "([^"]+)/' $1 | sort -u | wc -l 
-  exit
+
+a=""
+if [[ $1 =~ ^-.+ ]]; then
+ a="${1:1}" #remove first character (the dash)
+ shift
 fi
-if [[ "x"$1 == "x-l" ]]; then
-  shift
-  perl -ne 'print "$1\n" if m/transcript_id "([^"]+)/' $1 | sort -u
-  exit
-fi
-if [[ "x"$1 == "x-Cl" ]]; then
-  shift
-  perl -ne 'print "$1\n" if m/\tCDS\t/ && m/transcript_id "([^"]+)/' $1 | sort -u
-  exit
-fi
-if [[ "x"$1 == "x-c" ]]; then
-  shift
-  perl -ne '@t=split(/\t/);print "$t[0]\t$1\n" if $t[8]=~m/transcript_id "([^"]+)/' $1 | sort -u | cut -f1 | uniq -c
-  exit
-fi
-if [[ "x"$1 == "x-C" ]]; then
-  shift
-  perl -ne 'print "$1\n" if m/\tCDS\t/ && m/transcript_id "([^"]+)/' $1 | sort -u | wc -l
-  exit
+if [[ -z "$a" ]]; then
+  #perl -ne 'print "$1\n" if m/transcript_id "([^"]+)/' $1 | sort -u | wc -l
+  perl -ne 'print "$1\n" if m/transcript_id "([^"]+)/ && (++$n{$1})==1' $1 | wc -l
+  exit 0
 fi
 
-if [[ "x"$1 == "x-f" ]]; then
-  shift
-  perl -ne '($g)=(m/gene_id\s+"([^"]+)/); ($t)=(m/transcript_id\s+"([^"]+)/); print "$g\t$t\n" if $g && $t' $1 | sort -u | cut -f1 | uniq -c
-  exit
-fi
+case $a in
+ l)
+   perl -ne 'print "$1\n" if m/transcript_id "([^"]+)/ && (++$n{$1})==1' $1 
+   ;;
+ g)
+   perl -ne 'print "$1\n" if m/gene_id "([^"]+)/ && (++$n{$1})==1' $1 | wc -l
+   ;;
+ gl)
+   perl -ne 'print "$1\n" if m/gene_id "([^"]+)/ && (++$n{$1})==1' $1
+   ;;
+ C)
+   #perl -ne 'print "$1\n" if m/\tCDS\t/ && m/transcript_id "([^"]+)/' $1 | sort -u
+   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2] eq "CDS") && m/\btranscript_id "([^"]+)/ && (++$n{$1})==1' $1
+   ;;
+ r)
+   perl -ne '@t=split(/\t/);print "$t[0]\t$1\n" if $t[8]=~m/transcript_id\s+"([^"]+)/' $1 | sort -u | cut -f1 | uniq -c
+   ;;
+ f)
+   perl -ne '($g)=(m/gene_id\s+"([^"]+)/); ($t)=(m/transcript_id\s+"([^"]+)/); print "$g\t$t\n" if $g && $t' $1 | sort -u | cut -f1 | uniq -c
+   ;;
+ *)
+   show_usage
+   echo "Error: -$a option not recognized!"
+   exit 1
+   ;;
+esac
 
-perl -ne 'print "$1\n" if m/transcript_id "([^"]+)/' $1 | sort -u | wc -l
