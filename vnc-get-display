@@ -1,0 +1,13 @@
+#!/bin/bash
+SIZE=1820x960
+if [[ -n "$1" ]]; then
+  SIZE="$1"
+fi
+#set -e
+ps=$(ps x | grep 'X.*[v]nc' | awk '{ print $6 }' | sed s/://)
+if [[ -z $ps ]]; then
+  vncserver -localhost -geometry "$SIZE" -SecurityTypes none 2>&1 | \
+    fgrep New | sed 's/^.*:\([^:]*\)$/\1/' | cut -f1 -d ' '
+else 
+  echo "$ps"
+fi

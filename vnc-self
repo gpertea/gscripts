@@ -1,0 +1,7 @@
+#!/bin/bash
+#set -e
+GEOMETRY=1820x960
+vncdn=$(~/bin/vnc-get-display $GEOMETRY)
+echo "vnc display#=$vncdn"
+port=`expr 5900 + $vncdn`
+vncviewer passwd=$HOME/.vnc/passwd :$port &

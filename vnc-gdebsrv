@@ -1,0 +1,23 @@
+#!/bin/bash
+#set -e
+GEOMETRY=1820x960
+SSH_ARGS=' gdebsrv'
+# Get VNC display number. If there is not a VNC process running, start one
+vncdn="$(ssh $SSH_ARGS '~/bin/vnc-get-display '$GEOMETRY)"
+echo "vnc display#=$vncdn"
+ldisp=22
+port=`expr 5900 + $vncdn`
+lport=`expr 5900 + $ldisp`
+sshparams="-NTC -L $lport:localhost:$port"
+prevsh=$(ps auxwww | grep "[s]sh $sshparams")
+if [[ -z $prevsh ]]; then
+  echo "running: ssh $sshparams $SSH_ARGS"
+  ssh $sshparams $SSH_ARGS &
+  sleep 2
+fi
+#ssh $sshparams $SSH_ARGS &
+#SSH_CMD=`echo $!`
+#echo "ssh cmd = $SSH_CMD"
+#sleep 2
+vncviewer passwd=$HOME/.vnc/passwd :$ldisp &
+
