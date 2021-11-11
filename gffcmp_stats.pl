@@ -21,9 +21,9 @@ if ($outfile) {
   }
 # --
 if ($Getopt::Std::opt_H) {
- print "Set\t" if $set;
+ print "set\t" if $set;
  print join("\t", 
-  split(/\s+/, q/queryFileName rtnum rlocnum qtnum qlocnum matchIC matchT iSn iPr icSn icPr tSn tPr/))."\n";
+  split(/\s+/, q/query rtnum rlocnum qtnum qlocnum matchIC matchT iSn iPr icSn icPr tSn tPr/))."\n";
   
 }
 my ($qf, $rtnum, $rlocnum, $qtnum, $qlocnum, $icMatch, $tMatch, $iSn, $iPr, $icSn, $icPr, 

@@ -1,0 +1,38 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+use FindBin;use lib $FindBin::Bin;
+
+my $usage = q/Usage:
+  csv2tab [-n][-H] input.csv
+  Converts a csv to a tab delimited output.
+  Options:
+   -n : disable header
+   -H : show only the header
+/;
+umask 0002;
+getopts('nHo:') || die($usage."\n");
+my $outfile=$Getopt::Std::opt_o;
+my ($nohdr, $hdronly)=($Getopt::Std::opt_n, $Getopt::Std::opt_H);
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+  }
+# --
+my $ln=0;
+while(<>) {
+   $ln++;
+   next if ($ln==1 && $nohdr);
+   my $re = qr/,(?=(?:[^"]*"[^"]*")*(?![^"]*"))/;
+   print join "\t", map { s/(?<!\\)"//gr =~ s/\\"/"/gr } split $re;
+   exit if ($hdronly);
+}
+
+
+# --
+if ($outfile) {
+ select(STDOUT);
+ close(OUTF);
+ }
+
+#************ Subroutines **************
