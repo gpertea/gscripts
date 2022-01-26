@@ -24,6 +24,9 @@ loadGenes('cmpMN_short_wG.tbl', \%sgh, \%sg2strg);
 #TODO:    and use a gene_name:loc gene identifier, gathering/merging locus coordinates etc.
 
 print join("\t", qw(gene mix_nm short_nm long_nm mix_nt short_nt long_nt mix_nloc short_nloc long_nloc))."\n";
+# for each gene and assembly type it reports:
+#    * the number of matching transcripts (*_nm)
+#    * the number of total transcripts (*_nt)
 while (my($g, $c) = each(%allg)) { 
   my $d;
   my ($nmm, $nmt) = ($d=$mgh{$g}) ? @$d : (0,0); # (matching, total)
