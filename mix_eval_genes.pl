@@ -43,7 +43,7 @@ my $exc=4; #minimum number of exons to consider for matching transcripts in a ge
 loadGenes($ARGV[0], \%sgh, \%sg2strg);
 loadGenes($ARGV[1], \%lgh, \%lg2strg);
 loadGenes($ARGV[2], \%mgh, \%mg2strg);
-
+#             gawk:   1     2         3       4    5       6        7        8          9        10       11          12         13
 print join("\t", qw(gene short_nm long_nm mix_nm short_nt long_nt mix_nt short_nloc long_nloc mix_nloc short_numex long_numex mix_numex))."\n";
 # for each gene and assembly type it reports:
 #    * the number of matching transcripts (*_nm)
