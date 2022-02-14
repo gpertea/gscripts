@@ -7,11 +7,11 @@ my $usage = q/Usage:
   
   Generate a pseudo-fasta records of the format:
 
->234 F
-path r_1.fq.gz r_2.fq.gz
+>234 sampleID F
+path sampleID_r1.fq.gz sampleID_r2.fq.gz
 
-The Sex (M or F) will only follow the record number 
-if a pheno_data.tab file was provided with -p
+The sex (M or F) will only follow the record number and 
+sampleID if a pheno_data.tab file was provided with -p
 /;
 umask 0002;
 getopts('p:o:') || die($usage."\n");
@@ -68,18 +68,20 @@ foreach my $fp (@ffns) {
     if ((@r=($xor=~m/[^\0]/g))==1) {
        my $p=$-[0];
        if (substr($prevf, $p, 1) eq '1' && substr($f, $p, 1) eq '2') {
-         if ($pdat) { 
-           my ($r1, $r2)=($prevf, $f);
-           $r1=~s/^([^\.]+).+/$1/;
-           $r2=~s/^([^\.]+).+/$1/;
-           if ($r1 ne $r2) {
-             # remove _r?[12] at the end to get the sample ID
-             $r1=~s/_r?[12]$//i; 
-             $r2=~s/_r?[12]$//i;
-           }
-           die("Error: could not get sample ID from $r1 vs $r2\n") 
+         my ($r1, $r2)=(substr($f, 0, $p+1), substr($f, 0, $p+1));
+         $r1=~s/[_\.]r?[12]$//i; 
+         $r2=~s/[_\.]r?[12]$//i;
+         die("Error: could not get sample ID from $r1 vs $r2\n") 
              unless $r1 eq $r2;
-           my $sd=$pd{$r1};
+         my $sid=$r1;
+         if ($pdat) {
+           #my ($r1, $r2)=($prevf, $f);
+           #$r1=~s/^([^\.]+).+/$1/;
+           #$r2=~s/^([^\.]+).+/$1/;
+           #if ($r1 ne $r2) {
+             # remove _r?[12] at the end to get the sample ID
+           #}
+           my $sd=$pd{$sid};
            die("Error: could not get pheno data for $r1\n") unless $sd;
            my $s=$$sd[2];
            if ($s=~m/^([MF])/i) {
@@ -87,9 +89,9 @@ foreach my $fp (@ffns) {
            } elsif ($s=~m/^[XY]+$/) { 
              $s = ($s =~ m/Y/) ? 'M' : 'F';
            } else { die("Error: cannot recognize sex : $s\n"); }
-           print ">$c $s\n".join(" ", $d, $prevf, $f)."\n";
+           print ">$c $sid $s\n".join(" ", $d, $prevf, $f)."\n";
          } else {
-           print ">$c\n".join(" ", $d, $prevf, $f)."\n";
+           print ">$c $sid\n".join(" ", $d, $prevf, $f)."\n";
          }
         $c++;
       }
