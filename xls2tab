@@ -1,0 +1,65 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+#use FindBin;use lib $FindBin::Bin;
+use Spreadsheet::Read qw(ReadData);
+
+my $usage = q/Usage:
+  xls2tab [ -s sheet# ] [-o out.tab] file.xlsx
+
+  Options:
+    -s  get a specific spreadsheet from a multi-book file (default: 1)
+    -k  skip this number of rows before parsing
+    -o  output sent to designated file instead of stdout 
+/;
+
+umask 0002;
+getopts('s:k:o:') || die($usage."\n");
+my $sno=$Getopt::Std::opt_s || 1;
+my $skip=$Getopt::Std::opt_k;
+my $outfile=$Getopt::Std::opt_o;
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+  }
+# --
+my $xls=$ARGV[0];
+die("Error: file not found!\n") unless $xls && -f $xls;
+
+my $book = ReadData($xls, clip=>1) || die("Error reading xls file: $xls\n");
+my $numsh = scalar(@$book);
+if ($sno > $numsh) {
+  die("Error: sheet \#$sno does not exist in $xls (only $numsh available).\n")
+}
+
+my @rows = Spreadsheet::Read::rows($book->[$sno]);
+die("Error: sheet \#$sno has no rows\n") if (@rows==0);
+  
+my $cn; #determine number of columns to read from the 1st row
+my $cdefs; #how many columns in 1st row are defined
+while ($skip) {
+ shift(@rows);
+ $skip--
+}
+## - if clip does not work, try to find the number of columns
+my $fr=shift(@rows); 
+foreach my $c (@$fr) {
+       $cdefs++ if !$c;
+       last if ($cn>0 && !$c);
+       $cn++;
+}
+print join("\t", @$fr[0..$cn])."\n";
+
+foreach my $r (@rows) {
+  my $rc=scalar @{$r};
+  print join("\t", @$r[0..$cn])."\n";
+  #print join("\t", @$r)."\n";
+}
+
+# --
+if ($outfile) {
+ select(STDOUT);
+ close(OUTF);
+ }
+
+#************ Subroutines **************
