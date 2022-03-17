@@ -8,6 +8,7 @@ if [[ "x"$1 == "x-h" ]]; then
  echo " -C  : list coding transcripts (=having CDS features)"
  echo " -r  : report transcript counts per reference sequence"
  echo " -f  : report transcript counts per gene_id"
+ echo " -T  : list StringTie transcripts and their TPM"
  exit 1
 fi
 
@@ -25,6 +26,9 @@ fi
 case $a in
  l)
    perl -ne 'print "$1\n" if m/transcript_id "([^"]+)/ && (++$n{$1})==1' $1 
+   ;;
+ T)
+   perl -ne 'next unless m/\ttranscript\t/;($t,$m)=((m/transcript_id\s+"([^"]+)/),(m/TPM\s+"([^"]+)/));print "$t\t$m\n"' $1
    ;;
  g)
    perl -ne 'print "$1\n" if m/gene_id "([^"]+)/ && (++$n{$1})==1' $1 | wc -l
