@@ -36,17 +36,23 @@ my @samples;
 while (<$fh>) {
   if (@samples>0) {
    ## reading data
-   closeAll();exit(0); #for now
-      
+   #closeAll();exit(0); #for now
+   chomp;
+   my @t=split(/\t/);
+   my $o=join("\t",@t[0..8])."\t";
+   my $i=0;
+   foreach my $fw (@fws) {
+     print $fw $o.$t[9+$i]."\n";
+     $i++;
+   }
    next
   }
   ## still in header lines
   if (m/^#CHROM\s+/) { #column headers, we get sample IDs here
-    print STDERR "header line found!\n";
     chomp;
     my @t=split(/\t/);
     @samples=@t[9 .. $#t];
-    print STDERR "Found ".scalar(@samples)." samples. (".scalar(@t)." cols)\n";    
+    print STDERR "Found ".scalar(@samples)." samples.\n";    
     ## write header here and sample list
     open(H, ">$pre.header.vcf") || die("Error writing header file\n");
     print H $hdr;
@@ -81,8 +87,7 @@ while (<$fh>) {
   $hdr.=$_;
 }
 
-$fh->close;
-
+closeAll();
 
 
 ##======================================================
