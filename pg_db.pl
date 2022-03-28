@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 ## a few basic routines to connect to the postgres server
 use strict;
 use DBI;
@@ -9,8 +9,9 @@ my $dbh; # global DB handle object
 
 my $qry = "SELECT * FROM regions";
 print STDERR '<'.$host.">\n";
-my $srv = $host eq 'linwks34' ? 'localhost' : 'gdebsrv';
-dbLogin($srv);
+#my $srv = $host eq 'linwks34' ? 'localhost' : 'gdebsrv';
+my $srv='localhost:16432';
+my @login=dbLogin($srv);
 my ($sth, $r)=dbExec($qry);
 while (my $row = dbFetch($sth)) {
   print join("\t", @$row)."\n";
@@ -61,6 +62,9 @@ sub dbLogin {
   $db='rse' unless $db;
   $user='ruser' unless $user;
   open(PGPASS, "$ENV{HOME}/.pgpass") || die("Error opening $ENV{HOME}.pgpass\n");
+  my $port=5432;
+  my @sp=split(/:/, $server);
+  ($server, $port)=@sp[0,1] if (@sp>1);
   #hostname:port:database:username:password
   my ($pass);
   while (<PGPASS>) {
@@ -74,7 +78,7 @@ sub dbLogin {
   }
   close(PGPASS);
   die("Error: could not retrieve pass for user $user, db $db on $server\n") unless $pass;
-  $dbh = DBI -> connect("dbi:Pg:dbname=$db;host=$server",  
+  $dbh = DBI -> connect("dbi:Pg:dbname=$db;host=$server;port=$port",
                             $user, $pass,
                             {AutoCommit => 0, RaiseError => 1,
                              pg_server_prepare => 1 }

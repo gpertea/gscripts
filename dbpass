@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 # this is just a library of several commonly used DBI/Sybase subroutines/wrappers
 use strict;
 use FindBin;use lib $FindBin::Bin;

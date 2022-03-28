@@ -75,7 +75,7 @@ our ($VERSION, @ISA, @EXPORT);
 
 our $DBDEF_SRV_TYPE='mysql';
 our $DBDEF_SERVER = 'localhost';
-# for mysql, this is the host name, and it may include ":<port#>"
+# this is the host name, and it may include ":<port#>"
 our $DBDEF_USER='access';
 our $DBDEF_PASS='access';
 

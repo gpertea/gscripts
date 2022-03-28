@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use Getopt::Std;
-#use FindBin;use lib $FindBin::Bin;
+#use local::lib '~/sw';
 use Spreadsheet::Read qw(ReadData);
 
 my $usage = q/Usage:
