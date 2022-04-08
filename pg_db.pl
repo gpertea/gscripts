@@ -15,8 +15,6 @@ dbPrint($qry);
 dbLogout();
 exit;
 
-
-
 dbExec($qry);
 while (my $row = dbFetch()) {
   print join("\t", (map {
