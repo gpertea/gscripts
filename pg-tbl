@@ -15,6 +15,8 @@ Usage:
  -i tbl_backup_file  table restore mode: use pg_restore to restore the 
                      table data found in the given file;
                      NOTE: target table name still needs to be provided!
+ -I/-A               for -i, load into a temporary table and insert/append
+                     only the missing rows into the target table
  -h/-s server        override PGHOST with this server name
  -p port             overrides default port
  -b/-d database      override PGDATABASE
@@ -33,6 +35,7 @@ csv=""
 dump=""
 infile=""
 hdr=""
+showdeps=""
 
 function errout {
  echo -e "Error: $1"
@@ -44,13 +47,17 @@ function psqlget {
   psql $pgopts -c "$qry"
 }
 
+
 if [[ -z "$1" || "$1" == "--help" || ( -z "$2" && "$1" == "-h" ) ]]; then
    echo "$USAGE"
    exit 1
 fi
 
-while getopts "s:b:h:d:p:u:U:HCDi:" OPT; do
+while getopts "s:b:h:d:p:u:U:IAHSCDi:" OPT; do
   case $OPT in
+  S)
+    showdeps=1
+    ;;
   C)
     csv=1
     ;;
@@ -110,6 +117,23 @@ if [[ $r == "f" ]]; then
   errout "table '$table' does not exist!"
 fi
 
+if [[ -n $showdeps ]]; then
+  psqlget "with recursive chain as ( \
+    select classid, objid, objsubid, conrelid from pg_depend d \
+    join pg_constraint c on c.oid = objid \
+    where refobjid = '$table'::regclass and deptype = 'n' \
+union all \
+    select d.classid, d.objid, d.objsubid, c.conrelid from pg_depend d \
+    join pg_constraint c on c.oid = objid \
+    join chain on d.refobjid = chain.conrelid and d.deptype = 'n' ) \
+select pg_describe_object(classid, objid, objsubid), pg_get_constraintdef(objid) \
+from chain" 
+  
+  exit 0
+fi
+
+
+
 if [[ -z "$infile" ]]; then
   ## backup to: table.date.gz
   #date=$(date '+%y_%m_%d-%H:%M')
@@ -139,6 +163,4 @@ fi
 
 qry="\\copy $table from stdin with ($copyfmt)"
 gzip -cd $infile | psql $pgopts -c "$qry"
-
-
 
