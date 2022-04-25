@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+## table/qry backup for postgresql
+read -r -d '' USAGE << EOM
+Usage:
+ pg-tbl [options] table | qryfile
+ 
+ Default (no -i option given): backup table data or executes the query
+ specified in qryfile.
+
+ If -i option is given with a file name it attempts to restore the content
+ of the file as a table backup, back to the 
+ 
+ Options:
+ 
+ -i tbl_backup_file  table restore mode: use pg_restore to restore the 
+                     table data found in the given file;
+                     NOTE: target table name still needs to be provided!
+ -h/-s server        override PGHOST with this server name
+ -p port             overrides default port
+ -b/-d database      override PGDATABASE
+ -U/-u               override PGUSER
+ 
+ Note: this utility relies on pg_dump, pg_restore & psql utilties 
+ and ~/.pgpass must be configured for user authentication.
+EOM
+
+trunc=""
+server=""
+db=""
+user=""
+pgopts=""
+csv=""
+dump=""
+infile=""
+hdr=""
+
+function errout {
+ echo -e "Error: $1"
+ exit 1
+}
+
+function psqlget {
+  qry="COPY ($1) TO STDOUT WITH (format 'text')"
+  psql $pgopts -c "$qry"
+}
+
+if [[ -z "$1" || "$1" == "--help" || ( -z "$2" && "$1" == "-h" ) ]]; then
+   echo "$USAGE"
+   exit 1
+fi
+
+while getopts "s:b:h:d:p:u:U:HCDi:" OPT; do
+  case $OPT in
+  C)
+    csv=1
+    ;;
+  D) 
+    dump=1
+    ;;
+  H) 
+    hdr=1
+    ;;
+  b | d)
+    db="$OPTARG"
+    pgopts="$pgopts -b $dbname"
+    ;;
+  u | U)
+    user="$OPTARG"
+    pgopts="$pgopts -U $user"
+    ;;
+  h | s)
+    server="$OPTARG"
+    pgopts="$pgopts -h $server"
+    ;;
+  p)
+    port="$OPTARG"
+    pgopts="$pgopts -p $port"
+    ;;
+  i)
+    infile="$OPTARG"
+    if [[ ! -f $infile ]]; then
+      errout "File '$infile' not found!"
+    fi
+    ;;
+  *)
+    echo "$USAGE"
+    echo "Error: incorrect options provided"
+    exit 1
+    ;;
+   esac
+done
+#---
+shift $((OPTIND-1))
+#so now $@ are just the positional arguments
+if [[ -z $server ]]; then server=$PGHOST; fi
+if [[ -z $db ]]; then db=$PGDATABASE; fi
+
+table="$1" ## could be more than one?
+
+if [[ -z $table ]]; then
+ errout "database table not specified!"
+fi
+
+echo "Using server '$server', database '$db'"
+# checking table existence
+r=$(psqlget "select exists (select from pg_tables where schemaname='public' AND tablename='$table')")
+##"
+r=$(echo $r | tr '[:upper:]' '[:lower:]')
+if [[ $r == "f" ]]; then
+  errout "table '$table' does not exist!"
+fi
+
+if [[ -z "$infile" ]]; then
+  ## backup to: table.date.gz
+  #date=$(date '+%y_%m_%d-%H:%M')
+  date=$(date '+%y_%m_%d')
+  fout="$table.$date"
+  copyfmt="format 'text'"
+  if [[ -n $csv ]]; then
+    copyfmt="format 'csv'"
+    fout=$fout.csv.gz
+    if [[ -n $hdr ]]; then copyfmt="$copyfmt,header true"; fi
+  else
+    copyfmt="$copyfmt,null ''" 
+    fout=$fout.tab.gz
+  fi  
+  qry="copy $table to stdout with ($copyfmt)"
+  psql $pgopts -c "$qry" | gzip > $fout
+  exit 0
+fi
+## -- importing given file into table
+copyfmt="format 'text'"
+if [[ -n $csv ]]; then
+  copyfmt="format 'csv'"
+  if [[ -n $hdr ]]; then copyfmt="$copyfmt,header true"; fi
+else
+  copyfmt="$copyfmt,null ''" 
+fi
+
+qry="\\copy $table from stdin with ($copyfmt)"
+gzip -cd $infile | psql $pgopts -c "$qry"
+
+
+
