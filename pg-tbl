@@ -1,30 +1,36 @@
-#!/usr/bin/env bash
+#!/bin/bash
 ## table/qry backup for postgresql
 read -r -d '' USAGE << EOM
 Usage:
- pg-tbl [options] table | qryfile
+ pg-tbl [options] table|qryfile
  
  Default (no -i option given): backup table data or executes the query
  specified in qryfile.
 
- If -i option is given with a file name it attempts to restore the content
- of the file as a table backup, back to the 
- 
+ If -i option is given with a file name it attempts to insert
+ the content of the file into the named table
+
  Options:
- 
- -i tbl_backup_file  table restore mode: use pg_restore to restore the 
-                     table data found in the given file;
-                     NOTE: target table name still needs to be provided!
- -I/-A               for -i, load into a temporary table and insert/append
-                     only the missing rows into the target table
- -h/-s server        override PGHOST with this server name
- -p port             overrides default port
- -b/-d database      override PGDATABASE
- -U/-u               override PGUSER
+ Table write/insert mode:
+  -i tbl_backup_file  table restore mode: use pg_restore to restore/insert the 
+                      table data found in the given file
+ Table/query output:
+  -f col1,col2..      comma delimited list of columns (fields)
+                      to extract from table
+  -C                  output is CSV instead of tab delimited
+  -H                  include table header (only for -C option)
+  -S                  only show table dependencies and exit
+  -h/-s server        override PGHOST with this server name
+  -p port             overrides default port
+  -b/-d database      override PGDATABASE
+  -U/-u               override PGUSER
  
  Note: this utility relies on pg_dump, pg_restore & psql utilties 
  and ~/.pgpass must be configured for user authentication.
 EOM
+#TODO:
+# -I/-A               for -i, load into a temporary table and insert/append
+#                     only the missing rows into the target table
 
 trunc=""
 server=""
@@ -36,6 +42,8 @@ dump=""
 infile=""
 hdr=""
 showdeps=""
+quiet=""
+tcols=""
 
 function errout {
  echo -e "Error: $1"
@@ -53,8 +61,11 @@ if [[ -z "$1" || "$1" == "--help" || ( -z "$2" && "$1" == "-h" ) ]]; then
    exit 1
 fi
 
-while getopts "s:b:h:d:p:u:U:IAHSCDi:" OPT; do
+while getopts "s:b:h:d:p:f:u:U:qIAHSCDi:" OPT; do
   case $OPT in
+  q)
+    quiet=1
+    ;;
   S)
     showdeps=1
     ;;
@@ -89,6 +100,9 @@ while getopts "s:b:h:d:p:u:U:IAHSCDi:" OPT; do
       errout "File '$infile' not found!"
     fi
     ;;
+  f)
+    tcols="$OPTARG"
+    ;;
   *)
     echo "$USAGE"
     echo "Error: incorrect options provided"
@@ -107,8 +121,9 @@ table="$1" ## could be more than one?
 if [[ -z $table ]]; then
  errout "database table not specified!"
 fi
-
-echo "Using server '$server', database '$db'"
+if [[ -z $quiet ]]; then
+ >&2 echo "Using server '$server', database '$db'"
+fi
 # checking table existence
 r=$(psqlget "select exists (select from pg_tables where schemaname='public' AND tablename='$table')")
 ##"
@@ -132,9 +147,7 @@ from chain"
   exit 0
 fi
 
-
-
-if [[ -z "$infile" ]]; then
+if [[ -z "$infile" ]]; then # output mode
   ## backup to: table.date.gz
   #date=$(date '+%y_%m_%d-%H:%M')
   date=$(date '+%y_%m_%d')
@@ -147,9 +160,16 @@ if [[ -z "$infile" ]]; then
   else
     copyfmt="$copyfmt,null ''" 
     fout=$fout.tab.gz
-  fi  
-  qry="copy $table to stdout with ($copyfmt)"
-  psql $pgopts -c "$qry" | gzip > $fout
+  fi
+  if [[ -f "$table" ]]; then # execute query in given file
+    psql $pgopts -f "$table"
+  else
+    qry="copy $table to stdout with ($copyfmt)"    
+    if [[ -n $tcols ]]; then
+      qry="copy (select $tcols from $table) to stdout with ($copyfmt)"
+    fi
+    psql $pgopts -c "$qry" 
+  fi
   exit 0
 fi
 ## -- importing given file into table
@@ -162,5 +182,9 @@ else
 fi
 
 qry="\\copy $table from stdin with ($copyfmt)"
-gzip -cd $infile | psql $pgopts -c "$qry"
+if [[ $infile =~ \.t?gz$ ]];
+  gzip -cd $infile | psql $pgopts -c "$qry"
+else
+  psql $pgopts -c "$qry" < $infile
+fi
 
