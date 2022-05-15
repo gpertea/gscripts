@@ -22,8 +22,12 @@ if ($outfile) {
 }
 
 ## could pass another phenodata sample here
+my $host=`uname -n`;
+my $basepath=$ENV{HOME}.'/work/cbrain';
+## -- expect this same folder structure in all work environments
+my $pdf=$Getopt::Std::opt_p || "$basepath/phenodata/samples_phenodata.tab";
+die("Error: could not find phenodata file $pdf!\n") unless -f $pdf;
 
-my $pdf=$Getopt::Std::opt_p || $ENV{HOME}."/cbrain/phenodata/samples_phenodata.tab";
 my %pd; # SAMPLE_ID => [subj, region, dx, sex, race, age]
                       #   0       1    2    3    4     5
 open(PD, $pdf) || die("Error opening $pdf\n");

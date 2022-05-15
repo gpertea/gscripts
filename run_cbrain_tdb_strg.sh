@@ -8,11 +8,34 @@
 ## how to submit this on MARCC
 # sbatch --array=1-400 --mail-type=FAIL --mail-user=geo.pertea@gmail.com ./run_strg_gffcmp.sh uniq_rnum_info.cfa
 #
+function err_exit {
+ echo -e "Error: $1"
+ exit 1
+}
+host=$(uname -n)
+# -- to simplify this, make sure we use the same directory structures (or symlinks)
+#    on all platforms (salz servers, MARCC, JHPCE)
 
-refbase=/work-zfs/ssalzbe1/chess-brain/ref
+#base dir for the directory structure of this project (fastq, aln and strg folders required)
+basedir=$HOME/work/cbrain
+if [[ ! -d $basedir/aln || ! -d $basedir/fastq || ! -d $basedir/strg ]]; then
+ err_exit "fastq/aln/strg folders must exist under basedir $basedir"
+fi
+
+refbase=$basedir/ref
+
 gref=$refbase/hg38mod_noPARs.fa
-ann=$refbase/hg38mod_noPARs.gencode37xrefseq_nopseudo.gff
+if [[ ! -f $gref ]]; then err_exit "not found: $gref"; fi
+
+refann=$refbase/hg38mod_noPARs.gencode37xrefseq_nopseudo.gff
+if [[ ! -f $refann ]]; then err_exit "not found: $refann"; fi
+
 gencode=$HOME/work/ref/gencode.v40.annotation.gtf
+if [[ ! -f $gencode ]]; then err_exit "not found: $gencode"; fi
+
+alndir=$basedir/aln
+## output files are written in dataset_path/subdirectories here:
+outdir=$basedir/strg
 
 ## note: both alns and stringtie directories have libd_ prefix and the intermediate
 ## folder '/fastq' REMOVED, and RNum is created instead for each sample data
@@ -29,18 +52,7 @@ gencode=$HOME/work/ref/gencode.v40.annotation.gtf
 # strg/bsp2_hippo/R*/*.gtf
 # strg/bsp3/R*/*.gtf
 
-#base dir for alignment data
-mydir=/scratch/groups/ssalzbe1/gpertea
-
-alndir=$mydir/cbrain-aln
-## output files are written in dataset_path/subdirectories here:
-outdir=$mydir/cbrain-stringtie
-
-function err_exit {
- echo -e "Error: $1"
- exit 1
-}
-# requires a task pseudo-fasta file
+# requires a task db pseudo-fasta file as the 1st arg
 
 fdb="$1"
 if [[ -z "$fdb" ]]; then
@@ -49,25 +61,31 @@ fi
 if [[ ! -f "$fdb" ]]; then
   err_exit "$fdb file not found!"
 fi
-fdb="$fdb.cidx"
-if [[ ! -f "$fdb" ]]; then
-    err_exit "$fdb file not found!"
+fdbix="$fdb.cidx"
+if [[ ! -f "$fdbix" ]]; then
+    # cdbfasta $fdb -- no, this would mess up grid/parallel runs
+    err_exit "$fdbix file must exist!"
+fi
+fdb=$fdbix
+taskid="$2" # the task# could be given directly (e.g. by parallel)
+jobid="$$"
+if [[ -z $taskid ]]; then
+  taskid=$SLURM_ARRAY_TASK_ID
+  jobid=$SLURM_JOB_ID
+  if [[ -z "$taskid" ]]; then
+   taskid=$SGE_TASK_ID
+   jobid=$JOB_ID
+   if [[ -z "$taskid" ]]; then
+     err_exit "no task index number given or found!"
+   fi
+  fi
 fi
 
-id=$SLURM_ARRAY_TASK_ID # or $SGE_TASK_ID on SGE (JHPCE)
-if [[ -z "$id" ]]; then
- id="$2"
- if [[ -z "$id" ]]; then
-   err_exit "no task ID found or given!"
- fi
-fi
-
-line=$(cdbyank -a $id $fdb)
-#format is:       1              2   3   4      5    6   7
+line=$(cdbyank -a $taskid $fdb)
+#expected format:       1        2   3   4      5    6   7
 #           >6 libd_bsp1/fastq R2828 M DLPFC Schizo AA 52.02
-
 if [[ $line != '>'* ]]; then
- err_exit "invalid line pulled for $id:\n$line"
+ err_exit "invalid line pulled for $taskid:\n$line"
 fi
 t=( $line )
 fdir=${t[1]}
@@ -98,7 +116,7 @@ outpath="$outdir/$dsdir"
 mkdir -p "$outpath" || err_exit "failed at: mkdir -p $outpath"
 cd "$outpath" || err_exit "failed at: cd $outpath"
 
-params="--cram-ref $gref -G $ann -o $sid.gtf $cram"
+params="--cram-ref $gref -G $refann -o $sid.gtf $cram"
 
 #/bin/rm -f $rnum.gtf *.ctab
 
@@ -106,7 +124,8 @@ rlog=$sid.log
 
 ## ---- start main task execution
 echo "$line" | tee $rlog
-echo "task ${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID} on $HOSTNAME $outpath" | tee -a $rlog
+
+echo "task ${jobid}_${taskid} on $host $outpath" | tee -a $rlog
 echo "["$(date '+%m/%d %H:%M')"] starting command:" | tee -a $rlog
 cmd="stringtie $params"
 echo -e $cmd | tee -a $rlog
@@ -131,7 +150,7 @@ pids+="$! "
 
 # also run with -eB to generate stringtie .ctab files on its own output (junction counts)
 mkdir -p 'eB'
-eparams="--cram-ref $gref -G $ann -o eB/$sid.gtf -e -b eB $cram"
+eparams="--cram-ref $gref -G $refann -o eB/$sid.gtf -e -b eB $cram"
 echo "["$(date '+%m/%d %H:%M')"] starting command:" | tee -a $rlog
 cmd="stringtie $eparams"
 echo -e $cmd | tee -a $rlog
