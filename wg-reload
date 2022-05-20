@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 ## - just run this as root to reload the wireguard configuration
 ##  and resync the peers after network interruptions etc.
 WGNET=wg0 # or whatever the interface name is
