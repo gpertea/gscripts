@@ -2,23 +2,34 @@
 use strict;
 use Getopt::Std;
 
-my $usage = q/Usage:
- fastq2sam.pl [-o <out.sam>] reads_1.fastq[.gz] [ reads_2.fastq[.gz] ]
+my $usage = q{Usage:
+ fastq2sam.pl [-N] [-m 1|2] [-o <out.sam>] reads_1.fastq[.gz] [ reads_2.fastq[.gz] ]
  
- Takes FASTQ input reads (single or paired) and generates
- SAM output (which can be piped into other conversion programs)
-/;
+ Takes FASTQ input reads (single or paired) and generates (interleaved) SAM output
+ stream (which can be piped into other conversion programs)
+ 
+ Options:
+   -N     : for paired reads, no checking of mate pairing is performed
+   -m X : for single file input, set SAM mate flag to X (X can be 1 or 2)
+};
+
 umask 0002;
-getopts('o:') || die($usage."\n");
+getopts('o:Nm:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
+my $nocheck=$Getopt::Std::opt_N;
+my $forcemate=$Getopt::Std::opt_m;
+die("${usage}Error: invalid -m option!\n") if ($forcemate!=1 && $forcemate!=2);
 $outfile='' if $outfile eq '-';
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
-  }
+}
 
 my @f=@ARGV;
 my $paired=(@f==2);
+
+die("Error: -m can only be used with single input!\n") if ($paired && $forcemate);
+
 my @fh=(undef, undef);
 #determine compression, if any
 my @fz=('','');
@@ -48,31 +59,31 @@ while (1) {
   unless ($ended1) {
    ($rname, $rseq, $rquals)=getFastq($fh[0]);
    $ended1=1 unless $rname;
-   }
+  }
   if (!$paired) {
    last if $ended1;
-   printSAM(\$rname, \$rseq, \$rquals);
+   printSAM(\$rname, \$rseq, \$rquals, 0, 0, $forcemate);
    next;
   }
+  ## paired files case:
   my ($mname, $mseq, $mquals);
   unless ($ended2) {
   ($mname, $mseq, $mquals)=getFastq($fh[1]);
    $ended2=1 unless $mname;
   }
   last if ($ended1 && $ended2);
-  if ($rname && $mname && $rname ne $mname) {
+  if (!$nocheck && $rname && $mname && $rname ne $mname) {
      $rname=substr($rname, 0, -2); 
      if ($rname ne substr($mname, 0, -2)) {
         #expect mates to be named similarly
         die("Error: mate names do not match ($rname vs $mname)\n");
      }
   }
-  if (!$rname) { #print single read
-    printSAM(\$mname, \$mseq, \$mquals);
-    
+  if (!$rname) { #print mate2 - with mate designation
+    printSAM(\$mname, \$mseq, \$mquals, 0, 0, 2);
   }
-  else { #print paired reads
-  printSAM(\$rname, \$rseq, \$rquals, \$mseq, \$mquals);
+  else { #print paired reads (or just mate1)
+  printSAM(\$rname, \$rseq, \$rquals, \$mseq, \$mquals, 1);
   }
 }
 
@@ -113,14 +124,14 @@ sub getFastq {
 }
 
 sub printSAM {
- my ($rn, $rs, $rq, $ms, $mq)=@_;
+ my ($rn, $rs, $rq, $ms, $mq, $mate)=@_;
  if ($ms && $$ms) {
-   #print pair
+   #print as pair
    print join("\t", $$rn, 77,  '*','0','0','*','*','0','0',$$rs, $$rq)."\n";
    print join("\t", $$rn, 141, '*','0','0','*','*','0','0',$$ms, $$mq)."\n";
  }
- else {
-   #print single
-   print join("\t", $$rn, 4,  '*','0','0','*','*','0','0',$$rs, $$rq)."\n";
+ else { #print single
+   my $fl = $mate ? ($mate==1 ? 77 : 141) : 4 ;
+   print join("\t", $$rn, $fl,  '*','0','0','*','*','0','0',$$rs, $$rq)."\n";
  }
 }
