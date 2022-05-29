@@ -18,7 +18,7 @@ getopts('o:Nm:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
 my $nocheck=$Getopt::Std::opt_N;
 my $forcemate=$Getopt::Std::opt_m;
-die("${usage}Error: invalid -m option!\n") if ($forcemate!=1 && $forcemate!=2);
+die("${usage}Error: invalid -m option!\n") if ($forcemate && $forcemate!=1 && $forcemate!=2);
 $outfile='' if $outfile eq '-';
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
