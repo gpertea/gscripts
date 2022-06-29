@@ -124,12 +124,18 @@ fi
 if [[ -z $quiet ]]; then
  >&2 echo "Using server '$server', database '$db'"
 fi
-# checking table existence
+# checking table/view existence
 r=$(psqlget "select exists (select from pg_tables where schemaname='public' AND tablename='$table')")
 ##"
 r=$(echo $r | tr '[:upper:]' '[:lower:]')
 if [[ $r == "f" ]]; then
-  errout "table '$table' does not exist!"
+  # try to check if it's a view?
+  r=$(psqlget "select exists (select from pg_views where viewname='$table')")
+  ##"
+  r=$(echo $r | tr '[:upper:]' '[:lower:]')
+  if [[ $r == "f" ]]; then
+    errout "table/view '$table' does not exist!"
+  fi
 fi
 
 if [[ -n $showdeps ]]; then
