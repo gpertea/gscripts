@@ -84,12 +84,14 @@ my (%tds, %tdx, %treg, $numdrop, @nf); # counts per dataset, Dx, region, and lis
 # sample_id, dataset, protocol, region, brnum, dx, sex, race, age, dropped
 #     0        1        2         3       4     5   6    7     8     9
 foreach my $rn (@rnums) {
- my $rd=$rdb{$rn};
- unless($rd) { push(@nf, $rn); next }
- $tds{$$rd[1]}++;
- $treg{$$rd[3]}++;
- $tdx{$$rd[5]}++;
- $numdrop++ if $$rd[9];
+ my $rds=$rdb{$rn};
+ unless($rds) { push(@nf, $rn); next }
+ foreach my $rd (@$rds) {
+    $tds{$$rd[1]}++;
+    $treg{$$rd[3]}++;
+    $tdx{$$rd[5]}++;
+    $numdrop++ if $$rd[9];
+ }
 }
 
 ## show the stats, list the missing to stdout
