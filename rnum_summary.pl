@@ -12,12 +12,15 @@ my $usage = q/Usage:
   Input can be a list of RNums or file names with a R\\d+_ format 
   given at stdin or with the -f option.  
   Options:
-      -f    file with RNums to consider (default: stdin)
-      -d    rnaseq_samples.tab file (default: ~\/rnaseq_samples.tab
+      -l   just list the unique rnums found
+      -m   output the metadata table for the unique rnums given
+      -f   file with RNums to consider (default: stdin)
+      -d   rnaseq_samples.tab file (default: ~\/rnaseq_samples.tab
 /;
 umask 0002;
-getopts('o:f:d:') || die($usage."\n");
-
+getopts('o:f:d:lm') || die($usage."\n");
+my $list=$Getopt::Std::opt_l;
+my $meta=$Getopt::Std::opt_m;
 my $fdb=$Getopt::Std::opt_d || $ENV{HOME}.'/rnaseq_samples.tab';
 die("Error locating data file $fdb\nCheck -d option?\n") unless -f $fdb;
 my $outfile=$Getopt::Std::opt_o;
@@ -54,6 +57,10 @@ while($_=<$in>) {
  }
 }
 close($in) if $rnfile;
+if ($list) {
+ print join("\n", @rnums)."\n";
+ exit(0);
+}
 print STDERR scalar(@rnums)." unique RNums given ($tr parsed).\n";
 
 
@@ -64,10 +71,18 @@ my %rdb; # rnum => [
 
 # read the database file
 open(FDB, $fdb) || die("Error opening database file $fdb\n");
+if ($meta) {
+ print join("\t", qw(sample_id rnum dataset protocol region brnum dx sex race age dropped))."\n"
+}
+
 while(<FDB>) {
  next if m/rnum/i; #skip header
  chomp;
  my @t=split(/[\t\,]/); #sample_id,rnum,dataset,protocol,region,brnum,dx,sex,race,age,dropped
+ if ($meta && exists($urn{$t[1]})) {
+   print "$_\n";
+   next;
+ }
  my $sid=shift(@t);
  my $rnum=$t[0];
  $t[0]=$sid; 
@@ -79,7 +94,7 @@ while(<FDB>) {
  push(@$rd, [ @t ])
 }
 close(FDB);
-
+exit(0) if $meta;
 my (%tds, %tdx, %treg, $numdrop, @nf); # counts per dataset, Dx, region, and list of missing (not found)
 # sample_id, dataset, protocol, region, brnum, dx, sex, race, age, dropped
 #     0        1        2         3       4     5   6    7     8     9
