@@ -115,7 +115,7 @@ fi
 
 fn=$sid
 
-params="-x $hsref -1 ${fqarr[0]} -2 ${fqarr[1]} -k 30 2>${fn}.align_summary.txt"
+params="-x $hsref -1 ${fqarr[0]} -2 ${fqarr[1]} -k 40 2>${fn}.align_summary.txt"
 
 ## - search both strands for now --
 #if [[ $dataset != bsp1* ]]; then
@@ -156,9 +156,9 @@ cmd="samtools sort -T $tmpsrt -l 6 -m 8G --no-PG -@ 4 $bam | \
 echo -e "$cmd" | tee -a $rlog
 
 eval "$cmd" |& tee -a $rlog
-
-if [[ $? -eq 0 ]]; then
- rm -f $bam
+#if [[ $? -eq 0 ]]; then
+if [[ $(stat -c %s $cram 2>/dev/null || echo 0) -gt 100000 ]]; then
+ /bin/rm -f $bam
 else
  echo "sort|scramble error exit detected!" | tee -a $rlog
  exit 1
