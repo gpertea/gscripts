@@ -1,10 +1,12 @@
 #!//usr/bin/env bash
 #$ -cwd
-#$ -o cmc1_hisat.$JOB_ID.$SGE_TASK_ID.txt
-#$ -e cmc1_hisat.$JOB_ID.$SGE_TASK_ID.txt
+#$ -N cmc1_aln
+#$ -o logs/$JOB_NAME.$JOB_ID.$TASK_ID.log
+#$ -e logs/$JOB_NAME.$JOB_ID.$TASK_ID.log
 #$ -l h_fsize=100G
 #$ -l mem_free=8G,h_vmem=10G
 #$ -pe local 4
+module load conda_R/4.1.x
 
 ## IMPORTANT: change this, output will be in: $basedir/aln/$dataset/$sid/
 dataset="cmc1" 
@@ -113,7 +115,7 @@ fi
 
 fn=$sid
 
-params="-x $hsref -1 ${fqarr[0]} -2 ${fqarr[1]} 2>${fn}.align_summary.txt"
+params="-x $hsref -1 ${fqarr[0]} -2 ${fqarr[1]} -k 30 2>${fn}.align_summary.txt"
 
 ## - search both strands for now --
 #if [[ $dataset != bsp1* ]]; then
@@ -138,7 +140,7 @@ echo "$line" | tee $rlog
 
 echo ">Task ${jobid}.${taskid} on $host:$outpath" | tee -a $rlog
 echo "["$(date '+%m/%d %H:%M')"] starting:" | tee -a $rlog
-cmd="hisat2 -p 8 --phred33 --min-intronlen 20 $params |\
+cmd="hisat2 -p 4 --phred33 --min-intronlen 20 $params |\
  samtools view -b -o $bam -"
 echo -e $cmd | tee -a $rlog
 
