@@ -144,7 +144,7 @@ cmd="samtools sort -T $tmpsrt -l 6 -m 7G --no-PG -@ 4 $bam | \
  scramble -B -I bam -O cram -8 -r $gref -X small -t 4 -n -! - $cram"
 echo -e "$cmd" >> $rlog
 
-eval -e "$cmd" >> $rlog 2>&1
+eval "$cmd" >> $rlog 2>&1
 
 if [[ $? -eq 0 ]]; then
  rm -f $bam
