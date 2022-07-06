@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 # -- Example: prepare a partial path/SAMPLE_ID list in ~/cbrain/ like this:
-# ls data/libd_bsp*/fastq*/R*.gz | perl -pe 's{^data/(\S+/R\d+).+}{\1}' | \
-#   sort -u > bsp_fastq_path_rnums.lsid
+# ls $(pwd -P)/relpath/to/fastq_data/sampleID*.f*q.gz | cut -f1 -d. | \
+#   sort -u > fastq_pathprefix.lsid
 # -- a line would look like this: libd_bsp2/fastq_hippo/R11140
 # -- then run this script with the resulting lsid file as input
 # -- the output file will have records like this:
@@ -11,7 +11,7 @@ use Getopt::Std;
 use strict;
 my $usage = q/Build a grid array job task db for RNAseq samples based on their path and a sample ID prefix for each
 Usage:
-  build_taskdb.pl [-o taskdb.cfa] [-p pheno_data.tab] sample_basepaths.lsid
+  build_taskdb.pl [-o taskdb.cfa] [-p pheno_data.tab] fastq_pathprefix.lsid
 /;
 umask 0002;
 getopts('o:p:') || die($usage."\n");
@@ -39,8 +39,10 @@ while (<PD>) {
 }
 close(PD);
 my $n=0;
+# expects a line like this: path/to/somedir/sampleIDprefix
+# fastq file names in ..../somedir must match: sampleIDprefix*.f*q.gz
 while (<>) {
-  chomp; #expects a line like this: libd_bsp2/fastq_hippo/R11140
+  chomp; 
   my ($path, $sid)=(m{(.+)/([^/]+)$});
   die("Error parsing sample_id from: $_\n") unless $sid;
   my $sd=$pd{$sid} || die("Error: could not get pheno data for sample $sid\n");
