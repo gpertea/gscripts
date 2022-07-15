@@ -1,15 +1,15 @@
 #!//usr/bin/env bash
 #$ -cwd
-#$ -N cmc3_aln
-#$ -o logs/$JOB_NAME.$JOB_ID.$TASK_ID.log
-#$ -e logs/$JOB_NAME.$JOB_ID.$TASK_ID.log
+#$ -N cmc1_alnfix
+#$ -o logs_fix/$JOB_NAME.$JOB_ID.$TASK_ID.log
+#$ -e logs_fix/$JOB_NAME.$JOB_ID.$TASK_ID.log
 #$ -l h_fsize=100G
 #$ -l mem_free=10G,h_vmem=12G
 #$ -pe local 4
 module load conda_R/4.1.x
 
 ## IMPORTANT: change this, output will be in: $basedir/aln/$dataset/$sid/
-dataset="cmc3" 
+dataset="cmc1" 
 ## run with: 
 ## qsub -t 613 -m ea -M geo.pertea@gmail.com scripts/run_cbrain_hisat_sge.sh aln_taskdb.cfa
 
@@ -128,10 +128,11 @@ cram=$fn.cram
 bam=$fn.bam 
 
 if [[ -f $cram ]]; then
-  err_exit " $cram already exists in $PWD!"
+  #err_exit " $cram already exists in $PWD! Remove it if you really want to rerun this task."
+  /bin/rm -f $cram ## WARNING! existing CRAM is lost
 fi
 
-/bin/rm -f $bam ## WARNING! existing BAM will be lost
+/bin/rm -f $bam ## WARNING! any existing BAM will be lost
 
 rlog=$sid.log
 
@@ -151,7 +152,7 @@ eval "$cmd" |& tee -a $rlog
 
 ## ---- sort and convert to BAM
 echo '['$(date '+%m/%d %H:%M')"] start sorting/conversion to CRAM" | tee -a $rlog
-cmd="samtools sort -T $tmpsrt -l 6 -m 7G --no-PG -@ 4 $bam | \
+cmd="samtools sort -T $tmpsrt -l 6 -m 8G --no-PG -@ 4 $bam | \
  scramble -B -I bam -O cram -8 -r $gref -X small -t 4 -n -! - $cram"
 echo -e "$cmd" | tee -a $rlog
 
