@@ -5,7 +5,7 @@ use FindBin;use lib $FindBin::Bin;
 
 my $usage = q/Usage:
  gff2bed [-c:<rgb_color>] <input.gtf>
- Convert GFF annotation to BED12 format
+ Convert GFF\/GTF annotation to BED12 format
 /;
 umask 0002;
 getopts('c:o:') || die($usage."\n");
@@ -88,7 +88,8 @@ while (<>) {
     else {
      die("Error: cannot parse locus/transcript name from input line:\n$_\n");
      }
-   if (!$gname && $lnum=~m/gene_id[= ]+(['"\:\w\.\|\-]+)/) {
+   if ( !$gname && ($lnum=~m/gene_name[= ]+(['"\:\w\.\|\-]+)/ || 
+                   $lnum=~m/gene_id[= ]+(['"\:\w\.\|\-]+)/) ) {
       $gname=$1;
       $gname=~tr/"//d; #"
       }
@@ -101,14 +102,13 @@ while (<>) {
      $$ld[5]=$fstart if $fstart<$lstart;
      $$ld[6]=$fend if $fend>$lend;
      push(@{$$ld[$i]}, [$fstart, $fend, $fscore]);
-     }
-    else { # first time seeing this transcript
+    } else { # first time seeing this transcript
      $recs{$recID} = ($f eq 'CDS') ? 
            [$chr, $strand, $f, $gname, $tdescr, $fstart, $fend, [], [[$fstart, $fend, $fscore]], $score ] :
            [$chr, $strand, $f, $gname, $tdescr, $fstart, $fend, [[$fstart, $fend, $fscore]], [], $score ] ;
             # 0       1     2     3       4        5       6     7 (exons)                8 (CDS)
      ($gname,$tdescr)=();
-     } 
+   } 
 } #while <>
 
 
@@ -182,7 +182,7 @@ sub writeModels {
       $score=666;
       }
    my $id=$gffid;
-   $id.='|$gname' if $gname;
+   $id.="|$gname" if $gname;
    print join("\t", $chr, $mstart-1, $mend, $id, $score, $strand, $cds_start-1, $cds_end, 
        join(',',$tcolor,$tcolor,$tcolor),
        scalar(@bstarts), join(',', @blens), join(',', @bstarts))."\n";
