@@ -133,9 +133,9 @@ if [[ $ds == 'bsp1' ]]; then
  else
   fqdir="$basedir/fastq/$ds"
 fi
-fqfiles=$(ls $fqdir/$sid*.f*q.gz)
-if [[ -z "$fqfiles" ]]; then
- err_exit "no fastq files found as $fqdir/$sid*.f*q.gz"
+fqfiles=( $(ls $fqdir/$sid*.f*q.gz) )
+if [[ -z "${fqfiles[1]}" ]]; then
+ err_exit "no paired fastq files found as $fqdir/$sid*.f*q.gz"
 fi
 
 odir="$ds/$sid"
@@ -246,7 +246,6 @@ fk=kallisto/abundance.tsv
 if [[ ! -f $fk || $(stat -c%s $fk) -lt 4200 ]]; then
  mkdir -p kallisto
  strand=$(cut -f1 $fstrand)
- fqfiles=$(ls $fqdir/$sid*.f*q.gz) #should have been checked before
  if [[ $strand == 'forward' ]]; then
     ksflag='--fr-stranded'
   elif [[ $strand == 'reverse' ]]; then
@@ -254,8 +253,9 @@ if [[ ! -f $fk || $(stat -c%s $fk) -lt 4200 ]]; then
   else
     ksflag=''
  fi
- #using 4 CPUs (-t 4)
- cmd="kallisto quant -t 4 -i $ktx $ksflag -o kallisto $fqfiles"
+ fqfiles=( $(ls $fqdir/$sid*.f*q.gz) ) #should have been checked before
+ #using 3 CPUs (-t 3)
+ cmd="kallisto quant -t 3 -i $ktx $ksflag -o kallisto ${fqfiles[@]}"
  echo -e "running kallisto:\n$cmd" | tee -a $rlog
  eval "$cmd" |& tee -a $rlog &
 fi
@@ -265,4 +265,4 @@ wait
 if [[ $tmpdir == '/dev/shm'* || $tmpdir == *myscratch* ]]; then
  /usr/bin/rm -rf $tmpdir
 fi
-echo -e "["$(date '+%m/%d %H:%M')"]\tAll Done." | tee -a $rlog
+echo -e "["$(date '+%m/%d %H:%M')"]\ttask done [$taskid]." | tee -a $rlog
