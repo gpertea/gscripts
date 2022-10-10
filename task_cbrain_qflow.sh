@@ -6,8 +6,12 @@
 #$ -l mem_free=8G,h_vmem=12G
 #$ -pe local 4
 
-# run with: 
-#   qsub -N qfdlpfc -t 1-56 code/task_qflow.sh taskdb.fa
+#### Script for generating QC and expression data (counts) from CHESS-Brain 
+#### CRAM alignments and FASTQ files (the latter only needed for transcript 
+#### abundance estimation with kallisto)
+
+# Run with: 
+#   qsub -N qfdlpfc -t 1-56 task_cbrain_qflow.sh taskdb.tfa
 #
 
 # taskdb.tfa expected line format:
@@ -24,10 +28,10 @@
 # one subdir per sample, e.g. 
 ##    bsp2_dlpfc/R12408/....
 #
-### Requires: featureCounts v2.0.3, regtools v0.5.33
+### Requires: featureCounts v2.0.3, regtools v0.5.33, kallisto 
 
-### run with parallel:
-## parallel --delay .01 -j 8 code/task01_fcounts.sh bsp2dlpfc_sel.tfa {1} ::: {1..299}
+### runing with parallel:
+## parallel --delay .01 -j 8 task_cbrain_fcounts.sh bsp2dlpfc_sel.tfa {1} ::: {1..299}
 
 function err_exit {
  echo -e "Error: $1"
@@ -103,35 +107,55 @@ fi
 t=( $line )
 sid=${t[1]} # sampleID
 alndir=${t[2]}  # base directory for aln files
-ds="${alndir##*/}"
+ds="${alndir##*/}" #last directory in the path
+fqdir="" # fastq path for dataset, special deconvo case
+if [[ $ds == 'aln' ]]; then 
+  #polyA_vs_RiboZero base directory, grandparent dir is the dataset
+  ud="${alndir%/*}"
+  ds="${ud##*/}"
+  if [[ $ds == 'ribo'* || $ds == 'poly'* ]]; then
+    ud="${ud%/*}"
+    ds="${ud##*/}"
+  fi
+fi
+echo "Dataset is: $ds"
+
+if [[ $ds == 'deconvo' ]]; then
+  #deconvo dataset, fastq path is tricky
+  fqbase="${alndir%/*}" #parent directory of aln dir
+  fqpre=$(echo "$sid" | cut -f1 -d_)
+  fqrest=$(echo "$sid" | cut -f2- -d_)
+  fqdir="$fqbase/$fqpre/$fqrest"
+fi
 
 if [[ $alndir != '/'* ]]; then
- alndir="$basedir/$alndir" # relative path from basedir
+ alndir="$basedir/$alndir" # convert into absolute path
 fi
 
 fcram=$(ls $alndir/$sid/$sid*.cram | head -1);
 if [[ ! -f $fcram || $(stat -c%s $fcram) -lt 100000 ]]; then
   err_exit "aln file not found ($fcram)"
 fi
-
-if [[ $ds == 'bsp1' ]]; then
-   fqdir="$basedir/fastq/libd_bsp1/fastq"
-   if [[ $onjh ]]; then
-     fqdir="$basedir/fastq/libd_bsp1/$sid"
-   fi
- elif [[ $ds == 'bsp2_'* ]]; then
-   r=$(echo $ds | cut -f2 -d_)
-   fqdir="$basedir/fastq/libd_bsp2/fastq_$r"
-   if [[ $onjh ]]; then
-     fqdir="$basedir/fastq/libd_bsp2_$r"
-   fi
- elif [[ $ds == 'bsp3' ]]; then
-   fqdir="$basedir/fastq/libd_bsp3/fastq"
-   if [[ $onjh ]]; then
-     fqdir="$basedir/fastq/libd_bsp3"
-   fi
- else
-  fqdir="$basedir/fastq/$ds"
+if [[ -z $fqdir ]]; then
+  if [[ $ds == 'bsp1' ]]; then
+     fqdir="$basedir/fastq/libd_bsp1/fastq"
+     if [[ $onjh ]]; then
+       fqdir="$basedir/fastq/libd_bsp1/$sid"
+     fi
+   elif [[ $ds == 'bsp2_'* ]]; then
+     r=$(echo $ds | cut -f2 -d_)
+     fqdir="$basedir/fastq/libd_bsp2/fastq_$r"
+     if [[ $onjh ]]; then
+       fqdir="$basedir/fastq/libd_bsp2_$r"
+     fi
+   elif [[ $ds == 'bsp3' ]]; then
+     fqdir="$basedir/fastq/libd_bsp3/fastq"
+     if [[ $onjh ]]; then
+       fqdir="$basedir/fastq/libd_bsp3"
+     fi
+   else
+    fqdir="$basedir/fastq/$ds"
+  fi
 fi
 fqfiles=( $(ls $fqdir/$sid*.f*q.gz) )
 if [[ -z "${fqfiles[1]}" ]]; then
