@@ -35,7 +35,9 @@ if [[ ext == "gz" ]]; then
   ot="-Oz"
 fi
 
-bcftools annotate -a $fann --threads 4 -c INFO/RS $ot -o $fout $f
-
+bcftools annotate -a $fann --collapse snps --threads 4 -c INFO/RS $ot -o $fout $f
+echo "Annotation done. Indexing.."
+bcftools index $fout
+echo "$fout done."
 
 
