@@ -1,6 +1,5 @@
 #!/bin/bash
 #set -x
-#customized to work from gi7
 
 read -r -d '' USAGE << EOM
 Usage:
@@ -51,7 +50,9 @@ lastb="pgbck.$PGSRV.$db.last"
 ##TODO: the backup and (remote) copy directories should be taken from a 
 ##    local config file ~/.postgres-backup or so
 #rdirs=( "/data2/backups/$bd" "srv02:/mnt/Data2/gpertea/backups/$bd" )
-rdirs=( "/data/gdebsrv_data1/backups/$bd" )
+#rdirs=( "/data/gdebsrv_data1/backups/$bd" )
+rdirs=( "/data2/backups/$bd" )
+
 ferr=${fpre}stderr
 echo "Backing up $db into: $LDIR/${bfn}*"
 cd $LDIR
