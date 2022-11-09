@@ -1,16 +1,23 @@
 #!/bin/bash
 #set -x
 #exec > $HOME/backup_wiki.stderr.log 2>&1
+## wake-up the external drives:
+## only needed on my setup:
+#cd /nfs/p2box/f/_backup
+#ls -l > /dev/null
+#cd /nfs/p2box/m/_backup
+#ls -l > /dev/null
+##
 H=/home/gpertea
 #local work/backup directory:
 wiki=gwiki
-BDIR=/mylocal/geo/backups/wiki
+BDIR=/data1/backups/wiki
 export PATH=$H/gscripts:/opt/geo/bin:$H/bin:/usr/bin:/bin:/sbin:/usr/sbin
 bn=bck_$(date +%y%m%d_%H-%M)
 host=$(hostname -s)
-wikidir=/mylocal/geo/httpd/html/mediawiki
-rdirs=( "/nfs/p2box/m/_backup/$wiki" "/nfs/p2box/n/_backup/$wiki" "gdebsrv:$H/backups/$wiki" "maestro:/data/backups/$wiki" \
- "salz:$H/backups/$wiki" "salz:/ccb/salz8-3/gpertea/_backups/$wiki")
+wikidir=/data/nginx/melokalia/html/mediawiki
+
+rdirs=( "/mnt/p2box_m/_backup/$wiki" "/mnt/p2box_f/_backup/$wiki" "/data3/backups/$wiki" )
 
 ferr=$BDIR/$bn.stderr
 echo "Backing up into: $BDIR/${bn}*"
@@ -161,7 +168,7 @@ for rdest in "${rdirs[@]}" ; do
  #rtdir=${rdir##*/} #target subdirectory under the "backups" directory
  if [[ -z $rhost ]]; then
    echo "Notifying local target: $rbasedir/backup_received.sh '$rdir' '$bn' '$cleanup_old' '$ff'\"" | tee -a $frerr
-   $rbasedir/backup_received.sh "$rdir" "$bn" "$cleanup_old" "$ff" 2>&1 | tee -a $frerr
+   bash $rbasedir/backup_received.sh "$rdir" "$bn" "$cleanup_old" "$ff" 2>&1 | tee -a $frerr
    echo " -- target $rbasedir done --" | tee -a $frerr
  else
    echo "Notifying remote target: ssh $rhost \"$rbasedir/backup_received.sh '$rdir' '$bn' '$cleanup_old' '$ff'\"" | tee -a $frerr
@@ -174,5 +181,5 @@ err=$(grep -E -i 'error|fail|cannot|couldn|\bfault|timeout|discon' $frerr 2>/dev
 if [[ $err || $scperr ]]; then
   echo "err = <$err>" >> $frerr
   echo "scperr = <$scperr>" >> $frerr
-  mail -s "$wiki backup target issue"  -r 'backuper@'$host.jhu.edu 'geo.pertea@gmail.com' < $frerr
+  mail -s "$wiki backup target issue" -r 'backuper@'$host.jhu.edu 'geo.pertea@gmail.com' < $frerr
 fi
