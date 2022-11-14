@@ -1,4 +1,4 @@
-#!//usr/bin/env bash
+#!/usr/bin/env bash
 #$ -cwd
 #$ -o logs/$JOB_NAME.$JOB_ID.$TASK_ID.log
 #$ -e logs/$JOB_NAME.$JOB_ID.$TASK_ID.log
@@ -235,7 +235,7 @@ frbed=$sid.regtools.bed
 
 ## generate regtools bed
 if [[ ! -f $frbed || $(stat -c%s $frbed) -lt 1200 ]]; then
-  cmd="$sampipe regtools junctions extract -s 2 -c $sid.regtools.ctab -o $frbed -"
+  cmd="$sampipe regtools junctions extract -s XS -c $sid.regtools.ctab -o $frbed -"
   echo -e "running regtools extract:\n$cmd" | tee -a $rlog
   eval "$cmd" |& tee -a $rlog &  
 fi
