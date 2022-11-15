@@ -176,7 +176,7 @@ if [[ ! -f $fcram.'.crai' ]]; then
   samtools index $fcram
 fi
 
-sampipe="samtools view --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u -T $gfa $fcram |"
+sampipe="samtools view --threads 2 --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u -T $gfa $fcram |"
 cmd=''
 rqc="rqc"; # rnaseqc output subdir
 fmet="$rqc/$sid.metrics.tsv"
