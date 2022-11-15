@@ -234,8 +234,9 @@ fi
 frbed=$sid.regtools.bed
 
 ## generate regtools bed
+## -s 0 means always use the XS tag to detemine transcription strand
 if [[ ! -f $frbed || $(stat -c%s $frbed) -lt 1200 ]]; then
-  cmd="$sampipe regtools junctions extract -s XS -c $sid.regtools.ctab -o $frbed -"
+  cmd="$sampipe regtools junctions extract -s 0 -c $sid.regtools.ctab -o $frbed -"
   echo -e "running regtools extract:\n$cmd" | tee -a $rlog
   eval "$cmd" |& tee -a $rlog &  
 fi
