@@ -1,0 +1,119 @@
+#!/usr/bin/env perl
+#$ -S /usr/bin/perl
+#$ -cwd
+#$ -j y
+#$ -l h_vmem=1G,mem_free=1G
+#$ -o $JOB_NAME.$JOB_ID.log
+#### #$ -o $JOB_NAME.$JOB_ID.log
+use Getopt::Std;
+use File::Basename; #for basename, dirname
+use POSIX "sys_wait_h"; # mostly for the handy uname() function
+use Cwd qw(abs_path cwd);
+use Fcntl qw(:DEFAULT :seek); #mostly for the SEEK constants
+my $usage=q{arx : array job executor in current working directory
+Usage:
+  arx <command> [options]
+
+  Workflow example: 
+    CODE=$HOME/work/cbrain/code/01_prep
+    cd ~/work/cbrain/gencode41/bsp4and5
+    $CODE/prep_taskdb.pl libd_bsp4and5 brainseq_phase4and5: > taskdb.cfa
+    cdbfasta taskdb.cfa
+    $CODE/../arx sub -t 1-527 -N bsp45 -m geo.pertea@libd.org $CODE/task_fq2cram.sh taskdb.cfa
+};
+
+my @cmds = qw/status st run sub submit qsub watch/;
+my %cmds; 
+@cmds{@cmds}=();
+
+die("$usage\n") unless exists($cmds{$ARGV[0]});
+
+my $cmd=shift(@ARGV);
+
+getopts('l:N:t:m:') || die($usage."\n");
+
+my $PWD=abs_path(cwd()); #from Cwd module
+my $HOSTNAME = (&POSIX::uname)[1];
+
+chomp($HOSTNAME);
+$HOSTNAME=lc($HOSTNAME);
+
+my $HOST=$HOSTNAME;
+
+($HOST)=($HOST=~m/^([\w\-]+)/);
+$ENV{HOST}=$HOST;
+$ENV{MACHINE}=$HOST;
+$ENV{HOSTNAME}=$HOSTNAME;
+
+my $HOME=$ENV{HOME}; 
+my $JOB=$ENV{'JOB_ID'} || '0';
+my $TASK=$ENV{'SGE_TASK_ID'} || '0';
+
+my $ge=lc($Getopt::Std::opt_g) || 'sge'; # sge or par (parallel)
+my $mail=$Getopt::Std::opt_m;
+my $JARR=$Getopt::Std::opt_t;
+my $JNAME=$Getopt::Std::opt_N;
+my $JREQ=$Getopt::Std::opt_l;
+my $JMDIR="$HOME/_jobs";
+mkdir($JMDIR) unless -d $JMDIR;
+if ($cmd eq 'status') {
+   print STDERR "Using grid engine: $ge\n";
+   if ($ge eq 'sge') {
+      print STDERR "job $JOB.$TASK on $HOST\n";
+   }
+} elsif ($cmd eq 'qsub' || index($cmd,'sub')==0) {
+   die("Error: submit command requires a target script!\n") unless @ARGV>0;
+   my @args=@ARGV;
+   unshift(@args, '-t '.$JARR) if $JARR;
+   unshift(@args, '-N '.$JNAME) if $JNAME;
+   unshift(@args, '-l '.$JREQ) if $JREQ;
+   mkdir('logs') unless -d 'logs'; # my task arrays write logs in a 'logs' subdir of cwd!
+   my $job=qsub(@args);
+   $JMDIR.="/$job";
+   mkdir($JMDIR);
+   open(JINFO, ">$JMDIR/j_cmd") || die("Error creating $JMDIR/j_cmd\n");
+   print JINFO 'qsub '.join(' ',@args)."\n";
+   print JINFO "#cwd: $PWD\n";
+   close(JINFO);
+   symlink($PWD, "$JMDIR/j_cwd");
+   symlink("$PWD/logs", "$JMDIR/j_logs");
+   print STDERR "submitted job: $job\n";
+   if ($mail) {
+     my $jn=$JNAME ? "w_$JNAME" : "w_$job";
+     @args=("-N $jn", "-hold_jid $job -M $mail -m ea", __FILE__, "watch $job");
+     my $j=qsub(@args);
+     print STDERR " ..submitted watcher job $j\n";
+   }
+} elsif ($cmd eq 'watch') {
+  # get summary info for watched job
+  my $job=$ARGV[0];
+  $JMDIR.="/$job";
+  chdir($JMDIR) || die("Error chdir($JMDIR)\n");
+  #system("qacct -j $job > j_acct");
+  ##NOTE: task scripts SHOULD create logs: ~/_jobs/<jobID>/t_<taskID>.tlog
+  my @tlogs=glob('t_*.tlog'); 
+  if (@tlogs>0) { #collect summary for all tasks
+     my @terr; # tasks that failed
+     foreach my $tlf (@tlogs) {
+        my ($tid)=($tlf=~m/t_(\d+)/);
+        open(TLOG, "<$tlf") || die("Error opening task log file $JMDIR/$tlf\n");
+        seek(TLOG, -200, SEEK_END);
+        my @last=<TLOG>;
+        my $l=$last[-1]; #last line, should be shorter than 200 chars!
+        push(@terr, $tid) unless ($l=~m/\b(done|ok|succeeded|finished)/i);
+        close(TLOG);
+     }
+   open(TSUM, '>t_sum.txt') || die("Error creating $JMDIR/t_sum.txt\n");
+   print TSUM "total_tasks\t".scalar(@tlogs)."\n";
+   print TSUM "error_tasks_list\t".join(',',@terr)."\n" if @terr>0;
+   close(TSUM);
+  }
+}
+
+#------------------
+sub qsub {
+  my $args=join(" ", @_);
+  my $s=`qsub $args `;
+  my ($jid)=($s=~m/Your\s+job(?:\-array)?\s+(\d+)/);
+  return $jid;
+}
