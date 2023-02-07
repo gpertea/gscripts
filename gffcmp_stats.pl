@@ -8,7 +8,7 @@ my $usage = q/Usage:
  
  Collect the relevant stats from the gffcompare *.stats output
  in a tab-delimited table:
- qfname rtnum rlocnum qtnum qlocnum matchICnum matchTnum iSn iPr icSn icPr tSn tPr
+ qfname rtnum rlocnum qtnum qmet qlocnum matchICnum matchTnum iSn iPr icSn icPr tSn tPr
  Use -H option to print the header like the above
 /;
 umask 0002;
@@ -23,26 +23,28 @@ if ($outfile) {
 if ($Getopt::Std::opt_H) {
  print "set\t" if $set;
  print join("\t", 
-  split(/\s+/, q/query rtnum rlocnum qtnum qlocnum matchIC matchT iSn iPr icSn icPr tSn tPr/))."\n";
+  split(/\s+/, q/query rtnum rlocnum qtnum qmet qlocnum matchIC matchT iSn iPr icSn icPr tSn tPr/))."\n";
   
 }
-my ($qf, $rtnum, $rlocnum, $qtnum, $qlocnum, $icMatch, $tMatch, $iSn, $iPr, $icSn, $icPr, 
+my ($qf, $rtnum, $rlocnum, $qtnum, $qmet, $qlocnum, $icMatch, $tMatch, $iSn, $iPr, $icSn, $icPr, 
   $tSn, $tPr);
 while (<>) {
   if (m/^#= Summary for dataset:\s+(\S+)/) {
     my $f=$1;
     if ($qf) {
       print "$set\t" if $set;
-      print join("\t", ($qf, $rtnum, $rlocnum, $qtnum, $qlocnum, $icMatch, $tMatch, $iSn, $iPr, 
+      print join("\t", ($qf, $rtnum, $rlocnum, $qtnum, $qmet, $qlocnum, $icMatch, $tMatch, $iSn, $iPr, 
                        $icSn, $icPr, $tSn, $tPr))."\n";
     }
     $tMatch='';
-    $qf=$f;
-    $qf=~s/\.(\w+)$//;
+    #$qf=$f;
+    ($qf)=($f=~m{([^/]+)$});
+    $qf=~s/\.\w+$//;
+    $qf=~s/\.\w+$//;
     next;
   }
-  if (m/^#\s+Query mRNAs\s*:\s*(\d+)\s+in\s+(\d+)\s+loci/) {
-    ($qtnum, $qlocnum)=($1, $2);
+  if (m/^#\s+Query mRNAs\s*:\s*(\d+)\s+in\s+(\d+)\s+loci\s+\((\d+)\s+multi\-exon/) {
+    ($qtnum, $qlocnum, $qmet)=($1, $2, $3);
     next;
   }
   if (m/^#\s+Reference mRNAs\s*:\s*(\d+)\s+in\s+(\d+)\s+loci/) {
@@ -74,8 +76,8 @@ while (<>) {
 
 if ($qf && $tMatch) {
   print "$set\t" if $set;
-  print join("\t", ($qf, $rtnum, $rlocnum, $qtnum, $qlocnum, $icMatch, $tMatch, $iSn, $iPr, $icSn, $icPr, 
-     $tSn, $tPr))."\n";
+  print join("\t", ($qf, $rtnum, $rlocnum, $qtnum, $qmet, $qlocnum, $icMatch, $tMatch, 
+                       $iSn, $iPr, $icSn, $icPr, $tSn, $tPr))."\n";
 }
 
 

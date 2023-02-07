@@ -9,7 +9,8 @@ my ($host)=split(/\./, hostname());
 
 my $qry = "SELECT * FROM regions";
 #my $srv = $host eq 'linwks34' ? 'localhost' : 'gdebsrv';
-my $srv='localhost:5432';
+#my $srv='localhost:5432';
+my $srv='srv16:5432';
 dbLogin($srv);
 dbPrint($qry);
 dbLogout();
