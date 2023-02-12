@@ -1,0 +1,12 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+
+my $usage = q/Usage:
+ jtable_flt xgenes.glsts trmap_J.out
+
+Filter a trmap -J output file discarding transfrags spanning multiple genes
+except those genes that match gene lists in xgenes.glsts.
+
+/;
+
