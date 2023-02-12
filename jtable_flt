@@ -5,8 +5,14 @@ use Getopt::Std;
 my $usage = q/Usage:
  jtable_flt xgenes.glsts trmap_J.out
 
-Filter a trmap -J output file discarding transfrags spanning multiple genes
-except those genes that match gene lists in xgenes.glsts.
+Filter a trmap -J output file discarding transfrags spanning 
+multiple genes EXCEPT those genes that match gene lists in 
+xgenes.glsts
+
+If xgenes.glsts is '.' or '-', no gene lists are excluded and 
+any transfrags spanning multiple lists will be filtered out.
+
+Output: the list of transfrags IDs that passed the filter.
 
 /;
 
