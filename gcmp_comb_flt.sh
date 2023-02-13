@@ -66,5 +66,5 @@ jtable_flt $xglst $fjt > $ofb.tokeep.tlst
 fkept=$ofb.kept.gtf
 echo -e "["$(date '+%m/%d %H:%M')"]\twriting final tranfrags to $fkept"
 fgrep -wf $ofb.tokeep.tlst $gtfout > $fkept
-echo -e "["$(date '+%m/%d %H:%M')"]\t$(gtfcount $fkept)" transfrags kept ($ofb.tokeep.lst)"
+echo -e "["$(date '+%m/%d %H:%M')"]\t"$(gtfcount $fkept)" transfrags kept ($ofb.tokeep.lst)"
 

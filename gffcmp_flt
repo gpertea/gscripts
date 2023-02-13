@@ -128,10 +128,10 @@ sub tflush {
       }
       $tcount++;
       print join('',@td);
-      return;
+      return;  # print '=' codes if -M
     }
   }
-  return if !$kS && $ne<2;
+  return if !$kS && $ne<2; #skip single-exon unless -S
   if ($snum) {
     my ($n)=($td[0]=~m/num_samples "(\d+)"/);
     return if $n<$snum;
@@ -140,9 +140,9 @@ sub tflush {
   if ($codes) {
     my ($c)=($td[0]=~m/class_code "([^"]+)"/);
     return if index($codes, $c)<0;
-  } else { #discard 'r'
+  } else { #always discard 'r'
     my ($c)=($td[0]=~m/class_code "([^"]+)"/);
-    return if $c=='r';
+    return if $c eq 'r';
   }
   if ($td[0] !~ m/\bnum_exons\b/) { 
     $td[0] =~ s/(num_samples "\d+";)/$1 num_exons "$ne";/;
