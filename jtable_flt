@@ -1,18 +1,52 @@
 #!/usr/bin/perl
 use strict;
 use Getopt::Std;
+## first, extract transcripts crossing multiple genes AND such gene lists
+## from the self-mapping output of trmap -J:
+#
+#cut -f1,4 g41_self.jmap | fgrep ',' | sort -k2,2 | \
+#awk '$2==p {printf ",%s",$1}
+# $2!=p {if (p) printf "\t%s\n%s",p,$1; else printf "%s",$1; p=$2}
+# END {printf "\t%s\n",p}' > g41_t_xgenes.tab
+# cut -f2 g41_t_xgenes.tab > g41_xgenes.glst
 
 my $usage = q/Usage:
- jtable_flt xgenes.glsts trmap_J.out
+ jtable_flt xgenes.glst trmap_J.jtable
 
 Filter a trmap -J output file discarding transfrags spanning 
 multiple genes EXCEPT those genes that match gene lists in 
-xgenes.glsts
+xgenes.glst
 
-If xgenes.glsts is '.' or '-', no gene lists are excluded and 
+If xgenes.glst is '.' or '-', no gene lists are excluded and 
 any transfrags spanning multiple lists will be filtered out.
 
-Output: the list of transfrags IDs that passed the filter.
+Output: the list of transfrag IDs that passed the filter./;
 
-/;
+die("$usage\n") if (@ARGV!=2);
+foreach my $f (@ARGV) {
+  if ($f ne '.' && $f ne '-') {
+    die "Error: file $f not found!\n" unless -f $f;
+  }
+}
 
+my %xgenes; # glst=>1 , simple hash keeping trask of gene lists (alpha-sorted within each list)
+my ($fxgenes, $fjt)=@ARGV;
+if ($fxgenes ne '.' && $fxgenes ne '-') {
+  open(XG, $fxgenes) || die ("Error opening $fxgenes!\n");
+  while (<XG>) {
+   chomp;
+   # we could sort here, but we assume sorted
+   $xgenes{$_}=1;
+  }
+  close(XG);
+}
+#my @tis; #transfrag IDs to keep
+## 4th column in jtable must have the genes!
+open(F, $fjt) || die ("Error opening jtable file: $fjt");
+while(<F>) {
+  my @t=split(/\t/);
+  die("Error: 6 columns expected!\n") unless @t!=6;
+  next if index($t[3], ',')>0 && !exists($xgenes{$t[3]});
+  print $t[0]."\n";
+}
+close(F);
