@@ -74,7 +74,7 @@ if ($cmd eq 'status') {
       unless($JARR) {
         my $nlines=`wc -l $args[0]`;
         chomp($nlines);
-        $JARR='-t 1-'.$nlines;
+        $JARR='1-'.$nlines;
       }
       unshift(@args, 'arx', 'run');
    } else {
