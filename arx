@@ -5,6 +5,7 @@
 #$ -l h_vmem=2G,mem_free=2G
 #$ -o $JOB_NAME.$JOB_ID.log
 #### #$ -o $JOB_NAME.$JOB_ID.log
+use strict;
 use Getopt::Std;
 use File::Basename; #for basename, dirname
 use POSIX "sys_wait_h"; # mostly for the handy uname() function
@@ -66,19 +67,20 @@ if ($cmd eq 'status') {
    if ($ge eq 'sge') {
       print STDERR "job $JOB.$TASK on $HOST\n";
    }
-} elsif ($cmd eq 'qsub' || index($cmd,'sub')==0) {
-   my @args=@ARGV;
+} elsif ($cmd eq 'qsub' || index($cmd,'sub')==0) {   
+   my @args=();
    if ($cmdfile) {
-      @args=@ARGV;
-      die("Error: command file $args[0] not found!") unless $args[0] && -f $args[0];
+      $cmdfile=shift(@ARGV);
+      die("Error: command file $cmdfile not found!") unless $cmdfile && -f $cmdfile;
       unless($JARR) {
-        my $nlines=`wc -l $args[0]`;
+        my $nlines=`wc -l $cmdfile`;
         chomp($nlines);
         $JARR='1-'.$nlines;
       }
-      unshift(@args, 'arx', 'run');
+      @args=('arx', 'run', $cmdfile);
    } else {
      die("Error: submit command requires a target script!\n") unless @ARGV>0;
+     @args=@ARGV;
    }
    unshift(@args, '-t '.$JARR) if $JARR;
    unshift(@args, '-N '.$JNAME) if $JNAME;
