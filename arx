@@ -145,5 +145,6 @@ sub qsub {
   my $args=join(" ", @_);
   my $s=`qsub $args `;
   my ($jid)=($s=~m/Your\s+job(?:\-array)?\s+(\d+)/);
+  die("Error: errror at qsub $args ") unless $jid;
   return $jid;
 }
