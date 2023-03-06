@@ -144,7 +144,6 @@ if [[ -z $sid ]]; then
  err_exit "could not parse sampleID from $fn1"
 fi
 
-
 ## -- get the new aln path pattern:
 #dsdir=${fdir//libd_/}
 #dsdir=${dsdir//\/fastq/}/$sid
@@ -273,8 +272,10 @@ if [[ $? -eq 0 ]]; then
    echo "error: cram file too small" | tee -a $rlog
   fi
 else
-   echo "sort|scramble error exit detected!" | tee -a $rlog
+   #echo "'['$(date '+%m/%d %H:%M')"] sort|scramble error exit detected!" | tee -a $rlog
+   echo '['$(date '+%m/%d %H:%M')"] task #${taskid} error exit detected!." | tee -a $rlog
+   /bin/rm -rf $tmpdir
    exit 1
 fi
-
+/bin/rm -rf $tmpdir
 echo '['$(date '+%m/%d %H:%M')"] task #${taskid} done." | tee -a $rlog
