@@ -16,6 +16,8 @@ Options (only use one at a time):
    -gl  list distinct gene IDs (feature type ending with 'gene')
    -il  list all distinct IDs with their feature type
    -pl  list all Parent identifiers with their feature type
+   -r   report transcript counts per reference sequence
+   -rg  report gene counts per reference sequence
 EOF
 }
 
@@ -30,28 +32,28 @@ if [[ $1 =~ ^-.+ ]]; then
  shift
 fi
 if [[ -z "$a" ]]; then
-  perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2]=~m/(?:exon|CDS|utr)$/ && m/\bParent=([^;]+)/)' $1 | sort -u | wc -l
+  perl -aF'\t' -ne 'if($F[2]=~m/(?:exon|CDS|utr)$/i && m/\bParent=([^;]+)/){$_=$1;chomp;print "$_\n"}' $1 | sort -u | wc -l
   exit 0
 fi
 
 case $a in
  l)
-   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if $t[2]=~m/(?:exon|CDS|utr)$/i && m/\bParent=([^;]+)/ && (++$n{$1})==1' $1
+   perl -aF'\t' -ne 'if($F[2]=~m/(?:exon|CDS|utr)$/i && m/\bParent=([^;]+)/){$_=$1;chomp;print "$_\n" if (++$n{$_})==1}' $1
    ;;
  g)
-   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if $t[2]=~m/gene$/i && m/\bID=([^;]+)/' $1 | wc -l
+   perl -aF'\t' -ne 'chomp;@t=split(/\t/);print "$1\n" if $t[2]=~m/gene$/i && m/\bID=([^;]+)/' $1 | wc -l
    ;;
  gl)
-   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if $t[2]=~m/gene$/i && m/\bID=([^;]+)/' $1 
+   perl -aF'\t' -ne 'chomp;@t=split(/\t/);print "$1\n" if $t[2]=~m/gene$/i && m/\bID=([^;]+)/' $1 
    ;;
  c)
-   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2] eq "CDS") && m/\bParent=([^;]+)/ && (++$n{$1})==1' $1 | wc -l
+   perl -aF'\t' -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2] eq "CDS") && m/\bParent=([^;]+)/ && (++$n{$1})==1' $1 | wc -l
    ;;
  cl)
-   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2] eq "CDS") && m/\bParent=([^;]+)/ && (++$n{$1})==1' $1 
+   perl -aF'\t' -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2] eq "CDS") && m/\bParent=([^;]+)/ && (++$n{$1})==1' $1 
    ;;
  il)
-   perl -ne 'chomp;@t=split(/\t/);print "$1\t$t[2]\n" if m/\bID=([^;]+)/ && (++$n{$1})==1' $1
+   perl -aF'\t' -ne 'chomp;@t=split(/\t/);print "$1\t$t[2]\n" if m/\bID=([^;]+)/ && (++$n{$1})==1' $1
    ;;
  pl)
  #assumes parent IDs are always found BEFORE their children reference them with Parent attribute

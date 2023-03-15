@@ -7,6 +7,7 @@ if [[ "x"$1 == "x-h" ]]; then
  echo " -gl : list distinct gene names (gene_id attribute)"
  echo " -C  : list coding transcripts (=having CDS features)"
  echo " -r  : report transcript counts per reference sequence"
+ echo " -rg : report transcript counts per reference sequence"
  echo " -f  : report transcript counts per gene_id"
  echo " -T  : list StringTie transcripts and their TPM"
  exit 1
@@ -18,8 +19,7 @@ if [[ $1 =~ ^-.+ ]]; then
  shift
 fi
 if [[ -z "$a" ]]; then
-  #perl -ne 'print "$1\n" if m/transcript_id "([^"]+)/' $1 | sort -u | wc -l
-  perl -ne 'print "$1\n" if m/transcript_id "([^"]+)/ && (++$n{$1})==1' $1 | wc -l
+  perl -ne 'if(m/transcript_id "([^"]+)/){ $_=$1;chomp;print "$_\n" if (++$n{$_})==1}' $1 | wc -l
   exit 0
 fi
 
@@ -37,11 +37,13 @@ case $a in
    perl -ne 'print "$1\n" if m/gene_id "([^"]+)/ && (++$n{$1})==1' $1
    ;;
  C)
-   #perl -ne 'print "$1\n" if m/\tCDS\t/ && m/transcript_id "([^"]+)/' $1 | sort -u
-   perl -ne 'chomp;@t=split(/\t/);print "$1\n" if ($t[2] eq "CDS") && m/\btranscript_id "([^"]+)/ && (++$n{$1})==1' $1
+   perl -aF'\t' -ne 'if (($F[2] eq "CDS") && $F[8]=~m/\btranscript_id "([^"]+)/){$_=$1;chomp;print "$_\n" if(++$n{$_}==1) }' $1
    ;;
  r)
-   perl -ne '@t=split(/\t/);print "$t[0]\t$1\n" if $t[8]=~m/transcript_id\s+"([^"]+)/' $1 | sort -u | cut -f1 | uniq -c
+   perl -aF'\t' -ne 'print "$F[0]\t$1\n" if $F[8]=~m/transcript_id\s+"([^"]+)/' $1 | sort -u | cut -f1 | uniq -c
+   ;;
+ rg)
+   perl -aF'\t' -ne 'print "$F[0]\t$1\n" if $F[8]=~m/gene_id\s+"([^"]+)/' $1 | sort -u | cut -f1 | uniq -c
    ;;
  f)
    perl -ne '($g)=(m/gene_id\s+"([^"]+)/); ($t)=(m/transcript_id\s+"([^"]+)/); print "$g\t$t\n" if $g && $t' $1 | sort -u | cut -f1 | uniq -c
