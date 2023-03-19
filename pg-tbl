@@ -5,7 +5,7 @@ Usage:
  pg-tbl [options] table|qryfile
  
  Default (no -i option given): backup table data or executes the query
- specified in qryfile.
+ specified in qryfile. If qryfile is '-' then a query is taken from stdin
 
  If -i option is given with a file name it attempts to insert
  the content of the file into the named table
@@ -119,7 +119,7 @@ if [[ -z $db ]]; then db=$PGDATABASE; fi
 table="$1" ## could be more than one?
 
 if [[ -z $table ]]; then
- errout "database table not specified!"
+ errout "database table or query file not specified!"
 fi
 if [[ -z $quiet ]]; then
  >&2 echo "Using server '$server', database '$db'"

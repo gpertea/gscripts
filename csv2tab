@@ -5,7 +5,9 @@ use FindBin;use lib $FindBin::Bin;
 
 my $usage = q/Usage:
   csv2tab [-n][-H] input.csv
-  Converts a csv to a tab delimited output.
+  Converts a csv to a tab delimited output, removing double quotes 
+  around every field.
+  
   Options:
    -n : disable header
    -H : show only the header
