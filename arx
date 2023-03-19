@@ -2,9 +2,10 @@
 #$ -S /usr/bin/perl
 #$ -cwd
 #$ -j y
-#$ -l h_vmem=1G,mem_free=1G
+#$ -l h_vmem=2G,mem_free=2G
 #$ -o $JOB_NAME.$JOB_ID.log
 #### #$ -o $JOB_NAME.$JOB_ID.log
+use strict;
 use Getopt::Std;
 use File::Basename; #for basename, dirname
 use POSIX "sys_wait_h"; # mostly for the handy uname() function
@@ -13,16 +14,20 @@ use Fcntl qw(:DEFAULT :seek); #mostly for the SEEK constants
 my $usage=q{arx : array job executor in current working directory
 Usage:
   arx <command> [options]
-
+   
   Workflow example: 
     CODE=$HOME/work/cbrain/code/01_prep
     cd ~/work/cbrain/gencode41/bsp4and5
     $CODE/prep_taskdb.pl libd_bsp4and5 brainseq_phase4and5: > taskdb.cfa
     cdbfasta taskdb.cfa
     $CODE/../arx sub -t 1-527 -N bsp45 -m geo.pertea@libd.org $CODE/task_fq2cram.sh taskdb.cfa
+
+ Or use
+    arx sub -C <cmdfile>
+  ..to execute each line of <cmdfile> as a task in an array job
 };
 
-my @cmds = qw/status st run sub submit qsub watch/;
+my @cmds = qw/status st run runline sub submit qsub watch/;
 my %cmds; 
 @cmds{@cmds}=();
 
@@ -30,7 +35,7 @@ die("$usage\n") unless exists($cmds{$ARGV[0]});
 
 my $cmd=shift(@ARGV);
 
-getopts('l:N:t:m:') || die($usage."\n");
+getopts('l:CN:t:m:') || die($usage."\n");
 
 my $PWD=abs_path(cwd()); #from Cwd module
 my $HOSTNAME = (&POSIX::uname)[1];
@@ -54,6 +59,7 @@ my $mail=$Getopt::Std::opt_m;
 my $JARR=$Getopt::Std::opt_t;
 my $JNAME=$Getopt::Std::opt_N;
 my $JREQ=$Getopt::Std::opt_l;
+my $cmdfile=$Getopt::Std::opt_C;
 my $JMDIR="$HOME/_jobs";
 mkdir($JMDIR) unless -d $JMDIR;
 if ($cmd eq 'status') {
@@ -61,13 +67,27 @@ if ($cmd eq 'status') {
    if ($ge eq 'sge') {
       print STDERR "job $JOB.$TASK on $HOST\n";
    }
-} elsif ($cmd eq 'qsub' || index($cmd,'sub')==0) {
-   die("Error: submit command requires a target script!\n") unless @ARGV>0;
-   my @args=@ARGV;
+} elsif ($cmd eq 'qsub' || index($cmd,'sub')==0) {   
+   my @args=();
+   if ($cmdfile) {
+      $cmdfile=shift(@ARGV);
+      die("Error: command file $cmdfile not found!") unless $cmdfile && -f $cmdfile;
+      unless($JARR) {
+        my $nlines=`wc -l $cmdfile`;
+        chomp($nlines);
+        $JARR='1-'.$nlines;
+      }
+      @args=('arx', 'run', $cmdfile);
+   } else {
+     die("Error: submit command requires a target script!\n") unless @ARGV>0;
+     @args=@ARGV;
+   }
    unshift(@args, '-t '.$JARR) if $JARR;
    unshift(@args, '-N '.$JNAME) if $JNAME;
    unshift(@args, '-l '.$JREQ) if $JREQ;
-   mkdir('logs') unless -d 'logs'; # my task arrays write logs in a 'logs' subdir of cwd!
+   if (!$cmdfile) {
+     mkdir('logs') unless -d 'logs'; # my task arrays write logs in a 'logs' subdir of cwd!
+   }
    my $job=qsub(@args);
    $JMDIR.="/$job";
    mkdir($JMDIR);
@@ -76,7 +96,9 @@ if ($cmd eq 'status') {
    print JINFO "#cwd: $PWD\n";
    close(JINFO);
    symlink($PWD, "$JMDIR/j_cwd");
-   symlink("$PWD/logs", "$JMDIR/j_logs");
+   if (!$cmdfile) {
+     symlink("$PWD/logs", "$JMDIR/j_logs");
+   }
    print STDERR "submitted job: $job\n";
    if ($mail) {
      my $jn=$JNAME ? "w_$JNAME" : "w_$job";
@@ -108,6 +130,16 @@ if ($cmd eq 'status') {
    print TSUM "error_tasks_list\t".join(',',@terr)."\n" if @terr>0;
    close(TSUM);
   }
+} elsif ($cmd eq 'run') {
+  while (<>) {
+    $cmd=$_;
+    last if $.==$TASK;
+    $cmd='';
+  }
+  if (length($cmd)) {
+   chomp($cmd);$cmd=~s/\S+$//;
+   system($cmd) if length($cmd)>2;
+  }
 }
 
 #------------------
@@ -115,5 +147,6 @@ sub qsub {
   my $args=join(" ", @_);
   my $s=`qsub $args `;
   my ($jid)=($s=~m/Your\s+job(?:\-array)?\s+(\d+)/);
+  die("Error: errror at qsub $args ") unless $jid;
   return $jid;
 }
