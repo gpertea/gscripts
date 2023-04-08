@@ -6,8 +6,9 @@ function err_exit {
  exit 1
 }
 
-ref=$HOME/work/cbrain/chess3/chess3.main.gtf
-xglst=$HOME/work/cbrain/chess3/chess3m_xgenes.glst
+ref=$HOME/work/ref/gencode43.nri.main.gtf
+#xglst=$HOME/work/cbrain/chess3/chess3m_xgenes.glst
+xglst=$HOME/work/cbrain/chess3/vs_gencode43/g43_xgenes.glst
 
 read -r -d '' USAGE << EOT
  Filter large merged combined gffcompare gtf based on number of samples
@@ -60,7 +61,7 @@ trmap -J $ref $gtfout > $fjt
 
 # of these, keep only transfrags NOT spanning multiple genes (unless known to be overlapping)
 echo -e "["$(date '+%m/%d %H:%M')"]\tgetting list of transfrags to keep"
-jtable_flt $xglst $fjt > $ofb.tokeep.tlst
+jtable_flt $xglst $fjt $ofb.excl.jtable > $ofb.tokeep.tlst
 
 ## fish out those transcripts:
 fkept=$ofb.kept.gtf

@@ -14,8 +14,8 @@ are discarded.
 Options:
   -n <min_samples>   transcript has to be present in at least
                      this number of samples (num_samples attribute)
-  -M                 never filter out matching transcripts, i.e. those
-                     with class_code "=" (to be used with -n option)
+  -M                 never filter out reference matching transcripts, 
+                     i.e. class_code "=" (to be used with -n option)
   -c '<class_codes>' transfrags must have one of the given class codes
                      (e.g. -c jmnkou to look for novel transcripts)
   -S                 do not discard single-exon transcripts

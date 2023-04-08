@@ -11,7 +11,7 @@ use Getopt::Std;
 # cut -f2 g41_t_xgenes.tab > g41_xgenes.glst
 
 my $usage = q/Usage:
- jtable_flt xgenes.glst trmap_J.jtable
+ jtable_flt xgenes.glst trmap_J.jtable [xcluded.jtable]
 
 Filter a trmap -J output file discarding transfrags spanning 
 multiple genes EXCEPT those genes that match gene lists in 
@@ -20,17 +20,22 @@ xgenes.glst
 If xgenes.glst is '.' or '-', no gene lists are excluded and 
 any transfrags spanning multiple lists will be filtered out.
 
-Output: the list of transfrag IDs that passed the filter./;
+Output: the list of transfrag IDs that passed the filter.
 
-die("$usage\n") if (@ARGV!=2);
-foreach my $f (@ARGV) {
+If a 3rd parameter is provided, it is taken as the name of the file
+that will be written with the EXCLUDED (discarded) transfrags
+
+/;
+
+die("$usage\n") if (@ARGV<2);
+foreach my $f (@ARGV[0,1]) {
   if ($f ne '.' && $f ne '-') {
     die "Error: file $f not found!\n" unless -f $f;
   }
 }
 
 my %xgenes; # glst=>1 , simple hash keeping trask of gene lists (alpha-sorted within each list)
-my ($fxgenes, $fjt)=@ARGV;
+my ($fxgenes, $fjt, $fx)=@ARGV;
 if ($fxgenes ne '.' && $fxgenes ne '-') {
   open(XG, $fxgenes) || die ("Error opening $fxgenes!\n");
   while (<XG>) {
@@ -40,13 +45,26 @@ if ($fxgenes ne '.' && $fxgenes ne '-') {
   }
   close(XG);
 }
+
+if (length($fx)>1) {
+ open(FX, '>'.$fx) || die("Error creating file $fx\n");
+} else {
+ $fx='';
+}
+
 #my @tis; #transfrag IDs to keep
 ## 4th column in jtable must have the genes!
 open(F, $fjt) || die ("Error opening jtable file: $fjt");
 while(<F>) {
   my @t=split(/\t/);
   die("Error: 6 columns expected!\n") unless @t!=6;
-  next if index($t[3], ',')>0 && !exists($xgenes{$t[3]});
+  if (index($t[3], ',')>0 && !exists($xgenes{$t[3]})) {
+     print FX $_ if $fx;
+     next;
+  }
   print $t[0]."\n";
 }
 close(F);
+close(FX) if $fx;
+
+
