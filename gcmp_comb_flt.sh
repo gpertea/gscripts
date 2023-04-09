@@ -6,9 +6,9 @@ function err_exit {
  exit 1
 }
 
-ref=$HOME/work/ref/gencode43.nri.main.gtf
+ref=$HOME/work/cbrain/ref/gencode43_refseq_MKQ_noCDS.gff
 #xglst=$HOME/work/cbrain/chess3/chess3m_xgenes.glst
-xglst=$HOME/work/cbrain/chess3/vs_gencode43/g43_xgenes.glst
+xglst=$HOME/work/cbrain/ref/self_map/g43refseq.glst
 
 read -r -d '' USAGE << EOT
  Filter large merged combined gffcompare gtf based on number of samples
