@@ -31,7 +31,7 @@ while (<T>) {
   my ($t, $tg)=split(/\|/, $t[0]);
   my $c=$t[1];
   my ($r, $rg, $rgid)=split(/\|/, $t[2]);
-  if ($rg eq $tg || $c=~m/[joec=kmn]/) {
+  if ($rg eq $tg || $c=~m/[joec=qkmn]/) {
    $tr{$t}=[$rg, $rgid];
   }
 }
@@ -47,24 +47,24 @@ while (<>) {
     my $t=$1;
     if (my $td=$tr{$t}) {
       my ($gid, $gn)=@$td;
-      unless( s/gene=[^;]+/gene=$gn/ || 
-              s/gene_name=[^;]/gene_name=$gn/) {
-         s/;?$/;gene=$gn/;
-      }
-      unless( s/Parent=([^;]+)/Parent=$gid;oParent=$1/ || 
-            s/geneID=[^;]+/geneID=$gid/) {
-         s/;?$/;geneID=$gid/;
-      }
+      my $repl=0;
+      $repl |= s/gene=([^;]+)/gene=$gn;ogene=$1/;
+      $repl |= s/gene_name=([^;])/gene_name=$gn;ogene_name=$1/;
+      s/;?$/;gene=$gn/ unless $repl;
+      $repl=0;
+      $repl |= s/Parent=([^;]+)/Parent=$gid;oParent=$1/;
+      $repl |= s/geneID=([^;]+)/geneID=$gid;ogeneID=$1/; 
+      s/;?$/;geneID=$gid/ unless $repl;
     }
   } elsif (m/transcript_id\s+"([^"]+)/) { 
   # GTF
     my $t=$1;
     if (my $td=$tr{$t}) {
-      my ($gid, $gn)=@$td;
-      unless( s/gene_id\s+"[^"]+/gene_id "$gid/ ) {
+      my ($gid, $gn)=@$td;      
+      unless (s/gene_id\s+"([^"]+)/gene_id "$gid"; ogene_id "$1"/) {
          s/;?$/;gene_id "$gid"/;
       }
-      unless( s/gene_name\s+"[^"]+/gene_name "$gn/ ) {
+      unless( s/gene_name\s+"([^"]+)/gene_name "$gn; ogene_name "$1"/ ) {
          s/;?$/;gene_name "$gn"/;
       }
     }
