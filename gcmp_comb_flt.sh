@@ -6,8 +6,7 @@ function err_exit {
  exit 1
 }
 
-ref=$HOME/work/cbrain/ref/gencode43_refseq_MKQ_noCDS.gff
-#xglst=$HOME/work/cbrain/chess3/chess3m_xgenes.glst
+ref=$HOME/work/cbrain/ref/gencode43_refseq_mrg.gff
 xglst=$HOME/work/cbrain/ref/self_map/g43refseq.glst
 
 read -r -d '' USAGE << EOT
