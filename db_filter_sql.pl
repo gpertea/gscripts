@@ -8,7 +8,7 @@ my $usage=q{
   relating to the tables in tbl_list.txt
 };
 
-foreach my $f in (@ARGV) {
+foreach my $f (@ARGV) {
   die("Error: file $f not found!\n") unless -f $f;
 }
 
@@ -29,5 +29,32 @@ my $ml=0; #multiline flag
 my $k=0; #keep flag
 while(<SQL>) {
   # check for multi-line SQL to preserve
+  if ($ml) { #multi-line entry
+    if ($k) {
+       print $_;
+    }
+    if (m/\);\s*$/) {
+     $ml=0;
+     $k=0;
+    }
+    next;
+  }
+  if (m/CREATE\s+TABLE\s+"public"\."([^"]+)/) {
+    my $tbl=lc($1);
+    $ml=1;
+    if ($th{$tbl}) {
+      print $_;
+      $k=1;
+    }
+    next;
+  }
+  if (m/ALTER\s+TABLE\s+"public"\."([^"]+)/ || 
+         m/OWNED BY "public"\."([^"]+)/ ) {
+    my $tbl=lc($1);
+    if ($th{$tbl}) {
+      print $_;
+    }
+    next;
+  }
 }
 close(SQL);
