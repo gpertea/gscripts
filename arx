@@ -3,7 +3,7 @@
 #$ -cwd
 #$ -j y
 #$ -l h_vmem=2G,mem_free=2G
-#$ -o $JOB_NAME.$JOB_ID.log
+######  #$ -o $JOB_NAME.$JOB_ID.$TASK.log
 #### #$ -o $JOB_NAME.$JOB_ID.log
 use strict;
 use Getopt::Std;
@@ -73,11 +73,11 @@ if ($cmd eq 'status') {
       $cmdfile=shift(@ARGV);
       die("Error: command file $cmdfile not found!") unless $cmdfile && -f $cmdfile;
       unless($JARR) {
-        my $nlines=`wc -l $cmdfile`;
+        my $nlines=`wc -l < $cmdfile`;
         chomp($nlines);
         $JARR='1-'.$nlines;
       }
-      @args=('arx', 'run', $cmdfile);
+      @args=("$HOME/gscripts/task_linecmd.sh", $cmdfile);
    } else {
      die("Error: submit command requires a target script!\n") unless @ARGV>0;
      @args=@ARGV;
@@ -130,15 +130,20 @@ if ($cmd eq 'status') {
    print TSUM "error_tasks_list\t".join(',',@terr)."\n" if @terr>0;
    close(TSUM);
   }
-} elsif ($cmd eq 'run') {
+} elsif ($cmd eq 'run') { ## this does not really work - the system() call fails silently
+  print "running task $TASK in ".$ENV{PWD}." with args: ".join(" ",@ARGV)."\n";
   while (<>) {
     $cmd=$_;
     last if $.==$TASK;
     $cmd='';
   }
   if (length($cmd)) {
-   chomp($cmd);$cmd=~s/\S+$//;
-   system($cmd) if length($cmd)>2;
+   chomp($cmd);$cmd=~s/\s+$//;
+   my $cl=length($cmd);
+   print " executing command of len $cl:\n<$cmd>\n";
+   system($cmd);
+  } else {
+    print " error: no cmd found for $TASK!\n";
   }
 }
 
