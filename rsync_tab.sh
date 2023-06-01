@@ -1,4 +1,10 @@
 #!/bin/bash
+## expected input: file with 3 tab delimited columns
+##    src_path groups destination_parent_dir
+## Where "groups" is a comma delimited list of groups; the first entry is
+## primary group that should get ownership; secondary groups are optional
+## and they are currently not used in any way
+###
 ## the script should be run with stdbuf -oL to enforce line-level buffering
 ##    stdbuf -oL rsync_tab.sh dir_info.tab > rsync_dir_info.log 
 
