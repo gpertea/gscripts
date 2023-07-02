@@ -44,7 +44,7 @@ while (<>) {
  $fn=~s/[._](fq|fastq)$//i;
  my $fc=$fn; #common pattern 
  my $mate;
- if ($fc=~s/_([12])$//) { 
+ if ($fc=~s/_([12])$// || $fc=~s/_R([12])$// ) { 
    $mate=$1;
  } elsif ($fc=~s/_R([12])(_[^_]+)$/$2/) {
    $mate=$1;
@@ -55,7 +55,7 @@ while (<>) {
  if ($s[0]=~m/^R\d+$/) {
   $si=$s[0]; # merge all with same RNum
  }
- print STDERR "si=$si | \@s: ( ".join(", ", @s)." )\n";
+ #print STDERR "si=$si | \@s: ( ".join(", ", @s)." )\n";
  if (@s>2 && $s[0]=~m/^\d+$/) { 
    ## for situations like this: 
    #   10_Br5460_SLC17A7pos_HGW2VBBXY_S43..
