@@ -52,6 +52,10 @@ while (<>) {
 
  my @s=split(/_/,$fc);
  my $si=(@s>1)?$s[0].'_'.$s[1] : $s[0];
+ if ($s[0]=~m/^R\d+$/) {
+  $si=$s[0]; # merge all with same RNum
+ }
+ print STDERR "si=$si | \@s: ( ".join(", ", @s)." )\n";
  if (@s>2 && $s[0]=~m/^\d+$/) { 
    ## for situations like this: 
    #   10_Br5460_SLC17A7pos_HGW2VBBXY_S43..
