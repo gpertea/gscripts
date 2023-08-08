@@ -6,8 +6,8 @@ function err_exit {
  exit 1
 }
 
-ref=$HOME/work/cbrain/ref/gencode43_refseq_mrg.gff
-xglst=$HOME/work/cbrain/ref/self_map/g43refseq.glst
+ref=$HOME/work/cbrain/ref/gencode43_refseq.main.gff
+xglst=$HOME/work/cbrain/ref/self_map/gencode43_refseq.main.xglst
 
 read -r -d '' USAGE << EOT
  Filter large merged combined gffcompare gtf based on number of samples

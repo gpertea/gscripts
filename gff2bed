@@ -14,7 +14,7 @@ if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
   }
-my $tcolor= $Getopt::Std::opt_c || 0;
+my $tcolor= $Getopt::Std::opt_c || '0,0,0';
 my $tmaxscore = 0;
 #$tcolor=hex($tcolor) if ($tcolor=~m/^0x/ || $tcolor=~m/[a-f,A-F]/);
 # ---------------------  0     1         2         3       4      5       6       7        8   
@@ -176,7 +176,6 @@ sub writeModels {
      }
    if ($score) {
       $tcolor=score2color($score);
-      
       }
     else {
       $score=666;
@@ -184,8 +183,7 @@ sub writeModels {
    my $id=$gffid;
    $id.="|$gname" if $gname;
    print join("\t", $chr, $mstart-1, $mend, $id, $score, $strand, $cds_start-1, $cds_end, 
-       join(',',$tcolor,$tcolor,$tcolor),
-       scalar(@bstarts), join(',', @blens), join(',', @bstarts))."\n";
+       $tcolor,scalar(@bstarts), join(',', @blens), join(',', @bstarts))."\n";
   } #for each stored transcript
 }
 
