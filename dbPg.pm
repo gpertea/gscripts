@@ -66,18 +66,34 @@ sub dbErr {
 # $dbExitSub=$_[0];
 #}
 
+sub parseDbSpec { #parses: [user@]server[:port]/database
+  my $cstr=shift(@_);
+  my ($server, $db, $user);
+  if (index($cstr, '@')>=0) {
+    ($user)=(m/^([^@]+)@/);
+    $cstr=~s/^([^@]+)//;
+  }
+  if (index($cstr, '/')>=0) {
+    ($server, $db)=split(/\//, $cstr);
+  } else {  $db=$cstr }
+  return ($server, $db, $user);
+}
+
 # $pg_dbh_ =  global database handler
-sub dbLogin {
+sub dbLogin {  
   my ($server, $db, $user)= @_;
+  if (index($server,'/')>=0 && length($db)==0) {
+    ($server, $db, $user)=parseDbSpec($server);
+  }
   $server='localhost' unless $server;
   $db='rse' unless $db;
   $user='ruser' unless $user;
-  open(PGPASS, "$ENV{HOME}/.pgpass") || die("Error opening $ENV{HOME}.pgpass\n");
   my $port=5432;
   my @sp=split(/:/, $server);
   ($server, $port)=@sp[0,1] if (@sp>1);
   #hostname:port:database:username:password
   my ($pass);
+  open(PGPASS, "$ENV{HOME}/.pgpass") || die("Error opening $ENV{HOME}.pgpass\n");
   while (<PGPASS>) {
     chomp;
     next if m/^#/;
