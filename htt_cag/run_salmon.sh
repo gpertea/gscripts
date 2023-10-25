@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=6
 #SBATCH --mem=12G
+#SBATCH --output=logs/salm.%j.%t.out
+#SBATCH --error=logs/salm.%j.%t.err
 
 ## submit with :
-##  sbatch --job-name=salmonHTT --array=1-487%25 ./run_salmon.sh
+##  sbatch --job-name=salmonHTT --array=1-487%20 ./run_salmon.sh
 
 export PATH=/dcs04/lieber/lcolladotor/dbDev_LIBD001/sw/bin:$PATH
 function err_exit {
@@ -13,7 +15,8 @@ function err_exit {
 
 fqdir=/dcs04/lieber/lcolladotor/chessBrain_LIBD4085/raw-data/libd_bsp3
 #fqdir=/home/gpertea/work/htt/fastq
-salmidx=xHTT_index
+#salmidx=xHTT_index
+salmidx=salmon_idx
 id=$SLURM_ARRAY_TASK_ID
 if [[ -z "$id" ]]; then
  id="$1"
@@ -43,4 +46,6 @@ cmd="salmon quant -p 8 -lA -1 <(gunzip -c $fs1) -2 <(gunzip -c $fs2) \
 echo -e ">task_$id : running \n$cmd" > $rlog
 eval "$cmd" >> $rlog 2>&1
 samtools index $odir/htt_alns.bam
+cd $odir
+../get_HTT_CAGs.pl > CAG_counts_uF.tab
 echo "done." >> $rlog
