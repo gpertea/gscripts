@@ -67,7 +67,8 @@ sub read_line {
     open my $txt_fh, '<', $ftxt or die "Could not open '$ftxt': $!";
     seek($txt_fh, $offset, SEEK_SET) || die "Error seeking to $offset in $ftxt : $!\n";
     my $line='------------------------------------------------------------------';
-    my $brd=read($txt_fh, $line, $clen) || die "Error reading line $reqlno from $ftxt : $!\n";
+    my $brd=read($txt_fh, $line, $clen); 
+    die "Error reading line $reqlno from $ftxt : $!\n" if !defined($brd);
     close $txt_fh;
     print $line."\n";
 }
