@@ -1,0 +1,73 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use Fcntl qw(:seek);
+my $USAGE=q/  Usage:
+linix <text_file> [line_number]
+
+  If a single argument is provided, an index file will be created
+  If two arguments are provided, the specified line will be read from the text file
+/;
+my $ftxt = $ARGV[0];
+if (!defined $ARGV[0] || $ARGV[0] eq '-h' || $ARGV[0] eq '--help' || !-f $ARGV[0]) {
+ die $USAGE;
+}
+
+my $fidx = "$ftxt.lidx";
+
+if (defined $ARGV[1]) {
+    my $lno = $ARGV[1];
+    die("${USAGE}Error: invalid line number requested ($lno)\n") if $lno<1 || $lno > 65534;
+    
+    my $text_mtime = (stat($ftxt))[9];
+    my $index_mtime = -f $fidx ? (stat($fidx))[9] : 0;
+    if ($text_mtime > $index_mtime) {
+      print STDERR ".. creating index file: $fidx\n";
+      create_index() 
+    }
+    my $index_size = -s $fidx;
+    my $total_lines = $index_size / 8;
+    die("Error: invalid line number requested (max is $total_lines)\n") if $lno>$total_lines;
+    read_line($lno);
+} else { #just index 
+   create_index();
+}
+
+##---------------- subroutines
+
+sub create_index {
+    #detect_line_ending
+    open my $fh, '<', $ftxt or die "Could not open '$ftxt': $!";
+    my $first_line = <$fh>;
+    close $fh;
+    my $eol=($first_line =~ /\r\n/ ? "\r\n" : "\n");
+    open my $txt_fh, '<', $ftxt or die "Could not open '$ftxt': $!";
+    open my $idx_fh, '>', $fidx or die "Could not create '$fidx': $!";
+    my $offset = 0;
+    my $lno = 0;
+    while (<$txt_fh>) {
+        $lno++;
+        my $clen = length($_)-length($eol);
+        print $idx_fh pack('S I S', $lno, $offset, $clen);
+        $offset += length($_);
+    }
+    close $txt_fh;
+    close $idx_fh;
+}
+
+sub read_line {
+    my ($reqlno) = @_;
+    open my $idx_fh, '<', $fidx or die "Could not open '$fidx': $!";
+    my $index_offset = ($reqlno - 1) * 8;
+    seek $idx_fh, $index_offset, SEEK_SET;
+    read $idx_fh, my $record, 8;
+    close $idx_fh;
+    my ($lno, $offset, $clen) = unpack('S I S', $record);
+    die "Error: line number mismatch in index file!\n" if !defined($lno) || $lno != $reqlno;
+    open my $txt_fh, '<', $ftxt or die "Could not open '$ftxt': $!";
+    seek($txt_fh, $offset, SEEK_SET) || die "Error seeking to $offset in $ftxt : $!\n";
+    my $line='------------------------------------------------------------------';
+    my $brd=read($txt_fh, $line, $clen) || die "Error reading line $reqlno from $ftxt : $!\n";
+    close $txt_fh;
+    print $line."\n";
+}
