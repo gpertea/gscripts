@@ -214,9 +214,10 @@ params="--mm -x $hsref -1 $fqs1 -2 $fqs2 -k $kvalue 2>${ofn}.align_summary.txt"
 cd $outpath || err_exit "failed at: cd $outpath"
 ln -s $rlog
 
-mkdir -p fastq
-cd fastq #just to keep symlinks to all source FASTQ files
-ln -s $fdir/${sid}*.f*q.gz . > /dev/null 2>&1
+## if you want to keep symlinks to all source FASTQ files:
+#mkdir -p fastq
+#cd fastq 
+#ln -s $fdir/${sid}*.f*q.gz . > /dev/null 2>&1
 cd ..
 
 cram=$ofn.cram
