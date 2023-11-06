@@ -1,10 +1,4 @@
 #!/usr/bin/env perl
-#$ -S /usr/bin/perl
-#$ -cwd
-#$ -j y
-#$ -l h_vmem=2G,mem_free=2G
-######  #$ -o $JOB_NAME.$JOB_ID.$TASK.log
-#### #$ -o $JOB_NAME.$JOB_ID.log
 use strict;
 use Getopt::Std;
 use File::Basename; #for basename, dirname
@@ -14,19 +8,22 @@ use Fcntl qw(:DEFAULT :seek); #mostly for the SEEK constants
 my $usage=q{arx : array job executor in current working directory
 Usage:
   arx <command> [options]
-   
-  Workflow example: 
-    CODE=$HOME/work/cbrain/code/01_prep
-    cd ~/work/cbrain/gencode41/bsp4and5
-    $CODE/prep_taskdb.pl libd_bsp4and5 brainseq_phase4and5: > taskdb.cfa
-    cdbfasta taskdb.cfa
-    $CODE/../arx sub -t 1-527 -N bsp45 -m geo.pertea@libd.org $CODE/task_fq2cram.sh taskdb.cfa
-
- Or use
+  Array job executor for SLURM (or for GNU parallel, when used with -P).
+  Usage example:
+    arx sub -a 1- -J bsp45 -M task_fq2cram.sh samples.manifest
+ Or use -C option to execute each line of <cmdfile> as a task in an array job
     arx sub -C <cmdfile>
-  ..to execute each line of <cmdfile> as a task in an array job
 };
-
+## -I to create the line index for the 2nd argument in case of JARR?
+## double-dash recognized options for SLURM (anything else is just passed to sbatch)
+# -c, --cpus-per-task=<ncpus>
+# -a, --array=<indexes>
+# -J, --job-name=<jobname>
+# --mem=<size>[units] (-m also recognized as a shortcut by arx)
+# -o, --output=<filename_pattern> #default file name is "slurm-%A_%a.out", "%A" is replaced by the job ID and "%a" with the array index
+# -e, --error=<filename_pattern>
+# --mail-type, 
+# --mail-user (=> -M shortcut added by arx, also auto enables '--mail-type END,FAIL')
 my @cmds = qw/status st run runline sub submit qsub watch/;
 my %cmds; 
 @cmds{@cmds}=();
@@ -35,8 +32,25 @@ die("$usage\n") unless exists($cmds{$ARGV[0]});
 
 my $cmd=shift(@ARGV);
 
-getopts('l:CN:t:m:') || die($usage."\n");
+my @ddash; # double dash arguments
+my $i = 0;
+while ($i < @ARGV) {
+  if ($ARGV[$i] =~ /^--([^=]+)=(.*)/) {# '=' found, split on it and add the key-value pair
+      push @ddash, [$1, $2];
+      splice(@ARGV, $i, 1); # remove the current item from @ARGV
+  } elsif ($ARGV[$i] =~ /^--(.+)/) {# no '=' is found but the argument starts with '--'
+      my $k=$1; my $r=1;
+      if ($i<$#ARGV && $ARGV[$i + 1]!~m/^-/) {
+         push @ddash, [$k, $ARGV[$i + 1]]; ## assume the next argument is the value
+         $r++;
+      } else {  push @ddash, [ $k, '']   }
+      splice(@ARGV, $i, $r); # remove this argument and the next one from @ARGV
+  } else {  $i++ } # just move to the next argument
+}
 
+getopts('MPCJ:l:a:m:o:e:c:') || die($usage."\n");
+my $JGRID=$Getopt::Std::opt_P ? 'par' :'slurm';
+#my $ge=lc($Getopt::Std::opt_g) || 'slurm'; # grid engine 
 my $PWD=abs_path(cwd()); #from Cwd module
 my $HOSTNAME = (&POSIX::uname)[1];
 
@@ -51,25 +65,49 @@ $ENV{MACHINE}=$HOST;
 $ENV{HOSTNAME}=$HOSTNAME;
 
 my $HOME=$ENV{HOME}; 
-my $JOB=$ENV{'JOB_ID'} || '0';
-my $TASK=$ENV{'SGE_TASK_ID'} || '0';
+my $JOB=$ENV{'SLURM_JOBID'} || '0';
+#my $JOB=$ENV{'JOB_ID'} || '0';
+my $TASK=$ENV{'SLURM_ARRAY_TASK_ID'} || '0';
+#$TASK=$ENV{'SGE_TASK_ID'} unless $TASK; ## support SGE?
 
-my $ge=lc($Getopt::Std::opt_g) || 'sge'; # sge or par (parallel)
-my $mail=$Getopt::Std::opt_m;
-my $JARR=$Getopt::Std::opt_t;
-my $JNAME=$Getopt::Std::opt_N;
-my $JREQ=$Getopt::Std::opt_l;
-my $cmdfile=$Getopt::Std::opt_C;
+my ($JARR, $JMEM, $JCPUS, $JMAIL, $JMAILTYPE, $JNAME, $JLOG, $JERRLOG);
+my @ddpass; ## pass-through options
+foreach my $dd (@ddash) {
+  if ($$dd[0] eq 'array') { $JARR=$$dd[1] 
+  } elsif ($$dd[0] eq 'cpus-per-task') {  $JCPUS=$$dd[1] 
+  } elsif ($$dd[0] eq 'mem') {  $JMEM=$$dd[1] 
+  } elsif ($$dd[0] eq 'mail-type') {  $JMAILTYPE=$$dd[1] 
+  } elsif ($$dd[0] eq 'mail-user') {  $JMAIL=$$dd[1] 
+  } elsif ($$dd[0] eq 'job-name') {  $JNAME=$$dd[1] 
+  } elsif ($$dd[0] eq 'output') {  $JLOG=$$dd[1] 
+  } elsif ($$dd[0] eq 'error') {  $JERRLOG=$$dd[1] }
+  else { push @ddpass, "--$$dd[0]=$$dd[1]" } # pass-through unrecognized options
+}
+
+$JARR=$Getopt::Std::opt_a if $Getopt::Std::opt_a;
+$JMEM=$Getopt::Std::opt_m if $Getopt::Std::opt_m;
+$JCPUS=$Getopt::Std::opt_c if $Getopt::Std::opt_c;
+my $mail=$Getopt::Std::opt_M;
+if ($mail) {
+  #$JMAIL=$Getopt::Std::opt_M; use the email from ~/.slurm/default
+  $JMAILTYPE='END,FAIL' unless $JMAILTYPE;
+}
+$JNAME=$Getopt::Std::opt_J if $Getopt::Std::opt_J;
+$JLOG=$Getopt::Std::opt_o if $Getopt::Std::opt_o;
+$JERRLOG=$Getopt::Std::opt_e if $Getopt::Std::opt_e;
+
+my $cmdfile=$Getopt::Std::opt_C; # execute each line as a command
 my $JMDIR="$HOME/_jobs";
+my $logdir=$Getopt::Std::opt_l;
 mkdir($JMDIR) unless -d $JMDIR;
 if ($cmd eq 'status') {
-   print STDERR "Using grid engine: $ge\n";
-   if ($ge eq 'sge') {
+   print STDERR "Using grid engine: $JGRID\n";
+   if ($JGRID eq 'slurm') {
       print STDERR "job $JOB.$TASK on $HOST\n";
    }
-} elsif ($cmd eq 'qsub' || index($cmd,'sub')==0) {   
+} elsif ($cmd =~ m/^sub/i) { # submit job
    my @args=();
-   if ($cmdfile) {
+   if ($cmdfile) { # -C option
       $cmdfile=shift(@ARGV);
       die("Error: command file $cmdfile not found!") unless $cmdfile && -f $cmdfile;
       unless($JARR) {
@@ -82,17 +120,32 @@ if ($cmd eq 'status') {
      die("Error: submit command requires a target script!\n") unless @ARGV>0;
      @args=@ARGV;
    }
-   unshift(@args, '-t '.$JARR) if $JARR;
-   unshift(@args, '-N '.$JNAME) if $JNAME;
-   unshift(@args, '-l '.$JREQ) if $JREQ;
-   if (!$cmdfile) {
-     mkdir('logs') unless -d 'logs'; # my task arrays write logs in a 'logs' subdir of cwd!
+   if ($JARR=~m/\-$/ && -f $args[1]) { ## assume line-based job array is the argument
+      my $nlines=`wc -l < $args[1]`;
+      chomp($nlines);
+      $JARR.=$nlines;
    }
-   my $job=qsub(@args);
+   unshift(@args, '-a '.$JARR) if $JARR;
+   unshift(@args, '--mem='.$JMEM) if $JMEM;
+   unshift(@args, '-c '.$JCPUS) if $JCPUS;
+   unshift(@args, '--mail-user='.$JMAIL) if $JMAIL; # or could be picked up from ~/.slurm/default
+   unshift(@args, '--mail-type='.$JMAILTYPE) if $JMAILTYPE;
+   unshift(@args, '-J '.$JNAME) if $JNAME;
+   unshift(@args, '-o '.$JLOG) if $JLOG;
+   unshift(@args, '-e '.$JERRLOG) if $JERRLOG;
+   unshift(@args, @ddpass);
+   unless ($JLOG) {
+     $logdir='logs' unless $logdir;
+     mkdir($logdir) unless -d 'logs'; # all my array jobs write logs in a 'logs' subdir of cwd!
+     $JLOG=$logdir.'/logs/arx-%A_%a.out';
+   }
+   $JERRLOG = $JLOG if ($JLOG && !$JERRLOG);
+
+   my $job=submit(@args);
    $JMDIR.="/$job";
    mkdir($JMDIR);
    open(JINFO, ">$JMDIR/j_cmd") || die("Error creating $JMDIR/j_cmd\n");
-   print JINFO 'qsub '.join(' ',@args)."\n";
+   print JINFO 'sbatch '.join(' ',@args)."\n";
    print JINFO "#cwd: $PWD\n";
    close(JINFO);
    symlink($PWD, "$JMDIR/j_cwd");
@@ -100,12 +153,12 @@ if ($cmd eq 'status') {
      symlink("$PWD/logs", "$JMDIR/j_logs");
    }
    print STDERR "submitted job: $job\n";
-   if ($mail) {
-     my $jn=$JNAME ? "w_$JNAME" : "w_$job";
-     @args=("-N $jn", "-hold_jid $job -M $mail -m ea", __FILE__, "watch $job");
-     my $j=qsub(@args);
-     print STDERR " ..submitted watcher job $j\n";
-   }
+   #if ($mail) {
+   #  my $jn=$JNAME ? "w_$JNAME" : "w_$job";
+   #  @args=("-J $jn", "--dependency=afterany:$job --mail-type='END,FAIL' --mail-user $mail", __FILE__, "watch $job");
+   #  my $j=submit(@args);
+   #  print STDERR " ..submitted watcher job $j\n";
+   #}
 } elsif ($cmd eq 'watch') {
   # get summary info for watched job
   my $job=$ARGV[0];
@@ -130,7 +183,7 @@ if ($cmd eq 'status') {
    print TSUM "error_tasks_list\t".join(',',@terr)."\n" if @terr>0;
    close(TSUM);
   }
-} elsif ($cmd eq 'run') { ## this does not really work - the system() call fails silently
+} elsif ($cmd eq 'run') { ## TODO : check implementation
   print "running task $TASK in ".$ENV{PWD}." with args: ".join(" ",@ARGV)."\n";
   while (<>) {
     $cmd=$_;
@@ -148,10 +201,10 @@ if ($cmd eq 'status') {
 }
 
 #------------------
-sub qsub {
+sub submit {
   my $args=join(" ", @_);
-  my $s=`qsub $args `;
-  my ($jid)=($s=~m/Your\s+job(?:\-array)?\s+(\d+)/);
-  die("Error: errror at qsub $args ") unless $jid;
+  my $s=`sbatch $args`;
+  my ($jid)=($s=~m/ubmitted batch job (\d+)/);
+  die("Error: errror at sbatch $args ") unless $jid;
   return $jid;
 }
