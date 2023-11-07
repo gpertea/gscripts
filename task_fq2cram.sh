@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
-#$ -S /bin/bash
-#$ -cwd
-#$ -o logs/$JOB_NAME.$JOB_ID.$TASK_ID.log
-#$ -e logs/$JOB_NAME.$JOB_ID.$TASK_ID.log
-#$ -l h_fsize=100G
-#$ -l mem_free=16G,h_vmem=18G
-#$ -pe local 4
+##x mem=18G
+##x cpus=4
 
-kvalue=80 # this is the -k option of HISAT2
+kvalue=80 # -k option of HISAT2
 
 ## run with: 
-#   qsub -t 1-56 ../../../code/task_hisat2.sh taskdb.tfa
+##   sbatch -a 1-210 --mem=18G -c 4 task_fq2cram.sh samples.manifest
+
 ## taskdb expected format (4th field, output SAMPLE_ID, is optional)
 # >3 AN00000904/Br8667_Mid_Nuc AN00000904_Br8667_Mid_Nuc_1.fastq.gz F       AN00000904_Br8667_Mid_Nuc
 #  0               1 (dir)           2 (mate 1 file mask)           3 (sex) 4 (output SAMPLE_ID base file name)
@@ -18,13 +14,10 @@ kvalue=80 # this is the -k option of HISAT2
 # >3 libd_bsp4and5 R11338_*_R1_*.fastq.gz M R11338_HCCFWBBXX
 
 ## OR run with parallel:
-# parallel --delay .01 -j 8 task_fq2cram.sh taskdb.tfa {1} ::: {2..210}
+# parallel --delay .01 -j 8 task_fq2cram.sh samples.manifest {1} ::: {1..210}
 
-## run with arx from base dataset directory with ./fastq
-# code=$HOME/work/cbrain/code/01_prep 
-#  $code/prep_taskdb.pl libd_bsp4and5 brainseq_phase4and5: > taskdb.cfa
-#  cdbfasta taskdb.cfa
-#  $code/../arx sub -t 1-527 -N bsp45 -m geo.pertea@libd.org $code/task_fq2cram.sh taskdb.cfa
+## OR with arx:
+#  arx sub -t 1- -J bsp45 -m 18G -M geo.pertea@libd.org $code/task_fq2cram.sh taskdb.cfa
 
 function err_exit {
  echo -e "Error: $1"

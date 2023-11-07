@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!/bin/env perl
 use strict;
 use Getopt::Std;
 use File::Basename; #for basename, dirname
@@ -10,7 +10,7 @@ Usage:
   arx <command> [options]
   Array job executor for SLURM (or for GNU parallel, when used with -P).
   Usage example:
-    arx sub -a 1- -J bsp45 -M task_fq2cram.sh samples.manifest
+    arx sub -a 1- -J bsp45 -l logs task_fq2cram.sh samples.manifest
  Or use -C option to execute each line of <cmdfile> as a task in an array job
     arx sub -C <cmdfile>
 };
@@ -125,6 +125,13 @@ if ($cmd eq 'status') {
       chomp($nlines);
       $JARR.=$nlines;
    }
+   unless ($JLOG) {
+     $logdir='logs' unless $logdir;
+     mkdir($logdir) unless -d $logdir; # all my array jobs write logs in a 'logs' subdir of cwd!
+     $JLOG=$logdir.'/arx-%A_%a.tlog';
+   }
+   $JERRLOG = $JLOG if ($JLOG && !$JERRLOG);
+
    unshift(@args, '-a '.$JARR) if $JARR;
    unshift(@args, '--mem='.$JMEM) if $JMEM;
    unshift(@args, '-c '.$JCPUS) if $JCPUS;
@@ -134,12 +141,6 @@ if ($cmd eq 'status') {
    unshift(@args, '-o '.$JLOG) if $JLOG;
    unshift(@args, '-e '.$JERRLOG) if $JERRLOG;
    unshift(@args, @ddpass);
-   unless ($JLOG) {
-     $logdir='logs' unless $logdir;
-     mkdir($logdir) unless -d 'logs'; # all my array jobs write logs in a 'logs' subdir of cwd!
-     $JLOG=$logdir.'/logs/arx-%A_%a.out';
-   }
-   $JERRLOG = $JLOG if ($JLOG && !$JERRLOG);
 
    my $job=submit(@args);
    $JMDIR.="/$job";
@@ -148,33 +149,35 @@ if ($cmd eq 'status') {
    print JINFO 'sbatch '.join(' ',@args)."\n";
    print JINFO "#cwd: $PWD\n";
    close(JINFO);
+   $logdir=abs_path($logdir);
    symlink($PWD, "$JMDIR/j_cwd");
    if (!$cmdfile) {
-     symlink("$PWD/logs", "$JMDIR/j_logs");
+     symlink("$logdir", "$JMDIR/j_logs");
    }
-   print STDERR "submitted job: $job\n";
+   print STDERR "submitted job: $job (check $JMDIR)\n";
    #if ($mail) {
-   #  my $jn=$JNAME ? "w_$JNAME" : "w_$job";
-   #  @args=("-J $jn", "--dependency=afterany:$job --mail-type='END,FAIL' --mail-user $mail", __FILE__, "watch $job");
-   #  my $j=submit(@args);
-   #  print STDERR " ..submitted watcher job $j\n";
+     my $jn=$JNAME ? "w_$JNAME" : "w_$job";
+     @args=("-J $jn", "--dependency=afterany:$job -o j_$job.watcher.log --mail-type='END,FAIL'", __FILE__, "watch $job");
+     my $j=submit(@args);
+     print STDERR " ..submitted watcher job $j :\n".join(' ', @args)."\n";
    #}
 } elsif ($cmd eq 'watch') {
   # get summary info for watched job
   my $job=$ARGV[0];
   $JMDIR.="/$job";
+  print STDERR "watcher: JMDIR=$JMDIR\n";
   chdir($JMDIR) || die("Error chdir($JMDIR)\n");
-  #system("qacct -j $job > j_acct");
-  ##NOTE: task scripts SHOULD create logs: ~/_jobs/<jobID>/t_<taskID>.tlog
-  my @tlogs=glob('t_*.tlog'); 
+  ##NOTE: task scripts SHOULD create logs: ~/_jobs/<jobID>/arx-%A_<taskID>.tlog
+  my @tlogs=glob('j_logs/*_[0-9]*.*log');
+  #print STDERR "tlogs array = ".join(', ',@tlogs)."\n";
   if (@tlogs>0) { #collect summary for all tasks
      my @terr; # tasks that failed
      foreach my $tlf (@tlogs) {
-        my ($tid)=($tlf=~m/t_(\d+)/);
+        my ($tid)=($tlf=~m/(\d+)\.t?log$/);
         open(TLOG, "<$tlf") || die("Error opening task log file $JMDIR/$tlf\n");
-        seek(TLOG, -200, SEEK_END);
+        seek(TLOG, -100, SEEK_END);
         my @last=<TLOG>;
-        my $l=$last[-1]; #last line, should be shorter than 200 chars!
+        my $l=$last[-1]; #last line, should be shorter than 100 chars!
         push(@terr, $tid) unless ($l=~m/\b(done|ok|succeeded|finished)/i);
         close(TLOG);
      }
