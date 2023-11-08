@@ -156,7 +156,7 @@ if ($cmd eq 'status') {
    }
    print STDERR "submitted job: $job (check $JMDIR)\n";
    #if ($mail) {
-     my $jn=$JNAME ? "w_$JNAME" : "w_$job";
+     my $jn=$JNAME ? "w_${JNAME}_$job" : "w_$job";
      @args=("-J $jn", "--dependency=afterany:$job -o j_$job.watcher.log --mail-type='END,FAIL'", __FILE__, "watch $job");
      my $j=submit(@args);
      print STDERR " ..submitted watcher job $j :\n".join(' ', @args)."\n";
@@ -165,7 +165,7 @@ if ($cmd eq 'status') {
   # get summary info for watched job
   my $job=$ARGV[0];
   $JMDIR.="/$job";
-  print STDERR "watcher: JMDIR=$JMDIR\n";
+  print STDERR "Job $job ended (see $JMDIR/j_cmd)\n";
   chdir($JMDIR) || die("Error chdir($JMDIR)\n");
   ##NOTE: task scripts SHOULD create logs: ~/_jobs/<jobID>/arx-%A_<taskID>.tlog
   my @tlogs=glob('j_logs/*_[0-9]*.*log');
@@ -182,8 +182,14 @@ if ($cmd eq 'status') {
         close(TLOG);
      }
    open(TSUM, '>t_sum.txt') || die("Error creating $JMDIR/t_sum.txt\n");
-   print TSUM "total_tasks\t".scalar(@tlogs)."\n";
-   print TSUM "error_tasks_list\t".join(',',@terr)."\n" if @terr>0;
+   my $total_msg="total_tasks\t".scalar(@tlogs)."\n";
+   print TSUM $total_msg;
+   print STDERR $total_msg;
+   if (@terr>0) {
+      my $errtasks="error_tasks_list\t".join(',',@terr)."\n";
+      print TSUM $errtasks;
+      print STDERR $errtasks
+   }
    close(TSUM);
   }
 } elsif ($cmd eq 'run') { ## TODO : check implementation
