@@ -27,7 +27,7 @@ if ($parts) {
 } else {
  $parts='-pshared' unless $Getopt::Std::opt_a;
 }
-my $cmd='sinfo '.$parts.' -o "%.16P %.10A %.5D  %.16C"';
+my $cmd='sinfo '.$parts.' -o "%.16P %.10A %.5D  %.24C"';
 ## A/I/O/T = allocated/idle/other/total 
 #$ sinfo -p bluejay,shared  -o "%.16P %.10A %.5D  %.20C"
 #     PARTITION   NODES(A/I)  NODES     CPUS(A/I/O/T)
