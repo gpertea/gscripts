@@ -10,7 +10,7 @@ Usage:
   arx <command> [options]
   Array job executor for SLURM (or for GNU parallel, when used with -P).
   Usage example:
-    arx sub -a 1- -J bsp45 -m 32G -l logs task_fq2cram.sh samples.manifest
+    arx sub -a 1- task_fq2cram.sh samples.manifest --cfg /path/to/config.cfg
  Or use -C option to execute each line of <cmdfile> as a task in an array job
     arx sub -C <cmdfile>
 };
@@ -24,6 +24,8 @@ Usage:
 # -e, --error=<filename_pattern>
 # --mail-type, 
 # --mail-user (=> -M shortcut added by arx, also auto enables '--mail-type END,FAIL')
+# --cfg,--config => arx config file, can define environment variables to be passed to the job script
+
 my @cmds = qw/status st run runline sub submit qsub watch/;
 my %cmds; 
 @cmds{@cmds}=();
@@ -34,21 +36,30 @@ my $cmd=shift(@ARGV);
 
 my @ddash; # double dash arguments
 my $i = 0;
+my $cfgfile;
 while ($i < @ARGV) {
+  my $iscfg;
   if ($ARGV[$i] =~ /^--([^=]+)=(.*)/) {# '=' found, split on it and add the key-value pair
-      push @ddash, [$1, $2];
+      my ($k,$v)=($1,$2);
+      if ($k=~m/(cfg|config)/) {
+        $cfgfile=$v;
+      } else { push @ddash, [$k, $v]; }
       splice(@ARGV, $i, 1); # remove the current item from @ARGV
   } elsif ($ARGV[$i] =~ /^--(.+)/) {# no '=' is found but the argument starts with '--'
-      my $k=$1; my $r=1;
+      my $k=$1; 
+      my $r=1;
+      $iscfg=($k=~m/(cfg|config)/);
       if ($i<$#ARGV && $ARGV[$i + 1]!~m/^-/) {
-         push @ddash, [$k, $ARGV[$i + 1]]; ## assume the next argument is the value
+         if ($iscfg) { $cfgfile=$ARGV[$i + 1] }
+                else { push @ddash, [$k, $ARGV[$i + 1]]; } ## assume the next argument is the value
          $r++;
-      } else {  push @ddash, [ $k, '']   }
+      } else {  push @ddash, [ $k, ''] unless $iscfg }
       splice(@ARGV, $i, $r); # remove this argument and the next one from @ARGV
   } else {  $i++ } # just move to the next argument
 }
 
 getopts('MPCJ:l:a:m:o:e:c:') || die($usage."\n");
+
 my $JGRID=$Getopt::Std::opt_P ? 'par' :'slurm';
 #my $ge=lc($Getopt::Std::opt_g) || 'slurm'; # grid engine 
 my $PWD=abs_path(cwd()); #from Cwd module
@@ -71,6 +82,7 @@ my $TASK=$ENV{'SLURM_ARRAY_TASK_ID'} || '0';
 #$TASK=$ENV{'SGE_TASK_ID'} unless $TASK; ## support SGE?
 
 my ($JARR, $JMEM, $JCPUS, $JMAIL, $JMAILTYPE, $JNAME, $JLOG, $JERRLOG);
+parseConfigFile($cfgfile) if $cfgfile;
 my @ddpass; ## pass-through options
 foreach my $dd (@ddash) {
   if ($$dd[0] eq 'array') { $JARR=$$dd[1] 
@@ -107,28 +119,43 @@ if ($cmd eq 'status') {
    }
 } elsif ($cmd =~ m/^sub/i) { # submit job
    mkdir($JMDIR) unless -d $JMDIR;
-   my @args=();
-   if ($cmdfile) { # -C option
+   my @args=@ARGV; # default state
+   my $nlines=0;
+   if ($cmdfile) { # -C option : execute commands from file
       $cmdfile=shift(@ARGV);
       die("Error: command file $cmdfile not found!") unless $cmdfile && -f $cmdfile;
       unless($JARR) {
-        my $nlines=`wc -l < $cmdfile`;
+        $nlines=`wc -l < $cmdfile`;
         chomp($nlines);
         $JARR='1-'.$nlines;
       }
       @args=("$HOME/gscripts/task_linecmd.sh", $cmdfile);
    } else {
      die("Error: submit command requires a target script!\n") unless @ARGV>0;
-     @args=@ARGV;
-     ## index with linix
-     system("linix  $args[1]");
+     if ($JARR && -f $args[1]) { ## still an array job to be submitted
+       ## index with linix
+       my $nl=`linix $args[1]`;
+       ($nlines)=($nl=~m/^(\d+)/);
+     }
    }
-   if ($JARR=~m/\-$/ && -f $args[1]) { ## assume line-based job array is the argument
-      my $nlines=`wc -l < $args[1]`;
-      chomp($nlines);
-      $JARR.=$nlines;
+   if ($JARR) {
+     my $plimit=25; # parallelization limit : how many tasks can run at the same time
+     if ($JARR=~s/%(\d+)$// ) {
+       $plimit=$1;
+     }
+     if ($JARR=~m/\-$/) { ## assume line-based job array is the argument
+         die("Number of lines not determined.\n") unless $nlines;
+         $JARR.=$nlines;
+     }
+     $JARR.='%'.$plimit if $nlines>0 && $plimit>$nlines;
    }
-   
+   ## whatever the case $args[0] must be a path to a script to submit
+   if ( ! -f $args[0] ) {
+      my $cpath=`which $args[0]`; 
+      chomp($cpath);
+      die("Error: script $args[0] not found.\n") unless $cpath && -f $cpath;
+      $args[0]=$cpath;
+   }
    unless ($JLOG) {
      $logdir='logs' unless $logdir;
      mkdir($logdir) unless -d $logdir; # all my array jobs write logs in a 'logs' subdir of cwd!
@@ -147,7 +174,7 @@ if ($cmd eq 'status') {
    unshift(@args, @ddpass);
 
    my $job=submit(@args);
-     
+   print STDERR "Job $job submitted:\nsbatch ".join(' ', @args)."\n";
    my ($sec, $min, $hour, $mday, $mon, $year) = localtime();
    my $jtime = sprintf("%02d%02d%02d_%02d%02d", $year % 100, $mon + 1, $mday, $hour, $min);
    $JMDIR.="/${jtime}.$job";
@@ -170,12 +197,13 @@ if ($cmd eq 'status') {
    #}
 } elsif ($cmd eq 'watch') {
   # get summary info for watched job
-  my $tjob=$ARGV[0];
+  my $tjob=$ARGV[0]; # YYMMDD_hhmm.job#  
   $JMDIR.="/$tjob";
+  my ($job)=($tjob=~m/(\d+)$/);
   print STDERR "Job $tjob ended (see $JMDIR/j_cmd)\n";
   chdir($JMDIR) || die("Error chdir($JMDIR)\n");
   ##NOTE: task scripts SHOULD create logs: ~/_jobs/<jobID>/arx-%A_<taskID>.tlog
-  my @tlogs=glob('j_logs/*_[0-9]*.*log');
+  my @tlogs=glob("j_logs/*[-_.]${job}_[0-9]*.*log");
   #print STDERR "tlogs array = ".join(', ',@tlogs)."\n";
   if (@tlogs>0) { #collect summary for all tasks
      my @terr; # tasks that failed
@@ -219,7 +247,7 @@ if ($cmd eq 'status') {
 #------------------
 sub submit {
   my $args=join(" ", @_);
-  print STDERR ">> submitting:\nsbatch $args\n";
+  #print STDERR ">> submitting:\nsbatch $args\n";
   my $s=`sbatch $args`;
   my ($jid)=($s=~m/ubmitted batch job (\d+)/);
   die("Error: errror at sbatch $args ") unless $jid;
@@ -242,4 +270,15 @@ sub read_line { # use the lidx
     die "Error reading line $reqlno from $ftxt : $!\n" if !defined($brd);
     close $txt_fh;
     print $line."\n";
+}
+
+sub parseConfigFile {
+ my ($fcfg)=@_; # consider sections? [fq2cram]
+ open(F, $fcfg) || die("Error opening config file $fcfg\n");
+ while(<F>) {
+   chomp;
+   my ($k, $v)=split(/\s?=\s?/, $_, 2);
+   $ENV{$k}=$v if $k; ## --export=ALL should pick these up?
+ }
+ close(F)
 }

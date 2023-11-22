@@ -11,15 +11,18 @@
 ## OR with arx:
 #  arx sub -a 1- -J bsp45 -m32G -c6 -M geo.pertea@libd.org task_fq2cram.sh samples.manifest
 
-kvalue=40 # -k option of HISAT2
+kvalue=${HISAT_K:-40} # -k option of HISAT2
 ## TODO: these should be pulled from a config file passed to this script
-refdir='/dcs04/lieber/lcolladotor/annotationFiles_LIBD001/SPEAQeasy/Annotation/reference/hg38'
-gref_base='gencode_v25_main'
-gref="$refdir/assembly/fa/assembly_hg38_${gref_base}.fa"
-hsref="$refdir/assembly/index/hisat2_assembly_hg38_${gref_base}"
-gref_tx="$refdir/transcripts/kallisto/kallisto_index_hg38_gencode_v25"
+refdir=/dcs04/lieber/lcolladotor/annotationFiles_LIBD001/SPEAQeasy/Annotation/reference/hg38
+gref_base=gencode_v25_main
+gref=${GENOME_FA:-$refdir/assembly/fa/assembly_hg38_${gref_base}.fa}
+hsidx=${HISAT_IDX:-$refdir/assembly/index/hisat2_assembly_hg38_${gref_base}}
+hscpus=${HISAT_CPUS:-6}
+#gref_tx="$refdir/transcripts/kallisto/kallisto_index_hg38_gencode_v25"
 #salm_tidx="$refdir/transcripts/salmon/salmon_index_hg38_gencode_v32"
-
+echo "gref=$gref"
+echo "hsidx=$hsidx"
+echo "hscpus=$hscpus"
 function err_exit {
  echo -e "Error: $1"
  exit 1
@@ -59,7 +62,7 @@ if [[ -z "$fdb" ]]; then
   err_exit "no task file given!"
 fi
 
-for f in $gref $hsref.1.ht2 ; do
+for f in $gref $hsidx.1.ht2 ; do
  if [[ ! -f $f ]]; then
     err_exit "cannot find $f"
  fi
@@ -151,7 +154,7 @@ fi
 echo "processing: $sid $ofn" | tee -a $rlog
 
 if [[ ! -f $bam.done ]]; then
-  params="--mm -x $hsref -1 $fn1 -2 $fn2 -k $kvalue 2>${ofn}.align_summary.txt"
+  params="--mm -x $hsidx -1 $fn1 -2 $fn2 -k $kvalue 2>${ofn}.align_summary.txt"
   ## - full search, but if you want to use strandness:
   #if [[ $dataset != bsp1* ]]; then
   #  params="--rna-strandness RF $params"
@@ -159,7 +162,7 @@ if [[ ! -f $bam.done ]]; then
   #fi
   #echo "$line" | tee -a $rlog
   echo "["$(date '+%m/%d %H:%M')"] starting hisat2 into $bam:" | tee -a $rlog
-  cmd="hisat2 -p 6 --phred33 --min-intronlen 20 $params |\
+  cmd="hisat2 -p $hscpus --phred33 --min-intronlen 20 $params |\
    samtools view -b -o $bam -"
   echo -e $cmd | tee -a $rlog
   tmpsrt=$tmpdir/$fn.bam_srt_tmp
@@ -174,10 +177,7 @@ fi
 
 ## ---- sort and convert to CRAM
 echo '['$(date '+%m/%d %H:%M')"] start sorting+conversion to CRAM" | tee -a $rlog
-#cmd="samtools sort -O cram,use_lzma=1,use_tok=1,use_fqz=1,seqs_per_slice=50000 \
-# --reference=$gref -T $tmpsrt -o $cram -m 7G --no-PG -@ 4 $bam"
-cmd="samtools sort -O cram,version=3.1 --reference=$gref -T $tmpsrt -o $cram -m 7G --no-PG -@ 4 $bam"
-## "scramble -P -B -I bam -O cram -8 -r $gref -X small -t 4 -! - $cram"
+cmd="samtools sort -O cram,version=3.1 --reference=$gref -T $tmpsrt -o $cram --write-index -m 7G --no-PG -@ 4 $bam"
 echo -e "$cmd" | tee -a $rlog
 
 eval "$cmd" |& tee -a $rlog
@@ -189,4 +189,5 @@ if [[ $? -ne 0 || $(stat -c %s $cram 2>/dev/null || echo 0) -lt 100000 ]]; then
 fi
 /bin/rm -rf $tmpdir
 echo 1 > $cram.done
+
 echo '['$(date '+%m/%d %H:%M')"] task #${taskid} done." | tee -a $rlog
