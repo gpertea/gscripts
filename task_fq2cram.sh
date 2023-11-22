@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
-##x mem=18G
-##x cpus=4
-
-kvalue=80 # -k option of HISAT2
-
+##x mem=32G
+##x cpus=6
+#### change refdir below accordingly
 ## run with: 
-##   sbatch -a 1-210 --mem=18G -c 4 task_fq2cram.sh samples.manifest
-
-## taskdb expected format (4th field, output SAMPLE_ID, is optional)
-# >3 AN00000904/Br8667_Mid_Nuc AN00000904_Br8667_Mid_Nuc_1.fastq.gz F       AN00000904_Br8667_Mid_Nuc
-#  0               1 (dir)           2 (mate 1 file mask)           3 (sex) 4 (output SAMPLE_ID base file name)
-## for multi-flowcell:
-# >3 libd_bsp4and5 R11338_*_R1_*.fastq.gz M R11338_HCCFWBBXX
+##   sbatch -a 1-210 --mem=32G -c 6 task_fq2cram.sh samples.manifest
 
 ## OR run with parallel:
-# parallel --delay .01 -j 8 task_fq2cram.sh samples.manifest {1} ::: {1..210}
+# parallel --delay .01 -j 4 task_fq2cram.sh samples.manifest {1} ::: {1..210}
 
 ## OR with arx:
-#  arx sub -t 1- -J bsp45 -m 18G -M geo.pertea@libd.org $code/task_fq2cram.sh taskdb.cfa
+#  arx sub -a 1- -J bsp45 -m32G -c6 -M geo.pertea@libd.org task_fq2cram.sh samples.manifest
+
+kvalue=40 # -k option of HISAT2
+## TODO: these should be pulled from a config file passed to this script
+refdir='/dcs04/lieber/lcolladotor/annotationFiles_LIBD001/SPEAQeasy/Annotation/reference/hg38'
+gref_base='gencode_v25_main'
+gref="$refdir/assembly/fa/assembly_hg38_${gref_base}.fa"
+hsref="$refdir/assembly/index/hisat2_assembly_hg38_${gref_base}"
+gref_tx="$refdir/transcripts/kallisto/kallisto_index_hg38_gencode_v25"
+#salm_tidx="$refdir/transcripts/salmon/salmon_index_hg38_gencode_v32"
 
 function err_exit {
  echo -e "Error: $1"
@@ -25,43 +26,36 @@ function err_exit {
 }
 
 #host=$(hostname -s)
-jobid=$JOB_ID 
+#jobid=$JOB_ID 
+jobid=$SLURM_JOBID
 taskid="$2" # the task# could be given directly (e.g. by parallel)
 if [[ -z $jobid ]]; then
  jobid="$$"
 fi
 if [[ -z $taskid ]]; then
-   taskid=$SGE_TASK_ID
+   taskid=$SLURM_ARRAY_TASK_ID
    if [[ -z "$taskid" ]]; then
-     err_exit "no task index number given or found in SGE_TASK_ID!"
+     err_exit "no task index number given or found in $SLURM_ARRAY_TASK_ID!"
    fi
 fi
-flog=t_${taskid}.tlog
-JMDIR="$HOME/_jobs/$jobid"
-mkdir -p $JMDIR
-
-rlog=$JMDIR/$flog
+rlog=fq2cram_t${taskid}.tlog
+#JMDIR="$HOME/_jobs/$jobid"
+#mkdir -p $JMDIR
+#
+#rlog=$JMDIR/$flog
 ## ---- start main task execution
-/bin/rm -f $flog
+#/bin/rm -f $flog
 #ln -s $rlog
 
-echo "task ${jobid}.${taskid} starting on $host:${PWD}["$(date '+%m/%d %H:%M')"]" | tee $rlog
-
 host=${HOSTNAME%%.*}
-if [[ -n $SGE_TASK_ID ]]; then
- echo ">task $SGE_TASK_ID running on $host"
- module load conda_R/4.1.x
-fi
+#if [[ -n $SLURM_ARRAY_TASK_ID ]]; then
+# echo ">task $SLURM_ARRAY_TASK_ID running on $host"
+#fi
+echo "task ${jobid}.${taskid} on $host:${PWD}["$(date '+%m/%d %H:%M')"]" 
 
-##dataset="deconvo"
-
-#base dir for ref data
-basedir=$HOME/work/cbrain
-refbase=$basedir/ref
-hsrefM=$refbase/hisat2_hg38mod_noPARs/hg38mod_noPARs
-hsrefF=$refbase/hisat2_hg38mod_noY/hg38mod_noY
-gref=$refbase/hg38mod_noPARs.fa
 if [[ ! -f $gref ]]; then err_exit "not found: $gref"; fi
+if [[ ! -f $hsref ]]; then err_exit "not found: $hsref"; fi
+
 ##path having libd_bsp1, cmc1 etc. dirs 
 # only needed when relative paths are given in taskdb
 pwd=$(pwd -P) # current directory, absolute path
@@ -94,182 +88,111 @@ fi
 
 mkdir -p $tmpdir || err_exit "failed to create $tmpdir"
 
-line=$(cdbyank -a $taskid $fdb)
-#expected format:     1            2           3   4     5   6
+line=$(linix $fdb $taskid | cut -f1,3,5)
+#expected format:     read_1.fq read_2.fq sampleID
 #           >6 dataset_dir sampleID_1.fastq.gz M Schizo AA 52.02
-if [[ $line != '>'* ]]; then
- err_exit "invalid line pulled for $taskid:\n$line"
-fi
 t=( $line )
-fdir=${t[1]} # path to fastq.gz file
-fn1=${t[2]}  # sampleID_1.fastq.gz | RNum_*_R1_*.fastq.gz
-sx=${t[3]}
-oid=${t[4]}  # output sample id, only used if present and matches the sample id from fn1
-
-rnum='' ## deconvo files, CMC data lack RNum !
-sid='' ## we could keep flowcells separate for the same RNum 
-if [[ $fn1 == *_1.f*q.gz ]]; then
-  fn2=${fn1/_1./_2.}
-  if [[ "$fn1" == "$fn2" ]]; then 
-   err_exit "Paired files identical? ($fn1 vs $fn2)"
-  fi
-  sid=${fn1%%.*}  # remove all extensions
-  sid=${sid/%_1/} # remove _1 at the end
-else ## assume it's RNum_flowcellXX_*_R1_*.fastq.gz
-  if [[ $fn1 == R*_*_R1_*.f*q.gz ]]; then
-    rnum=${fn1%%_*} #remove any _ tokens after first
-    rest=${fn1#*_}  #remove first _ token (rnum)
-    #fcell=${rest%%_*}
-    ##sid=${rnum}_$fcell ## do this only if RNum_flowcell should be kept separate
-    sid=$rnum # merge outputs from multiple flowcells and lanes by $rnum
-    fn2=${fn1/_R1_/_R2_}
-  fi
+fn1=${t[0]} # path to first fastq.gz file
+fn2=${t[1]}  # sampleID_1.fastq.gz | RNum_*_R1_*.fastq.gz
+oid=${t[2]}  # output directory = base sampleID
+if [[ -z $oid ]]; then
+ err_exit "could not parse base sampleID!"
+fi
+#oid=$sid ## but we keep flowcells in separate output files for the same RNum 
+if [[ ! -f "$fn1" || ! -f "$fn2" ]]; then
+   err_exit "Files cannot be found!"
 fi
 
-ofn=$sid #output file base name 
-if [[ -n $oid ]]; then
-  if [[ "$oid" == "$sid"* ]]; then
-    ofn=$oid;
-  fi
+sid=$oid # for now
+fn=${fn1##*/} # remove path
+## if it's RNum_flowcellXX_*_R1_*.fastq.gz
+if [[ $fn == *_*_*.f*q.gz ]]; then
+  a=${fn%%_*}       #remove any _ tokens after first
+  rest=${fn#*_}     #remove first _ token (rnum)
+  b=${rest%%_*} 
+  sid=${a}_$b
 fi
 
-if [[ -z $sid ]]; then
- err_exit "could not parse sampleID from $fn1"
-fi
+ofn=$sid # output file base name (may include flowcell)
+## NOTE: hisat2 bam, cram, log outputs will NOT be merged at this stage
+## if there are multiple flowcells/lanes, they will be aligned independently
+## sid and ofn may include a flowcell suffix !
 
-## -- get the new aln path pattern:
-#dsdir=${fdir//libd_/}
-#dsdir=${dsdir//\/fastq/}/$sid
-outpath=$outdir/$sid
-if [[ -n "$rnum" ]]; then
-   outpath=$outdir/$rnum
-fi
 
+outpath=$oid
 mkdir -p "$outpath" || err_exit "failed at mkdir -p $outpath"
 
-#proto="ribo"
-#if [[ $dataset = *"bsp1"* ]]; then 
-# proto="polyA"
-#fi
-
-hsref=$hsrefM
-if [[ $sx == "F" ]]; then
- hsref=$hsrefF
-fi
-# indir -> pwd in this case
-#fqarr=($(ls  $indir/$sub/${sid}*.f*q.gz))
-if [[ $fdir != '/'* ]]; then
-  if [[ -d $fdir ]]; then #relative path
-     fdir=$pwd/$fdir # convert to absolute path
-  else #MUST be relative to $basedir/fastq/
-   if [[ -d $basedir/fastq/$fdir ]]; then
-     fdir=$basedir/fastq/$fdir # convert to absolute path
-   else
-     err_exit "$fdir not located in ./ or $basedir/fastq"
-   fi
-  fi
-fi
-
-## -- assume absolute path was given
-
-fqarr=($(ls $fdir/${sid}[_.]*f*q.gz))
-nfq=${#fqarr[@]}
-if ((nfq==0)); then
-  err_exit "could not find $fdir/${sid}[_.]*f*q.gz"
-fi
-if ((nfq<2)); then
-  err_exit "not matching paired fastq: ls $fdir/${sid}[_.]*f*q.gz"
-fi
-fqs1=${fqarr[0]}
-fqs2=${fqarr[1]}
-## there could be multiple lanes per sample, merge them 
-n=2
-if ((nfq>2)); then
-  until ((n>=nfq)); do
-    fqs1=$fqs1,${fqarr[$n]}
-    ((n=n+1))
-    fqs2=$fqs2,${fqarr[$n]}
-    ((n=n+1))
-  done
-fi
-
-#fn=$sid
-#fn=$ofn
-
-params="--mm -x $hsref -1 $fqs1 -2 $fqs2 -k $kvalue 2>${ofn}.align_summary.txt"
-
-## - full search, but if you want to use strandness:
-#if [[ $dataset != bsp1* ]]; then
-#  params="--rna-strandness RF $params"
-#  #ribo-zero samples are always reverse-forward
-#fi
-
 cd $outpath || err_exit "failed at: cd $outpath"
-ln -s $rlog
-
-## if you want to keep symlinks to all source FASTQ files:
-#mkdir -p fastq
-#cd fastq 
-#ln -s $fdir/${sid}*.f*q.gz . > /dev/null 2>&1
-cd ..
 
 cram=$ofn.cram
 bam=$ofn.bam
 
-if [[ -f $cram ]]; then
- if [[ $(stat -c %s $bam 2>/dev/null || echo 0) -gt 100000 ]]; then
-  err_exit " $cram already exists in $PWD!"
- else
-  echo " warning: removing existing .cram file"
-  unlink $cram
- fi
-fi
-if [[ -f $bam ]]; then
- echo " warning: removing existing .bam file"
- /bin/rm -f $bam ## WARNING! existing BAM will be lost
+echo "task ${jobid}.${taskid} starting on $host:${PWD}["$(date '+%m/%d %H:%M')"]" | tee -a $rlog
+
+if [[ -f "$cram.done" ]]; then
+ echo "  $ofn cram already done, skipping this task ($taskid)"
+ exit 0
 fi
 
-#rlog=$sid.log
-echo "$line" | tee -a $rlog
-echo "processing sample: $sid" | tee -a $rlog
-echo "["$(date '+%m/%d %H:%M')"] starting:" | tee -a $rlog
-cmd="hisat2 -p 4 --phred33 --min-intronlen 20 $params |\
- samtools view -b -o $bam -"
-echo -e $cmd | tee -a $rlog
+#fqarr=($(ls $fdir/${sid}[_.]*f*q.gz))
+#nfq=${#fqarr[@]}
+#if ((nfq==0)); then
+#  err_exit "could not find $fdir/${sid}[_.]*f*q.gz"
+#fi
+#if ((nfq<2)); then
+#  err_exit "not matching paired fastq: ls $fdir/${sid}[_.]*f*q.gz"
+#fi
+#fqs1=${fqarr[0]}
+#fqs2=${fqarr[1]}
+## there could be multiple lanes per sample, merge them 
+#n=2
+#if ((nfq>2)); then
+#  until ((n>=nfq)); do
+#    fqs1=$fqs1,${fqarr[$n]}
+#    ((n=n+1))
+#    fqs2=$fqs2,${fqarr[$n]}
+#    ((n=n+1))
+#  done
+#fi
+echo "processing: $sid $ofn" | tee -a $rlog
 
-tmpsrt=$tmpdir/$fn.srt_tmp
-/bin/rm -f ${tmpsrt}*
-
-### DEBUG ONLY
-#echo "task done." | tee -a $rlog
-#exit 1
-###
-
-eval "$cmd" |& tee -a $rlog
-
-if [[ $? -ne 0  || $(stat -c %s $bam 2>/dev/null || echo 0) -lt 100000 ]]; then
-  echo "error exit detected (or BAM file too small) aborting" | tee -a $rlog
-  exit 1
+if [[ ! -f $bam.done ]]; then
+  params="--mm -x $hsref -1 $fn1 -2 $fn2 -k $kvalue 2>${ofn}.align_summary.txt"
+  ## - full search, but if you want to use strandness:
+  #if [[ $dataset != bsp1* ]]; then
+  #  params="--rna-strandness RF $params"
+  #  #ribo-zero samples are always reverse-forward
+  #fi
+  #echo "$line" | tee -a $rlog
+  echo "["$(date '+%m/%d %H:%M')"] starting hisat2 into $bam:" | tee -a $rlog
+  cmd="hisat2 -p 6 --phred33 --min-intronlen 20 $params |\
+   samtools view -b -o $bam -"
+  echo -e $cmd | tee -a $rlog
+  tmpsrt=$tmpdir/$fn.bam_srt_tmp
+  /bin/rm -f ${tmpsrt}*
+  eval "$cmd" |& tee -a $rlog
+  if [[ $? -ne 0  || $(stat -c %s $bam 2>/dev/null || echo 0) -lt 100000 ]]; then
+    echo "error exit detected (or BAM file too small) aborting" | tee -a $rlog
+    exit 1
+  fi
+  echo 1 > $bam.done
 fi
+
 ## ---- sort and convert to CRAM
-echo '['$(date '+%m/%d %H:%M')"] start sorting/conversion to CRAM" | tee -a $rlog
-cmd="samtools sort -T $tmpsrt -l 6 -m 8G --no-PG -@ 4 $bam | \
- scramble -P -B -I bam -O cram -8 -r $gref -X small -t 4 -! - $cram"
+echo '['$(date '+%m/%d %H:%M')"] start sorting+conversion to CRAM" | tee -a $rlog
+#cmd="samtools sort -O cram,use_lzma=1,use_tok=1,use_fqz=1,seqs_per_slice=50000 \
+# --reference=$gref -T $tmpsrt -o $cram -m 7G --no-PG -@ 4 $bam"
+cmd="samtools sort -O cram,version=3.1 --reference=$gref -T $tmpsrt -o $cram -m 7G --no-PG -@ 4 $bam"
+## "scramble -P -B -I bam -O cram -8 -r $gref -X small -t 4 -! - $cram"
 echo -e "$cmd" | tee -a $rlog
 
 eval "$cmd" |& tee -a $rlog
-if [[ $? -eq 0 ]]; then
-  if [[ $(stat -c %s $cram 2>/dev/null || echo 0) -gt 100000 ]]; then
-   #/bin/rm -f $bam
-   echo "keeping unsorted bam file: $bam"
-  else
-   echo "error: cram file too small" | tee -a $rlog
-  fi
-else
-   #echo "'['$(date '+%m/%d %H:%M')"] sort|scramble error exit detected!" | tee -a $rlog
-   echo '['$(date '+%m/%d %H:%M')"] task #${taskid} error exit detected!." | tee -a $rlog
+
+if [[ $? -ne 0 || $(stat -c %s $cram 2>/dev/null || echo 0) -lt 100000 ]]; then
+   echo '['$(date '+%m/%d %H:%M')"] error exit or cram file too small" | tee -a $rlog  
    /bin/rm -rf $tmpdir
    exit 1
 fi
 /bin/rm -rf $tmpdir
+echo 1 > $cram.done
 echo '['$(date '+%m/%d %H:%M')"] task #${taskid} done." | tee -a $rlog

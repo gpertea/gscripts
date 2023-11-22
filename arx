@@ -10,7 +10,7 @@ Usage:
   arx <command> [options]
   Array job executor for SLURM (or for GNU parallel, when used with -P).
   Usage example:
-    arx sub -a 1- -J bsp45 -l logs task_fq2cram.sh samples.manifest
+    arx sub -a 1- -J bsp45 -m 32G -l logs task_fq2cram.sh samples.manifest
  Or use -C option to execute each line of <cmdfile> as a task in an array job
     arx sub -C <cmdfile>
 };
@@ -97,15 +97,16 @@ $JLOG=$Getopt::Std::opt_o if $Getopt::Std::opt_o;
 $JERRLOG=$Getopt::Std::opt_e if $Getopt::Std::opt_e;
 
 my $cmdfile=$Getopt::Std::opt_C; # execute each line as a command
+
 my $JMDIR="$HOME/_jobs";
 my $logdir=$Getopt::Std::opt_l;
-mkdir($JMDIR) unless -d $JMDIR;
 if ($cmd eq 'status') {
    print STDERR "Using grid engine: $JGRID\n";
    if ($JGRID eq 'slurm') {
       print STDERR "job $JOB.$TASK on $HOST\n";
    }
 } elsif ($cmd =~ m/^sub/i) { # submit job
+   mkdir($JMDIR) unless -d $JMDIR;
    my @args=();
    if ($cmdfile) { # -C option
       $cmdfile=shift(@ARGV);
@@ -119,12 +120,15 @@ if ($cmd eq 'status') {
    } else {
      die("Error: submit command requires a target script!\n") unless @ARGV>0;
      @args=@ARGV;
+     ## index with linix
+     system("linix  $args[1]");
    }
    if ($JARR=~m/\-$/ && -f $args[1]) { ## assume line-based job array is the argument
       my $nlines=`wc -l < $args[1]`;
       chomp($nlines);
       $JARR.=$nlines;
    }
+   
    unless ($JLOG) {
      $logdir='logs' unless $logdir;
      mkdir($logdir) unless -d $logdir; # all my array jobs write logs in a 'logs' subdir of cwd!
@@ -143,6 +147,7 @@ if ($cmd eq 'status') {
    unshift(@args, @ddpass);
 
    my $job=submit(@args);
+   
    $JMDIR.="/$job";
    mkdir($JMDIR);
    open(JINFO, ">$JMDIR/j_cmd") || die("Error creating $JMDIR/j_cmd\n");
@@ -216,4 +221,22 @@ sub submit {
   my ($jid)=($s=~m/ubmitted batch job (\d+)/);
   die("Error: errror at sbatch $args ") unless $jid;
   return $jid;
+}
+
+sub read_line { # use the lidx
+    my ($reqlno, $ftxt, $fidx) = @_;
+    open my $idx_fh, '<', $fidx or die "Could not open '$fidx': $!";
+    my $index_offset = ($reqlno - 1) * 8;
+    seek $idx_fh, $index_offset, SEEK_SET;
+    read $idx_fh, my $record, 8;
+    close $idx_fh;
+    my ($lno, $offset, $clen) = unpack('S I S', $record);
+    die "Error: line number mismatch in index file!\n" if !defined($lno) || $lno != $reqlno;
+    open my $txt_fh, '<', $ftxt or die "Could not open '$ftxt': $!";
+    seek($txt_fh, $offset, SEEK_SET) || die "Error seeking to $offset in $ftxt : $!\n";
+    my $line='------------------------------------------------------------------';
+    my $brd=read($txt_fh, $line, $clen); 
+    die "Error reading line $reqlno from $ftxt : $!\n" if !defined($brd);
+    close $txt_fh;
+    print $line."\n";
 }
