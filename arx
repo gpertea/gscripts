@@ -147,8 +147,10 @@ if ($cmd eq 'status') {
    unshift(@args, @ddpass);
 
    my $job=submit(@args);
-   
-   $JMDIR.="/$job";
+     
+   my ($sec, $min, $hour, $mday, $mon, $year) = localtime();
+   my $jtime = sprintf("%02d%02d%02d_%02d%02d", $year % 100, $mon + 1, $mday, $hour, $min);
+   $JMDIR.="/${jtime}.$job";
    mkdir($JMDIR);
    open(JINFO, ">$JMDIR/j_cmd") || die("Error creating $JMDIR/j_cmd\n");
    print JINFO 'sbatch '.join(' ',@args)."\n";
@@ -162,15 +164,15 @@ if ($cmd eq 'status') {
    print STDERR "submitted job: $job (check $JMDIR)\n";
    #if ($mail) {
      my $jn=$JNAME ? "w_${JNAME}_$job" : "w_$job";
-     @args=("-J $jn", "--dependency=afterany:$job -o j_$job.watcher.log --mail-type='END,FAIL'", __FILE__, "watch $job");
+     @args=("-J $jn", "--dependency=afterany:$job -o j_$job.watcher.log --mail-type='END,FAIL'", __FILE__, "watch ${jtime}.$job");
      my $j=submit(@args);
      print STDERR " ..submitted watcher job $j :\n".join(' ', @args)."\n";
    #}
 } elsif ($cmd eq 'watch') {
   # get summary info for watched job
-  my $job=$ARGV[0];
-  $JMDIR.="/$job";
-  print STDERR "Job $job ended (see $JMDIR/j_cmd)\n";
+  my $tjob=$ARGV[0];
+  $JMDIR.="/$tjob";
+  print STDERR "Job $tjob ended (see $JMDIR/j_cmd)\n";
   chdir($JMDIR) || die("Error chdir($JMDIR)\n");
   ##NOTE: task scripts SHOULD create logs: ~/_jobs/<jobID>/arx-%A_<taskID>.tlog
   my @tlogs=glob('j_logs/*_[0-9]*.*log');
@@ -217,6 +219,7 @@ if ($cmd eq 'status') {
 #------------------
 sub submit {
   my $args=join(" ", @_);
+  print STDERR ">> submitting:\nsbatch $args\n";
   my $s=`sbatch $args`;
   my ($jid)=($s=~m/ubmitted batch job (\d+)/);
   die("Error: errror at sbatch $args ") unless $jid;

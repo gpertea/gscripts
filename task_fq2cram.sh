@@ -51,10 +51,19 @@ host=${HOSTNAME%%.*}
 #if [[ -n $SLURM_ARRAY_TASK_ID ]]; then
 # echo ">task $SLURM_ARRAY_TASK_ID running on $host"
 #fi
-echo "task ${jobid}.${taskid} on $host:${PWD}["$(date '+%m/%d %H:%M')"]" 
+echo '['$(date '+%m/%d %H:%M')"] task ${jobid}.${taskid} on $host:${PWD}"
 
-if [[ ! -f $gref ]]; then err_exit "not found: $gref"; fi
-if [[ ! -f $hsref ]]; then err_exit "not found: $hsref"; fi
+# requires a task file as the 1st arg
+fdb="$1"
+if [[ -z "$fdb" ]]; then
+  err_exit "no task file given!"
+fi
+
+for f in $gref $hsref.1.ht2 ; do
+ if [[ ! -f $f ]]; then
+    err_exit "cannot find $f"
+ fi
+done
 
 ##path having libd_bsp1, cmc1 etc. dirs 
 # only needed when relative paths are given in taskdb
@@ -63,21 +72,6 @@ pwd=$(pwd -P) # current directory, absolute path
 ## final .cram files will be written under outdir,
 ## one subdir per sampleID
 outdir=$pwd/aln
-
-# requires a task db pseudo-fasta file as the 1st arg
-fdb="$1"
-if [[ -z "$fdb" ]]; then
-  err_exit "no cdb task db given!"
-fi
-if [[ ! -f "$fdb" ]]; then
-  err_exit "$fdb file not found!"
-fi
-fdbix="$fdb.cidx"
-if [[ ! -f "$fdbix" ]]; then
-    # cdbfasta $fdb -- no, this would mess up grid/parallel runs
-    err_exit "$fdbix file must exist!"
-fi
-fdb=$fdbix
 
 ## on JHPCE use $MYSCRATCH
 if [[ $host == transfer-* || $host == compute-* ]]; then
