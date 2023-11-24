@@ -7,14 +7,25 @@ use Cwd qw(abs_path cwd);
 use Fcntl qw(:DEFAULT :seek); #mostly for the SEEK constants
 my $usage=q{arx : array job executor in current working directory
 Usage:
-  arx <command> [options]
-  Array job executor for SLURM (or for GNU parallel, when used with -P).
-  Usage example:
-    arx sub -a 1- task_fq2cram.sh samples.manifest --cfg /path/to/config.cfg
- Or use -C option to execute each line of <cmdfile> as a task in an array job
-    arx sub -C <cmdfile>
+ arx <command> [options] arguments...
+ Array job executor for SLURM (or for GNU parallel, when used with -P).
+ Usage example, running tasks for all lines in ../samples.manifest with
+ a concurrency of 20 and a config file specified for environment variables:
+   arx sub -a 1-%20 task_fq2cram.sh ../samples.manifest \
+   --cfg ../fq2cram_config.cfg
+
+ Or use -C option to execute each line of <cmdfile> as a task in an array job.
+ Example for local run (using GNU parallel) with a maximum concurrency of 6:
+    arx sub -P -j6 -C <cmdfile>
+
+ Use -D for a "dry run" showing the commands that would be run.
+ 
+ The concurency (maximum number of tasks to be executed at the same time) 
+ should be set with -j or using %concurency suffix for -a/--array (as in SLURM)
+ If not given, the default concurrency is set to 6 for local (parallel) runs and 
+ 20 for SLURM jobs.
 };
-## -I to create the line index for the 2nd argument in case of JARR?
+
 ## double-dash recognized options for SLURM (anything else is just passed to sbatch)
 # -c, --cpus-per-task=<ncpus>
 # -a, --array=<indexes>
@@ -32,6 +43,7 @@ my %cmds;
 
 die("$usage\n") unless exists($cmds{$ARGV[0]});
 
+my $arxcmd=join(' ',$0, @ARGV);
 my $cmd=shift(@ARGV);
 
 my @ddash; # double dash arguments
@@ -58,9 +70,11 @@ while ($i < @ARGV) {
   } else {  $i++ } # just move to the next argument
 }
 
-getopts('MPCJ:l:a:m:o:e:c:') || die($usage."\n");
+getopts('MPCDJ:j:l:a:m:o:e:c:') || die($usage."\n");
 
 my $JGRID=$Getopt::Std::opt_P ? 'par' :'slurm';
+my $dryrun=$Getopt::Std::opt_D;
+my $jpar=$Getopt::Std::opt_j;
 #my $ge=lc($Getopt::Std::opt_g) || 'slurm'; # grid engine 
 my $PWD=abs_path(cwd()); #from Cwd module
 my $HOSTNAME = (&POSIX::uname)[1];
@@ -118,7 +132,10 @@ if ($cmd eq 'status') {
       print STDERR "job $JOB.$TASK on $HOST\n";
    }
 } elsif ($cmd =~ m/^sub/i) { # submit job
-   mkdir($JMDIR) unless -d $JMDIR;
+   if ($dryrun) {
+     print STDERR "Using grid engine: $JGRID\n";
+   }
+   mkdir($JMDIR) unless $dryrun || -d $JMDIR;
    my @args=@ARGV; # default state
    my $nlines=0;
    if ($cmdfile) { # -C option : execute commands from file
@@ -139,15 +156,19 @@ if ($cmd eq 'status') {
      }
    }
    if ($JARR) {
-     my $plimit=$JGRID eq 'par' ? 25 : 8; # parallelization limit : how many tasks can run at the same time
+     # default concurrency limit : how many tasks can run at the same time
+     my $pdef=$JGRID eq 'par' ? 6: 20;
+     my $plimit;
      if ($JARR=~s/%(\d+)$// ) {
        $plimit=$1;
      }
+     $plimit=$jpar if $jpar && (!$plimit || $plimit>$jpar); # always prefer the lowest given value
      if ($JARR=~m/\-$/) { ## assume line-based job array is the argument
          die("Number of lines not determined.\n") unless $nlines;
          $JARR.=$nlines;
      }
-     $JARR.='%'.$plimit if $nlines>0 && $plimit>$nlines;
+     $plimit=$pdef unless $plimit;
+     $JARR.='%'.$plimit if $plimit<$nlines;
    }
    ## whatever the case $args[0] must be a path to a script to submit
    if ( ! -f $args[0] ) {
@@ -158,7 +179,7 @@ if ($cmd eq 'status') {
    }
    unless ($JLOG) {
      $logdir='logs' unless $logdir;
-     mkdir($logdir) unless -d $logdir; # all my array jobs write logs in a 'logs' subdir of cwd!
+     mkdir($logdir) unless $dryrun || -d $logdir; # all my array jobs write logs in a 'logs' subdir of cwd!
      $JLOG=$logdir.'/arx-%A_%a.tlog';
    }
    $JERRLOG = $JLOG if ($JLOG && !$JERRLOG);
@@ -176,66 +197,85 @@ if ($cmd eq 'status') {
      unshift(@args, '-o '.$JLOG) if $JLOG;
      unshift(@args, '-e '.$JERRLOG) if $JERRLOG;
      unshift(@args, @ddpass);
-     $job=submit(@args);
+     $job=$dryrun ? 'dry-run' : submit(@args);
      $jobcmd="sbatch ".join(' ', @args);
      print STDERR "Job $job submitted:\n$jobcmd\n";
      $JMDIR.="/${jtime}.$job";
-     mkdir($JMDIR);
+     mkdir($JMDIR) unless $dryrun;
    } else { # use GNU parallel (local parallelism)
      my $pID="$$";
      my $shell_script="parallel.arx$pID.sh";
      unlink($shell_script);
      my $pid_file="parallel.arx$pID.pid";
      unlink($pid_file);
-     print STDERR "JARR=$JARR\n";
+     print STDERR "JARR=$JARR\n" if $dryrun;
      my ($ast, $aend)=($JARR=~m/^(\d+)\-(\d+)/);
      my ($apar)=($JARR=~m/%(\d+)$/);
      my $parprog=`which parallel`;chomp($parprog);
      $job=$pID;
-     my $jpar='';
-     $jpar="-j $apar" if $apar;
-     $jobcmd="$parprog --delay .01 $jpar $args[0] $args[1] \{1\} '>' $logdir/arx-${pID}_\{1\}.tlog ::: \{$ast..$aend\}";
-     defined(my $pid = fork) or die "Cannot fork: $!";
-     if ($pid) { # parent process
-        while (!-s $pid_file) {
-          select(undef, undef, undef, 0.2); # wait 0.2s for the child process to write the PID to the file
-        }
-        open(my $fh, '<', $pid_file) or die "Cannot open PID file: $!";
-        $parPID = <$fh>;
-        close $fh;
-        chomp($parPID); # PID of the parallel process
-        print STDERR "Started parallel with PID=$parPID\n";
-        $JMDIR.="/${jtime}.$pID";
-        mkdir($JMDIR);
-        open(PARID, ">$JMDIR/parallel.pid") || die("Error creating $JMDIR/parallel.pid\n");
-        print PARID $parPID."\n";
-        close(PARID);
-     } else { # child process
-        open(my $sh, '>', $shell_script) or die "Cannot open shell script file: $!";
-        print $sh "$jobcmd > parallel.arx$pID.log 2>&1 &\n";
-        print $sh "echo \$! > $pid_file\n";
-        close $sh;
-        exec("env", "bash", $shell_script);
-        exit 0;
+     my $tpar='';
+     $tpar="-j $apar" if $apar;
+     $jobcmd="$parprog --delay .01 $tpar $args[0] $args[1] \{1\} '>' $logdir/arx-${pID}_\{1\}.tlog ::: \{$ast..$aend\}";
+     my $fparlog="parallel.arx$pID.log";
+     if ($dryrun) {
+       print STDERR "------ Dry-run ------:\n$arxcmd\n$jobcmd\n----------------\n";
+     } else {
+       open(PLOG, ">$fparlog") || die("Error creating $fparlog\n");
+       print PLOG "$arxcmd\n";
+       print PLOG "$jobcmd\n";
+       print PLOG "## see $pid_file for GNU parallel's process ID\n";
+       close(PLOG);
+       #fork & exec
+       defined(my $pid = fork) or die "Cannot fork: $!";
+       if ($pid) { # parent process
+          while (!-s $pid_file) {
+            select(undef, undef, undef, 0.2); # wait 0.2s for the child process to write the PID to the file
+          }
+          open(my $fh, '<', $pid_file) or die "Cannot open PID file: $!";
+          $parPID = <$fh>;
+          close $fh;
+          chomp($parPID); # PID of the parallel process
+          print STDERR "Started parallel with PID=$parPID\n";
+          $JMDIR.="/${jtime}.$pID";
+          mkdir($JMDIR);
+          open(PARID, ">$JMDIR/parallel.pid") || die("Error creating $JMDIR/parallel.pid\n");
+          print PARID $parPID."\n";
+          close(PARID);
+       } else { # child process
+          open(my $sh, '>', $shell_script) or die "Cannot open shell script file: $!";
+          print $sh "$jobcmd >> $fparlog 2>&1 &\n";
+          print $sh "echo \$! > $pid_file\n";
+          close $sh;
+          exec("env", "bash", $shell_script);
+          exit 0;
+       }
      }
    }
-   open(JINFO, ">$JMDIR/j_cmd") || die("Error creating $JMDIR/j_cmd\n");
-   print JINFO "$jobcmd\n";
-   print JINFO "#cwd: $PWD\n";
-   close(JINFO);
-   $logdir=abs_path($logdir);
-   symlink($PWD, "$JMDIR/j_cwd");
-   if (!$cmdfile) {
-     symlink("$logdir", "$JMDIR/j_logs");
+   if ($dryrun) {
+     print STDERR "$JMDIR/j_cmd would contain this info:\n";
+     print STDERR "$arxcmd\n";
+     print STDERR "$jobcmd\n";
+     print STDERR "#cwd: $PWD\n";
+   } else {
+     open(JINFO, ">$JMDIR/j_cmd") || die("Error creating $JMDIR/j_cmd\n");
+     print JINFO "$arxcmd\n";
+     print JINFO "$jobcmd\n";
+     print JINFO "#cwd: $PWD\n";
+     close(JINFO);
+     $logdir=abs_path($logdir);
+     symlink($PWD, "$JMDIR/j_cwd");
+     if (!$cmdfile) {
+       symlink("$logdir", "$JMDIR/j_logs");
+     }
    }
    print STDERR "Submitted $JGRID job: $job (check $JMDIR)\n";
    if ($JGRID eq 'slurm') {
-     #if ($mail) {
-       my $jn=$JNAME ? "w_${JNAME}_$job" : "w_$job";
-       @args=("-J $jn", "--dependency=afterany:$job -o j_$job.watcher.log --mail-type='END,FAIL'", __FILE__, "watch ${jtime}.$job");
-       my $j=submit(@args);
-       print STDERR " ..submitted watcher job $j :\n".join(' ', @args)."\n";
-     #}
+       #if ($mail) {
+         my $jn=$JNAME ? "w_${JNAME}_$job" : "w_$job";
+         @args=("-J $jn", "--dependency=afterany:$job -o j_$job.watcher.log --mail-type='END,FAIL'", __FILE__, "watch ${jtime}.$job");
+         my $j=$dryrun ? 'w-dryrun' : submit(@args);
+         print STDERR " ..submitted watcher job $j :\nsbatch ".join(' ', @args)."\n";
+       #}
    }
 } elsif ($cmd eq 'watch') {
   # get summary info for watched job
