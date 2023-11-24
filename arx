@@ -1,4 +1,4 @@
-#!/bin/env perl
+#!/usr/bin/env perl
 use strict;
 use Getopt::Std;
 use File::Basename; #for basename, dirname
@@ -139,7 +139,7 @@ if ($cmd eq 'status') {
      }
    }
    if ($JARR) {
-     my $plimit=25; # parallelization limit : how many tasks can run at the same time
+     my $plimit=$JGRID eq 'par' ? 25 : 8; # parallelization limit : how many tasks can run at the same time
      if ($JARR=~s/%(\d+)$// ) {
        $plimit=$1;
      }
@@ -162,25 +162,65 @@ if ($cmd eq 'status') {
      $JLOG=$logdir.'/arx-%A_%a.tlog';
    }
    $JERRLOG = $JLOG if ($JLOG && !$JERRLOG);
-
-   unshift(@args, '-a '.$JARR) if $JARR;
-   unshift(@args, '--mem='.$JMEM) if $JMEM;
-   unshift(@args, '-c '.$JCPUS) if $JCPUS;
-   unshift(@args, '--mail-user='.$JMAIL) if $JMAIL; # or could be picked up from ~/.slurm/default
-   unshift(@args, '--mail-type='.$JMAILTYPE) if $JMAILTYPE;
-   unshift(@args, '-J '.$JNAME) if $JNAME;
-   unshift(@args, '-o '.$JLOG) if $JLOG;
-   unshift(@args, '-e '.$JERRLOG) if $JERRLOG;
-   unshift(@args, @ddpass);
-
-   my $job=submit(@args);
-   print STDERR "Job $job submitted:\nsbatch ".join(' ', @args)."\n";
+   my ($job, $jobcmd);
    my ($sec, $min, $hour, $mday, $mon, $year) = localtime();
    my $jtime = sprintf("%02d%02d%02d_%02d%02d", $year % 100, $mon + 1, $mday, $hour, $min);
-   $JMDIR.="/${jtime}.$job";
-   mkdir($JMDIR);
+   my $parPID; # only populated in GNU parallel case with the parallel PID
+   if ($JGRID eq 'slurm') {
+     unshift(@args, '-a '.$JARR) if $JARR;
+     unshift(@args, '--mem='.$JMEM) if $JMEM;
+     unshift(@args, '-c '.$JCPUS) if $JCPUS;
+     unshift(@args, '--mail-user='.$JMAIL) if $JMAIL; # or could be picked up from ~/.slurm/default
+     unshift(@args, '--mail-type='.$JMAILTYPE) if $JMAILTYPE;
+     unshift(@args, '-J '.$JNAME) if $JNAME;
+     unshift(@args, '-o '.$JLOG) if $JLOG;
+     unshift(@args, '-e '.$JERRLOG) if $JERRLOG;
+     unshift(@args, @ddpass);
+     $job=submit(@args);
+     $jobcmd="sbatch ".join(' ', @args);
+     print STDERR "Job $job submitted:\n$jobcmd\n";
+     $JMDIR.="/${jtime}.$job";
+     mkdir($JMDIR);
+   } else { # use GNU parallel (local parallelism)
+     my $pID="$$";
+     my $shell_script="parallel.arx$pID.sh";
+     unlink($shell_script);
+     my $pid_file="parallel.arx$pID.pid";
+     unlink($pid_file);
+     print STDERR "JARR=$JARR\n";
+     my ($ast, $aend)=($JARR=~m/^(\d+)\-(\d+)/);
+     my ($apar)=($JARR=~m/%(\d+)$/);
+     my $parprog=`which parallel`;chomp($parprog);
+     $job=$pID;
+     my $jpar='';
+     $jpar="-j $apar" if $apar;
+     $jobcmd="$parprog --delay .01 $jpar $args[0] $args[1] \{1\} '>' $logdir/arx-${pID}_\{1\}.tlog ::: \{$ast..$aend\}";
+     defined(my $pid = fork) or die "Cannot fork: $!";
+     if ($pid) { # parent process
+        while (!-s $pid_file) {
+          select(undef, undef, undef, 0.2); # wait 0.2s for the child process to write the PID to the file
+        }
+        open(my $fh, '<', $pid_file) or die "Cannot open PID file: $!";
+        $parPID = <$fh>;
+        close $fh;
+        chomp($parPID); # PID of the parallel process
+        print STDERR "Started parallel with PID=$parPID\n";
+        $JMDIR.="/${jtime}.$pID";
+        mkdir($JMDIR);
+        open(PARID, ">$JMDIR/parallel.pid") || die("Error creating $JMDIR/parallel.pid\n");
+        print PARID $parPID."\n";
+        close(PARID);
+     } else { # child process
+        open(my $sh, '>', $shell_script) or die "Cannot open shell script file: $!";
+        print $sh "$jobcmd > parallel.arx$pID.log 2>&1 &\n";
+        print $sh "echo \$! > $pid_file\n";
+        close $sh;
+        exec("env", "bash", $shell_script);
+        exit 0;
+     }
+   }
    open(JINFO, ">$JMDIR/j_cmd") || die("Error creating $JMDIR/j_cmd\n");
-   print JINFO 'sbatch '.join(' ',@args)."\n";
+   print JINFO "$jobcmd\n";
    print JINFO "#cwd: $PWD\n";
    close(JINFO);
    $logdir=abs_path($logdir);
@@ -188,13 +228,15 @@ if ($cmd eq 'status') {
    if (!$cmdfile) {
      symlink("$logdir", "$JMDIR/j_logs");
    }
-   print STDERR "submitted job: $job (check $JMDIR)\n";
-   #if ($mail) {
-     my $jn=$JNAME ? "w_${JNAME}_$job" : "w_$job";
-     @args=("-J $jn", "--dependency=afterany:$job -o j_$job.watcher.log --mail-type='END,FAIL'", __FILE__, "watch ${jtime}.$job");
-     my $j=submit(@args);
-     print STDERR " ..submitted watcher job $j :\n".join(' ', @args)."\n";
-   #}
+   print STDERR "Submitted $JGRID job: $job (check $JMDIR)\n";
+   if ($JGRID eq 'slurm') {
+     #if ($mail) {
+       my $jn=$JNAME ? "w_${JNAME}_$job" : "w_$job";
+       @args=("-J $jn", "--dependency=afterany:$job -o j_$job.watcher.log --mail-type='END,FAIL'", __FILE__, "watch ${jtime}.$job");
+       my $j=submit(@args);
+       print STDERR " ..submitted watcher job $j :\n".join(' ', @args)."\n";
+     #}
+   }
 } elsif ($cmd eq 'watch') {
   # get summary info for watched job
   my $tjob=$ARGV[0]; # YYMMDD_hhmm.job#  

@@ -80,7 +80,11 @@ outdir=$pwd/aln
 if [[ $host == transfer-* || $host == compute-* ]]; then
  tmpdir=$MYSCRATCH/fq2cram/$jobid/$taskid
 else
- tmpdir=$pwd/tmp/$jobid/$taskid
+ if [[ $host == srv05 ]]; then
+   tmpdir=/dev/shm/${USER}-tmp/$jobid/$taskid
+ else
+   tmpdir=$pwd/tmp/$jobid/$taskid
+ fi
 fi
 
 mkdir -p $tmpdir || err_exit "failed to create $tmpdir"
