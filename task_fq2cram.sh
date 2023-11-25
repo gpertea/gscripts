@@ -2,14 +2,15 @@
 ##x mem=32G
 ##x cpus=6
 #### change refdir below accordingly
-## run with: 
+
+## run with arx:
+#  arx sub -a 1- -J bsp45 -m32G -c6 -M geo.pertea@libd.org task_fq2cram.sh samples.manifest
+
+## add -P option to run with parallel
+
+## or with sbatch: 
 ##   sbatch -a 1-210 --mem=32G -c 6 task_fq2cram.sh samples.manifest
 
-## OR run with parallel:
-# parallel --delay .01 -j 4 task_fq2cram.sh samples.manifest {1} ::: {1..210}
-
-## OR with arx:
-#  arx sub -a 1- -J bsp45 -m32G -c6 -M geo.pertea@libd.org task_fq2cram.sh samples.manifest
 
 kvalue=${HISAT_K:-40} # -k option of HISAT2
 ## TODO: these should be pulled from a config file passed to this script
@@ -72,10 +73,6 @@ done
 # only needed when relative paths are given in taskdb
 pwd=$(pwd -P) # current directory, absolute path
 
-## final .cram files will be written under outdir,
-## one subdir per sampleID
-outdir=$pwd/aln
-
 ## on JHPCE use $MYSCRATCH
 if [[ $host == transfer-* || $host == compute-* ]]; then
  tmpdir=$MYSCRATCH/fq2cram/$jobid/$taskid
@@ -91,7 +88,6 @@ mkdir -p $tmpdir || err_exit "failed to create $tmpdir"
 
 line=$(linix $fdb $taskid | cut -f1,3,5)
 #expected format:     read_1.fq read_2.fq sampleID
-#           >6 dataset_dir sampleID_1.fastq.gz M Schizo AA 52.02
 t=( $line )
 fn1=${t[0]} # path to first fastq.gz file
 fn2=${t[1]}  # sampleID_1.fastq.gz | RNum_*_R1_*.fastq.gz
