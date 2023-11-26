@@ -85,8 +85,9 @@ sub dbLogin {
   if (index($server,'/')>=0 && length($db)==0) {
     ($server, $db, $user)=parseDbSpec($server);
   }
-  $server='localhost' unless $server;
-  $db='rse' unless $db;
+  die("Error database required!\n") unless $db;
+
+  $server='localhost' unless $server;  
   $user='ruser' unless $user;
   my $port=5432;
   my @sp=split(/:/, $server);
@@ -98,13 +99,13 @@ sub dbLogin {
     chomp;
     next if m/^#/;
     my ($host,$port,$d,$u,$p)=split(/:/);
-    if ($host eq $server && $d eq $db) {
-       ($user,$pass)=($u, $p);
+    if ($host eq $server && $user eq $u) {
+       $pass=$p;
        last;
     }
   }
   close(PGPASS);
-  die("Error: could not retrieve pass for user $user, db $db on $server\n") unless $pass;
+  die("Error: could not retrieve pass for user $user on $server\n") unless $pass;
   $pg_dbh_ = DBI -> connect("dbi:Pg:dbname=$db;host=$server;port=$port",
                             $user, $pass,
                             {AutoCommit => 0, RaiseError => 1,
