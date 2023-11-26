@@ -75,12 +75,12 @@ pwd=$(pwd -P) # current directory, absolute path
 
 ## on JHPCE use $MYSCRATCH
 if [[ $host == transfer-* || $host == compute-* ]]; then
- tmpdir=$MYSCRATCH/fq2cram/$jobid/$taskid
+ tmpdir=$MYSCRATCH/fq2cram/${jobid}_$taskid
 else
  if [[ $host == srv05 ]]; then
-   tmpdir=/dev/shm/${USER}-tmp/$jobid/$taskid
+   tmpdir=/dev/shm/${USER}-${jobid}_$taskid
  else
-   tmpdir=$pwd/tmp/$jobid/$taskid
+   tmpdir=$pwd/tmp/${jobid}_$taskid
  fi
 fi
 
@@ -115,7 +115,6 @@ ofn=$sid # output file base name (may include flowcell)
 ## if there are multiple flowcells/lanes, they will be aligned independently
 ## sid and ofn may include a flowcell suffix !
 
-
 outpath=$oid
 mkdir -p "$outpath" || err_exit "failed at mkdir -p $outpath"
 
@@ -123,34 +122,22 @@ cd $outpath || err_exit "failed at: cd $outpath"
 
 cram=$ofn.cram
 bam=$ofn.bam
+if [[ -f "$rlog" ]]; then
+  bk=1
+  while [[ -f "$rlog.$bk" ]]; do
+    ((bk++))
+  done
+  mv $rlog "$rlog.$bk"
+fi
+echo "["$(date '+%m/%d %H:%M')"] task ${jobid}.${taskid} starting on $host:${PWD}" | tee -a $rlog
 
-echo "task ${jobid}.${taskid} starting on $host:${PWD}["$(date '+%m/%d %H:%M')"]" | tee -a $rlog
-
-if [[ -f "$cram.done" ]]; then
+if [[ -f "$cram.done" && -s "$cram.crai" ]]; then
  echo "  $ofn cram already done, skipping this task ($taskid)"
  exit 0
+else
+ /bin/rm -f ${ofn}*cram*
 fi
 
-#fqarr=($(ls $fdir/${sid}[_.]*f*q.gz))
-#nfq=${#fqarr[@]}
-#if ((nfq==0)); then
-#  err_exit "could not find $fdir/${sid}[_.]*f*q.gz"
-#fi
-#if ((nfq<2)); then
-#  err_exit "not matching paired fastq: ls $fdir/${sid}[_.]*f*q.gz"
-#fi
-#fqs1=${fqarr[0]}
-#fqs2=${fqarr[1]}
-## there could be multiple lanes per sample, merge them 
-#n=2
-#if ((nfq>2)); then
-#  until ((n>=nfq)); do
-#    fqs1=$fqs1,${fqarr[$n]}
-#    ((n=n+1))
-#    fqs2=$fqs2,${fqarr[$n]}
-#    ((n=n+1))
-#  done
-#fi
 echo "processing: $sid $ofn" | tee -a $rlog
 
 if [[ ! -f $bam.done ]]; then
@@ -165,8 +152,6 @@ if [[ ! -f $bam.done ]]; then
   cmd="hisat2 -p $hscpus --phred33 --min-intronlen 20 $params |\
    samtools view -b -o $bam -"
   echo -e $cmd | tee -a $rlog
-  tmpsrt=$tmpdir/$fn.bam_srt_tmp
-  /bin/rm -f ${tmpsrt}*
   eval "$cmd" |& tee -a $rlog
   if [[ $? -ne 0  || $(stat -c %s $bam 2>/dev/null || echo 0) -lt 100000 ]]; then
     echo "error exit detected (or BAM file too small) aborting" | tee -a $rlog
@@ -177,6 +162,8 @@ fi
 
 ## ---- sort and convert to CRAM
 echo '['$(date '+%m/%d %H:%M')"] start sorting+conversion to CRAM" | tee -a $rlog
+tmpsrt=$tmpdir/$ofn.bam_srt_tmp
+/bin/rm -f ${tmpsrt}*
 cmd="samtools sort -O cram,version=3.1 --reference=$gref -T $tmpsrt -o $cram --write-index -m 7G --no-PG -@ 4 $bam"
 echo -e "$cmd" | tee -a $rlog
 

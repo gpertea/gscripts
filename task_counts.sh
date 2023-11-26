@@ -62,12 +62,12 @@ pwd=$(pwd -P) # current directory, absolute path
 
 ## on JHPCE use $MYSCRATCH
 if [[ $host == transfer-* || $host == compute-* ]]; then
- tmpdir=$MYSCRATCH/fq2cram/$jobid/$taskid
+ tmpdir=$MYSCRATCH/${jobid}_$taskid
 else
  if [[ $host == srv05 ]]; then
-   tmpdir=/dev/shm/${USER}-tmp/$jobid/$taskid
+   tmpdir=/dev/shm/${USER}-${jobid}_$taskid
  else
-   tmpdir=$pwd/tmp/$jobid/$taskid
+   tmpdir=$pwd/tmp/${jobid}_$taskid
  fi
 fi
 
@@ -100,6 +100,14 @@ fi
 
 sid=$oid #for these counts, unify sid (merge flowcells)
 
+if [[ -f "$rlog" ]]; then
+  bk=1
+  while [[ -f "$rlog.$bk" ]]; do
+    ((bk++))
+  done
+  mv $rlog "$rlog.$bk"
+fi
+
 echo "["$(date '+%m/%d %H:%M')"] task ${jobid}.${taskid} starting on $host:${PWD}" | tee -a $rlog
 
 fpri=$oid.pri.cram
@@ -117,16 +125,15 @@ if [[ $ncram -gt 1 ]]; then
 fi
 
 ## write only primary alignments
-if [[ ! -f $fpri ]]; then
-    echo "building primary alignments file: $sampri"
+if [[ ! -s $fpri.crai ]]; then
+    echo -e "building primary alignments file:\n$sampri" | tee -a $rlog
     run="${run}p"
     eval "$sampri" |& tee -a $rlog &
 fi
 
-
 ## start Salmon
 fsalm="salmon/quant.sf"
-if [[ ! -f $fsalm ]]; then
+if [[ ! -s $fsalm ]]; then
   cmd="salmon quant -p 6 -lA -1 <(gunzip -c ${fqs1[@]}) -2 <(gunzip -c ${fqs2[@]}) \
    -i $salmidx --gcBias -q --numGibbsSamples 20 --thinningFactor 40 -d -o salmon >& salmon.log"
   echo -e "running salmon:\n$cmd" | tee -a $rlog
@@ -136,6 +143,10 @@ fi
 
 if [[ $run ]]; then
  wait
+fi
+
+if [[ ! -s $fpri.crai || ! -s $fsalm ]]; then
+   err_exit "$fpri.crai or $fsalm have zero size! Check $rlog" |& tee -a $rlog
 fi
 
 ######################
@@ -167,6 +178,7 @@ fi
 ## -s $sflag omitted (default: 0=unstranded)
 fexsum=$sid.exon.fcounts.summary
 if [[ ! -f $fexsum || $(stat -c%s $fexsum) -lt 200 ]]; then
+ /bin/rm -f $fexsum
  ## --- Getting exon counts:
  cmd="$sampipe featureCounts --tmpDir $tmpdir -p -T 2 -O -f \
  -a $fcexon -o $sid.exon.fcounts"
@@ -178,6 +190,7 @@ fi
 fgsum=$sid.gene.fcounts.summary
 if [[ ! -f $fgsum || $(stat -c%s $fgsum) -lt 200 ]]; then
 ## --- Getting gene counts:
+ /bin/rm -f $fgsum
  cmd="$sampipe featureCounts --tmpDir $tmpdir -p -T 2 -F SAF -a $fcgene \
  -o $sid.gene.fcounts"
  echo -e "running featureCounts/gene:\n$cmd" | tee -a $rlog
@@ -190,6 +203,11 @@ if [[ $run ]]; then
  wait
 fi
 
+/bin/rm -rf $tmpdir
+
+if [[ ! -s $fmet || ! -s $fgsum || ! -s $fexsum ]]; then
+  err_exit "One of expected outputs is zero size. Check $rlog. " |& tee -a $rlog
+fi
 
 ## adding Mito_mapped metrics if not found
 if ! fgrep -q Mito_mapped $fmet; then
@@ -211,13 +229,13 @@ fi
 
 fstrand='strandness.tab'
 ## adding strandess info if not found
-if [[ ! -f $fstrand ]]; then
+if [[ ! -s $fstrand ]]; then
  fgrep 'Sense Rate' $fmet | \
    perl -ne '($i,$v)=m/([12]) Sense Rate\s+([\d\.]+)$/;$e[$i]=$v; 
     END {$d=$e[1]-$e[2]; print abs($d)<0.2 ? "unstranded" : $d<0 ? "reverse" : "forward";
     print "\t$e[1]\t$e[2]\n"}' > $fstrand
 fi
 
-
+echo 1 > "$oid.counts.done"
 echo -e "["$(date '+%m/%d %H:%M')"]\tcounts task done [$taskid]." | tee -a $rlog
 
