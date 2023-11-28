@@ -21,16 +21,12 @@ hsidx=${HISAT_IDX:-$refdir/assembly/index/hisat2_assembly_hg38_${gref_base}}
 hscpus=${HISAT_CPUS:-6}
 #gref_tx="$refdir/transcripts/kallisto/kallisto_index_hg38_gencode_v25"
 #salm_tidx="$refdir/transcripts/salmon/salmon_index_hg38_gencode_v32"
-echo "gref=$gref"
-echo "hsidx=$hsidx"
-echo "hscpus=$hscpus"
+
 function err_exit {
  echo -e "Error: $1"
  exit 1
 }
 
-#host=$(hostname -s)
-#jobid=$JOB_ID 
 jobid=$SLURM_JOBID
 taskid="$2" # the task# could be given directly (e.g. by parallel)
 if [[ -z $jobid ]]; then
@@ -63,7 +59,7 @@ if [[ -z "$fdb" ]]; then
   err_exit "no task file given!"
 fi
 
-for f in $gref $hsidx.1.ht2 ; do
+for f in $fdb $gref $hsidx.1.ht2 ; do
  if [[ ! -f $f ]]; then
     err_exit "cannot find $f"
  fi

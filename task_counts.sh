@@ -93,6 +93,14 @@ fi
 outpath=$oid
 cd $outpath || err_exit "failed at: cd $outpath"
 crams=( $(ls ${oid}*.cram) ) # could be one for each flowcell
+## should exclude pri.cram if it exists already
+for i in "${!crams[@]}"; do
+    if [[ "${crams[$i]}" == $oid.pri.cram ]]; then
+        unset -v 'crams[$i]'
+    fi
+done
+crams=("${crams[@]}")
+
 ncram=${#crams[@]}
 if ((ncram==0)); then
   err_exit "could not find cram files in $outpath"
@@ -126,6 +134,7 @@ fi
 
 ## write only primary alignments
 if [[ ! -s $fpri.crai ]]; then
+    /bin/rm -f ${pri}*
     echo -e "building primary alignments file:\n$sampri" | tee -a $rlog
     run="${run}p"
     eval "$sampri" |& tee -a $rlog &
@@ -206,7 +215,8 @@ fi
 /bin/rm -rf $tmpdir
 
 if [[ ! -s $fmet || ! -s $fgsum || ! -s $fexsum ]]; then
-  err_exit "One of expected outputs is zero size. Check $rlog. " |& tee -a $rlog
+  echo "One of expected outputs is zero size. Check $rlog. " |& tee -a $rlog
+  exit 1
 fi
 
 ## adding Mito_mapped metrics if not found
