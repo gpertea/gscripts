@@ -215,7 +215,7 @@ if ($cmd eq 'status') {
      $job=$pID;
      my $tpar='';
      $tpar="-j $apar" if $apar;
-     $jobcmd="$parprog --delay .01 $tpar $args[0] $args[1] \{1\} '>' $logdir/arx-${pID}_\{1\}.tlog ::: \{$ast..$aend\}";
+     $jobcmd="$parprog --delay .01 $tpar $args[0] $args[1] \{1\} '&>' $logdir/arx-${pID}_\{1\}.tlog ::: \{$ast..$aend\}";
      my $fparlog="parallel.arx$pID.log";
      if ($dryrun) {
        print STDERR "------ Dry-run ------:\n$arxcmd\n$jobcmd\n----------------\n";

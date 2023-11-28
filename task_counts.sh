@@ -134,7 +134,7 @@ fi
 
 ## write only primary alignments
 if [[ ! -s $fpri.crai ]]; then
-    /bin/rm -f ${pri}*
+    /bin/rm -f ${fpri}*
     echo -e "building primary alignments file:\n$sampri" | tee -a $rlog
     run="${run}p"
     eval "$sampri" |& tee -a $rlog &
