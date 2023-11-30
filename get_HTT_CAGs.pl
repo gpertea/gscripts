@@ -47,8 +47,8 @@ while (<S>) {
  next unless $cag;
  my $cagcount=int(length($cag)/3);
 
- my $lflanked=m/T?CCAGCAGCAGCAGCAG/;
- my $rflanked=m/CAGCAGCAGCAGCAGCAA/;
+ my $lflanked=m/T?C(CAG){15,}/;
+ my $rflanked=m/(CAG){15,}CAA/;
  my $flanked=$rflanked+$lflanked;
  if ($raln) { #replace previous alignment (better score)
    $alns[$$raln[1]]=[$ref, $q, $p, $flanked, $cagcount, $f, $as, $seq];
@@ -90,8 +90,8 @@ if ($showaln) {
     print ' ' x $ns;
     my $es=' ' x ($e-$p-$rlen+2);
     my $x=($flanked==2) ? "[$cagcount]" : " $cagcount+";
-    #print "$seq${es}$x $as\n"; -- print alignment score?
-    print "$seq${es}$x\n";
+    print "$seq${es}$x $as\n"; ## print alignment score?
+    #print "$seq${es}$x\n";
   }
   exit;
 }
