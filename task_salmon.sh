@@ -9,9 +9,10 @@
 ## sampleID folders with cram files are expected in the current directory
 
 ## run with:
-# arx sub -m18G -c8 -a1- --cfg ../counts.cfg task_salmon.sh ../merged.manifest
+# arx sub -m16G -c6 -a1- --cfg ../counts.cfg task_salmon.sh ../merged.manifest
 refbase="/dcs04/lieber/lcolladotor/dbDev_LIBD001/ref"
 salmidx=${SALMON_IDX:-$refbase/salmon_idx/gencode25.main}
+ncpus=${SALMON_CPUS:-6}
 
 function err_exit {
  echo -e "Error: $1"
@@ -100,7 +101,7 @@ echo "["$(date '+%m/%d %H:%M')"] task ${jobid}.${taskid} starting on $host:${pwd
 ## start Salmon
 fsalm="salmon/quant.sf"
 if [[ ! -s $fsalm ]]; then
-  cmd="salmon quant -p 8 -lA -1 ${fqs1[@]} -2 ${fqs2[@]} \
+  cmd="salmon quant -p $ncpus -lA -1 ${fqs1[@]} -2 ${fqs2[@]} \
    -i $salmidx --gcBias -q --numGibbsSamples 20 --thinningFactor 40 -d -o salmon >& salmon.log"
   echo -e "running salmon:\n$cmd" | tee -a $rlog
   run="${run}s"
