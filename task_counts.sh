@@ -93,6 +93,8 @@ fi
 outpath=$oid
 cd $outpath || err_exit "failed at: cd $outpath"
 crams=( $(ls ${oid}*.cram) ) # could be one for each flowcell
+bams=( $(ls ${oid}*.bam) ) # the unsorted alignments for featureCounts
+
 ## should exclude pri.cram if it exists already
 for i in "${!crams[@]}"; do
     if [[ "${crams[$i]}" == $oid.pri.cram ]]; then
@@ -118,26 +120,19 @@ fi
 
 echo "["$(date '+%m/%d %H:%M')"] task ${jobid}.${taskid} starting on $host:${PWD}" | tee -a $rlog
 
-fpri=$oid.pri.cram
+#fpri=$oid.pri.cram
 
 run=''
 
-## Round 1: get primary alignments, run Salmon to get transcript counts
+## Round 1: regtools to get junction counts, Salmon to get transcript counts
 #sampipe="samtools view --threads 2 --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u $cref ${faln[@]} |"
-sampipe="samtools view --threads 2 -T $gfa -u ${crams[0]} |"
-sampri="samtools view --threads 2 -F 260 -T $gfa -o $fpri --write-index -O cram,version=3.1 ${crams[0]}"
+crampipe="samtools view --threads 2 -T $gfa -u ${crams[0]} |" # for regtools
+bampri="samtools view -F 260 --threads 2 -u ${bams[0]} |" # for featureCounts
+#sampri="samtools view --threads 2 -F 260 -T $gfa -o $fpri --write-index -O cram,version=3.1 ${crams[0]}"
 if [[ $ncram -gt 1 ]]; then 
- sampipe="samtools merge -T $gfa --threads 2 -u -o - ${crams[@]} |"
+ crampipe="samtools merge -T $gfa --threads 2 -u -o - ${crams[@]} | samtools view -u -|"
  ## | samtools view --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u -|"
- sampri="$sampipe samtools view --threads 2 -F 260 -T $gfa -o $fpri --write-index -O cram,version=3.1 -"
-fi
-
-## write only primary alignments
-if [[ ! -s $fpri.crai ]]; then
-    /bin/rm -f ${fpri}*
-    echo -e "building primary alignments file:\n$sampri" | tee -a $rlog
-    run="${run}p"
-    eval "$sampri" |& tee -a $rlog &
+ bampri="samtools merge --threads 2 -u -o - ${bams[@]} | samtools view -F 260 -u -|"
 fi
 
 ## start Salmon
@@ -150,37 +145,34 @@ if [[ ! -s $fsalm ]]; then
   eval "$cmd" |& tee -a $rlog &
 fi
 
+
+fjtab=$oid.regtools.ctab
+## generate regtools counts
+if [[ ! -f $fjtab || $(stat -c%s $fjtab) -lt 1200 ]]; then
+  cmd="$crampipe regtools junctions extract -s 0 -c $fjtab -o $oid.regtools.bed -"
+  echo -e "running regtools extract:\n$cmd" | tee -a $rlog
+  run="${run}j"
+  eval "$cmd" |& tee -a $rlog &  
+fi
+
+
+
 if [[ $run ]]; then
  wait
 fi
 
-if [[ ! -s $fpri.crai || ! -s $fsalm ]]; then
-   err_exit "$fpri.crai or $fsalm have zero size! Check $rlog" |& tee -a $rlog
-fi
 
 ######################
-## Round 2:  rnaseqc, regtools, featureCounts
+## Round 2:  rnaseqc, featureCounts
 run=''
 
 rqc="rqc"; # rnaseqc output subdir
 fmet="$rqc/$oid.metrics.tsv"
 if [[ ! -f $fmet || $(stat -c%s $fmet) -lt 200 ]]; then
-  cmd="$sampipe rnaseqc $refqc - rqc --mapping-quality=60 --coverage -s $oid"
+  cmd="$crampipe rnaseqc $refqc - rqc --mapping-quality=60 --coverage -s $oid"
   echo -e "running rnaseqc:\n$cmd" | tee -a $rlog
   eval "$cmd" |& tee -a $rlog &
   run="${run}q"
-fi
-
-## let regtools and featureCounts run on the primary alignments only
-sampipe="samtools view --threads 2 -T $gfa -u $fpri |"
-
-fjtab=$oid.regtools.ctab
-## generate regtools counts
-if [[ ! -f $fjtab || $(stat -c%s $fjtab) -lt 1200 ]]; then
-  cmd="$sampipe regtools junctions extract -s 0 -c $fjtab -o $oid.regtools.bed -"
-  echo -e "running regtools extract:\n$cmd" | tee -a $rlog
-  run="${run}j"
-  eval "$cmd" |& tee -a $rlog &  
 fi
 
 ## run featureCounts for exon and gene counts, on primary alignments only
@@ -189,7 +181,7 @@ fexsum=$sid.exon.fcounts.summary
 if [[ ! -f $fexsum || $(stat -c%s $fexsum) -lt 200 ]]; then
  /bin/rm -f $fexsum
  ## --- Getting exon counts:
- cmd="$sampipe featureCounts --tmpDir $tmpdir -p -T 2 -O -f \
+ cmd="$bampri featureCounts --tmpDir $tmpdir -p -T 2 -O -f \
  -a $fcexon -o $sid.exon.fcounts"
  echo -e " running featureCounts/exon:\n$cmd" | tee -a $rlog
  run="${run}e"
@@ -200,7 +192,7 @@ fgsum=$sid.gene.fcounts.summary
 if [[ ! -f $fgsum || $(stat -c%s $fgsum) -lt 200 ]]; then
 ## --- Getting gene counts:
  /bin/rm -f $fgsum
- cmd="$sampipe featureCounts --tmpDir $tmpdir -p -T 2 -F SAF -a $fcgene \
+ cmd="$bampri featureCounts --tmpDir $tmpdir -p -T 2 -F SAF -a $fcgene \
  -o $sid.gene.fcounts"
  echo -e "running featureCounts/gene:\n$cmd" | tee -a $rlog
  run="${run}g"
