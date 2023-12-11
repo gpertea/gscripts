@@ -4,8 +4,7 @@
 #### change refdir below accordingly
 
 ## run with arx:
-#  arx sub -a 1- -J bsp45 -m32G -c6 -M geo.pertea@libd.org task_fq2cram.sh samples.manifest
-
+#    arx sub -a 1- -j 20 -m32G -c6 --cfg fq2cram.cfg task_fq2cram.sh samples.manifest
 ## add -P option to run with parallel
 
 ## or with sbatch: 
@@ -14,8 +13,8 @@
 
 kvalue=${HISAT_K:-40} # -k option of HISAT2
 ## TODO: these should be pulled from a config file passed to this script
-refdir=/dcs04/lieber/lcolladotor/annotationFiles_LIBD001/SPEAQeasy/Annotation/reference/hg38
-gref_base=gencode_v25_main
+refdir=${GREF_DIR:-/dcs04/lieber/lcolladotor/annotationFiles_LIBD001/SPEAQeasy/Annotation/reference/hg38}
+gref_base=${GREF_BASE:-gencode_v25_main}
 gref=${GENOME_FA:-$refdir/assembly/fa/assembly_hg38_${gref_base}.fa}
 hsidx=${HISAT_IDX:-$refdir/assembly/index/hisat2_assembly_hg38_${gref_base}}
 hscpus=${HISAT_CPUS:-6}
@@ -85,39 +84,46 @@ mkdir -p $tmpdir || err_exit "failed to create $tmpdir"
 line=$(linix $fdb $taskid | cut -f1,3,5)
 #expected format:     read_1.fq read_2.fq sampleID
 t=( $line )
-fn1=${t[0]} # path to first fastq.gz file
-fn2=${t[1]}  # sampleID_1.fastq.gz | RNum_*_R1_*.fastq.gz
-oid=${t[2]}  # output directory = base sampleID
-if [[ -z $oid ]]; then
+fq1=${t[0]} # path to first fastq.gz file
+fq2=${t[1]}  # sampleID_1.fastq.gz | RNum_*_R1_*.fastq.gz
+sid=${t[2]}  # output directory = base sampleID
+if [[ -z $sid ]]; then
  err_exit "could not parse base sampleID!"
 fi
-#oid=$sid ## but we keep flowcells in separate output files for the same RNum 
-if [[ ! -f "$fn1" || ! -f "$fn2" ]]; then
+
+if [[ ! -f "$fq1" || ! -f "$fq2" ]]; then
    err_exit "Files cannot be found!"
 fi
 
-sid=$oid # for now
-fn=${fn1##*/} # remove path
+fn=${fq1##*/} # remove path, keep only filename
 ## if it's RNum_flowcellXX_*_R1_*.fastq.gz
-if [[ $fn == *_*_*.f*q.gz ]]; then
-  a=${fn%%_*}       #remove any _ tokens after first
-  rest=${fn#*_}     #remove first _ token (rnum)
-  b=${rest%%_*} 
-  sid=${a}_$b
+## R4225_D1AAPACXX_ATTCCT_L005_R1_001.fastq.gz
+
+if [[ $fn == *.f*q.[gb]z* ]]; then
+  fbase=${fn/.f*q.[gb]z*/}
+else
+  fbase=${fn/.f*q/}
 fi
+fbase=${fbase/_R1_/_}
+fbase=${fbase/_1[._]/_} # just in case it was _1.token.fastq.gz
+[[ $fbase == *_1 ]] && fbase="${fbase%_*}"
 
-ofn=$sid # output file base name (may include flowcell)
-## NOTE: hisat2 bam, cram, log outputs will NOT be merged at this stage
+ofn=$fbase # keep flowcell and lane etc. if they were there
+
+## output directory (sid) is the merged/common prefix as given in the manifest
+## but ofn / output file base names may have a flowcell and lane suffix etc.
+## NOTE: FASTQ files are not merged across flowcells and lanes at this stage, they are trimmed and QC-ed separately
 ## if there are multiple flowcells/lanes, they will be aligned independently
-## sid and ofn may include a flowcell suffix !
+## so $ofn may include a flowcell and lane suffixes !
 
-outpath=$oid
+outpath=$sid
 mkdir -p "$outpath" || err_exit "failed at mkdir -p $outpath"
 
 cd $outpath || err_exit "failed at: cd $outpath"
 
 cram=$ofn.cram
-bam=$ofn.bam
+bam=$ofn.bam ## only primary alignments, unsorted (for featureCounts)
+ucram=$ofn.unsorted.cram
 if [[ -f "$rlog" ]]; then
   bk=1
   while [[ -f "$rlog.$bk" ]]; do
@@ -137,16 +143,18 @@ fi
 echo "processing: $sid $ofn" | tee -a $rlog
 
 if [[ ! -f $bam.done ]]; then
-  params="--mm -x $hsidx -1 $fn1 -2 $fn2 -k $kvalue 2>${ofn}.align_summary.txt"
+  params="--mm -x $hsidx -1 $fq1 -2 $fq2 -k $kvalue 2>${ofn}.align_summary.txt"
   ## - full search, but if you want to use strandness:
   #if [[ $dataset != bsp1* ]]; then
   #  params="--rna-strandness RF $params"
   #  #ribo-zero samples are always reverse-forward
   #fi
   #echo "$line" | tee -a $rlog
-  echo "["$(date '+%m/%d %H:%M')"] starting hisat2 into $bam:" | tee -a $rlog
+  echo "["$(date '+%m/%d %H:%M')"] starting hisat2 into $bam, $ucram:" | tee -a $rlog
+  
   cmd="hisat2 -p $hscpus --phred33 --min-intronlen 20 $params |\
-   samtools view -b -o $bam -"
+   samtools view -u - | tee >(samtools view -F 260 -b -o $bam -) |\
+   samtools view -O cram,version=3.1 --threads 2 --reference=$gref -o $ucram -"
   echo -e $cmd | tee -a $rlog
   eval "$cmd" |& tee -a $rlog
   if [[ $? -ne 0  || $(stat -c %s $bam 2>/dev/null || echo 0) -lt 100000 ]]; then
@@ -158,9 +166,9 @@ fi
 
 ## ---- sort and convert to CRAM
 echo '['$(date '+%m/%d %H:%M')"] start sorting+conversion to CRAM" | tee -a $rlog
-tmpsrt=$tmpdir/$ofn.bam_srt_tmp
+tmpsrt=$tmpdir/$ofn.cram_srt_tmp
 /bin/rm -f ${tmpsrt}*
-cmd="samtools sort -O cram,version=3.1 --reference=$gref -T $tmpsrt -o $cram --write-index -m 7G --no-PG -@ 4 $bam"
+cmd="samtools sort -O cram,version=3.1 --reference=$gref -T $tmpsrt -o $cram --write-index -m 7G --no-PG -@ 4 $ucram"
 echo -e "$cmd" | tee -a $rlog
 
 eval "$cmd" |& tee -a $rlog
@@ -171,6 +179,9 @@ if [[ $? -ne 0 || $(stat -c %s $cram 2>/dev/null || echo 0) -lt 100000 ]]; then
    exit 1
 fi
 /bin/rm -rf $tmpdir
+# should remove the unsorted. cram file as well
+# let's just rename it for now to get it out of the way
+mv $ucram $ofn.cram.unsorted
 echo 1 > $cram.done
 
 echo '['$(date '+%m/%d %H:%M')"] task #${taskid} done." | tee -a $rlog

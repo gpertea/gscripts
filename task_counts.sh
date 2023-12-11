@@ -6,18 +6,27 @@
 #### using featureCounts (gene, exon), regtools (junctions), salmon (tx)
 ### requires: featureCounts v2.0.3, regtools v0.5.33, salmon
 
-## requires a merged manifest file (fq_merge_manifest.pl)
-## sampleID folders with cram files are expected in the current directory
+## requires a merged manifest file (use fq_merge_manifest.pl on trimmed_samples.manifest)
+## sampleID folders with bam and cram files are expected in the current directory
 
 ## run with:
-# arx sub -m18G -c8 -a1- --cfg ../counts.cfg task_counts.sh ../merged.manifest
-refbase="/dcs04/lieber/lcolladotor/dbDev_LIBD001/ref"
-gfa=${GENOME_FA:-$refbase/fa/assembly_hg38_gencode_v25_main.fa}
-gann=${GENOME_ANN:-$refbase/gtf/gencode25.main.gtf}
-fcexon=${FCOUNTS_EXON:-$refbase/gtf/gencode25.main.exons.gtf}
-fcgene=${FCOUNTS_GENE:-$refbase/gtf/gencode25.main.flattened.saf}
-refqc=${RQC_REF:-$refbase/gtf/gencode25.main.collapsed.gtf}
-salmidx=${SALMON_IDX:-$refbase/salmon_idx/gencode25.main}
+# arx sub -m18G -c8 -a1- -j 6 --cfg ../counts.cfg task_counts.sh ../merged.manifest
+
+## if multiple CRAM/BAM files are present for a sample, they will be merged into
+## a single CRAM, with RG groups assigned accordingly
+
+##TODO: see if tee can be used use names pipes (fifo) so in round 1, the merged
+## SAM stream is also written to a named pipe (to be compressed), just as it is 
+## fed into regtools
+
+refdir=${GREF_DIR:-/dcs04/lieber/lcolladotor/dbDev_LIBD001/ref}
+gref=${GENOME_FA:-$refdir/fa/assembly_hg38_gencode_v25_main.fa}
+gann=${GENOME_ANN:-$refdir/gtf/gencode25.main.gtf}
+fcexon=${FCOUNTS_EXON:-$refdir/gtf/gencode25.main.exons.gtf}
+fcgene=${FCOUNTS_GENE:-$refdir/gtf/gencode25.main.flattened.saf}
+refqc=${RQC_REF:-$refdir/gtf/gencode25.main.collapsed.gtf}
+salmidx=${SALMON_IDX:-$refdir/salmon_idx/gencode25.main}
+ncpus=${SALMON_CPUS:-5}
 
 function err_exit {
  echo -e "Error: $1"
@@ -39,9 +48,6 @@ fi
 rlog=counts_t${taskid}.tlog
 
 host=${HOSTNAME%%.*}
-#if [[ -n $SLURM_ARRAY_TASK_ID ]]; then
-# echo ">task $SLURM_ARRAY_TASK_ID running on $host"
-#fi
 echo '['$(date '+%m/%d %H:%M')"] task ${jobid}.${taskid} on $host:${PWD}"
 
 # requires a task file as the 1st arg
@@ -50,7 +56,7 @@ if [[ -z "$fdb" ]]; then
   err_exit "no task file given!"
 fi
 
-for f in $gfa $gann $fcexon $fcgene $refqc $salmidx/pos.bin ; do
+for f in $gref $gann $fcexon $fcgene $refqc $salmidx/pos.bin ; do
  if [[ ! -f $f ]]; then
     err_exit "cannot find $f"
  fi
@@ -66,6 +72,8 @@ if [[ $host == transfer-* || $host == compute-* ]]; then
 else
  if [[ $host == srv05 ]]; then
    tmpdir=/dev/shm/${USER}-${jobid}_$taskid
+ elif [[ $host == srv16 ]]; then
+   tmpdir=/ssdtemp/scratch/${USER}-${jobid}_$taskid
  else
    tmpdir=$pwd/tmp/${jobid}_$taskid
  fi
@@ -78,8 +86,12 @@ line=$(linix $fdb $taskid | cut -f1,3,5)
 t=( $line )
 fn1=${t[0]} # path(s) to read_1 fastq.gz files
 fn2=${t[1]}  # sampleID_1.fastq.gz | RNum_*_R1_*.fastq.gz
-oid=${t[2]}  # output directory = base sampleID
-if [[ -z $oid ]]; then
+sid=${t[2]}  # output directory = base sampleID that should merge all the parts
+
+## use a lock symlink?
+#flock=".lock-task-counts"
+
+if [[ -z $sid ]]; then
  err_exit "could not parse base sampleID!"
 fi
 
@@ -90,25 +102,23 @@ if [[ ! -f "${fqs1[0]}" ]]; then
    err_exit "FASTQ file ${fqs1[0]} cannot be found!"
 fi
 
-outpath=$oid
+outpath=$sid
 cd $outpath || err_exit "failed at: cd $outpath"
-crams=( $(ls ${oid}*.cram) ) # could be one for each flowcell
-bams=( $(ls ${oid}*.bam) ) # the unsorted alignments for featureCounts
+crams=( $(ls ${sid}*.cram) ) # could be one for each flowcell
+bams=( $(ls ${sid}*.bam) ) # the unsorted (primary) alignments for featureCounts
 
 ## should exclude pri.cram if it exists already
-for i in "${!crams[@]}"; do
-    if [[ "${crams[$i]}" == $oid.pri.cram ]]; then
-        unset -v 'crams[$i]'
-    fi
-done
-crams=("${crams[@]}")
+#for i in "${!crams[@]}"; do
+#    if [[ "${crams[$i]}" == $sid.pri.cram ]]; then
+#        unset -v 'crams[$i]'
+#    fi
+#done
+#crams=("${crams[@]}")
 
 ncram=${#crams[@]}
 if ((ncram==0)); then
   err_exit "could not find cram files in $outpath"
 fi
-
-sid=$oid #for these counts, unify sid (merge flowcells)
 
 if [[ -f "$rlog" ]]; then
   bk=1
@@ -120,45 +130,73 @@ fi
 
 echo "["$(date '+%m/%d %H:%M')"] task ${jobid}.${taskid} starting on $host:${PWD}" | tee -a $rlog
 
-#fpri=$oid.pri.cram
+mcram=$sid.cram
 
 run=''
 
-## Round 1: regtools to get junction counts, Salmon to get transcript counts
+## Round 1: regtools to write the merged CRAM and get junction counts, Salmon to get transcript counts
 #sampipe="samtools view --threads 2 --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u $cref ${faln[@]} |"
-crampipe="samtools view --threads 2 -T $gfa -u ${crams[0]} |" # for regtools
-bampri="samtools view -F 260 --threads 2 -u ${bams[0]} |" # for featureCounts
-#sampri="samtools view --threads 2 -F 260 -T $gfa -o $fpri --write-index -O cram,version=3.1 ${crams[0]}"
-if [[ $ncram -gt 1 ]]; then 
- crampipe="samtools merge -T $gfa --threads 2 -u -o - ${crams[@]} | samtools view -u -|"
- ## | samtools view --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u -|"
- bampri="samtools merge --threads 2 -u -o - ${bams[@]} | samtools view -F 260 -u -|"
+#sampri="samtools view --threads 2 -F 260 -T $gref -o $fpri --write-index -O cram,version=3.1 ${crams[0]}"
+if ((ncram==1)); then
+  teemerge=""
+  fn=${crams[0]/.cram/} ## remove .cram
+  if [[ "$fn" != "$sid" ]]; then
+     mv ${crams[0]} "$sid.cram"
+     mv ${crams[0]}.crai "$sid.cram.crai"
+     crams[0]="$sid.cram"
+  fi
+  crampipe="samtools view --threads 2 -T $gref -u ${crams[0]} |" # for regtools, which does not take newer CRAM files
+  bampri="samtools view -F 260 --threads 2 -u ${bams[0]} |" # for featureCounts
+else #if [[ $ncram -gt 1 ]]; then 
+  rgf=rg.txt
+  /bin/rm $rgf
+  rcrams=()
+  for fc in ${crams[@]}; do
+    rg=${fc/.cram/} # remove cram extension - this will be the RG id
+    rg=${rg/_trimmed/}
+    rg=${rg/${sid}_/}
+    mv $fc ${rg}.cram
+    mv $fc.crai ${rg}.cram.crai
+    rcrams+=("${rg}.cram")
+    echo -e "@RG\tID:$rg" >> $rgf
+  done
+  crams=("${rcrams[@]}")
+  crampipe="samtools merge -rh $rgf --reference=$gref --threads 2 -u - ${crams[@]} | "
+  teemerge="tee >(samtools view -O cram,version=3.1 --threads 2 --write-index --reference=$gref -o $mcram -) |"
+  ## | samtools view --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u -|"
+  bampri="samtools merge --threads 2 -u - ${bams[@]} | samtools view -F 260 -u -|"
 fi
 
 ## start Salmon
 fsalm="salmon/quant.sf"
 if [[ ! -s $fsalm ]]; then
-  cmd="salmon quant -p 6 -lA -1 <(gunzip -c ${fqs1[@]}) -2 <(gunzip -c ${fqs2[@]}) \
+  cmd="salmon quant -p $ncpus -lA -1 <(gunzip -c ${fqs1[@]}) -2 <(gunzip -c ${fqs2[@]}) \
    -i $salmidx --gcBias -q --numGibbsSamples 20 --thinningFactor 40 -d -o salmon >& salmon.log"
   echo -e "running salmon:\n$cmd" | tee -a $rlog
   run="${run}s"
   eval "$cmd" |& tee -a $rlog &
 fi
 
+## start regtools
 
-fjtab=$oid.regtools.ctab
+fjtab=$sid.regtools.ctab
 ## generate regtools counts
+## this also writes the merged $sid.cram file if that's not the input
 if [[ ! -f $fjtab || $(stat -c%s $fjtab) -lt 1200 ]]; then
-  cmd="$crampipe regtools junctions extract -s 0 -c $fjtab -o $oid.regtools.bed -"
+  cmd="$crampipe $teemerge regtools junctions extract -s 0 -c $fjtab -o $sid.regtools.bed -"
   echo -e "running regtools extract:\n$cmd" | tee -a $rlog
   run="${run}j"
   eval "$cmd" |& tee -a $rlog &  
 fi
 
-
-
-if [[ $run ]]; then
+if [[ "$run" ]]; then
  wait
+fi
+
+if [[ $(stat -c %s $mcram 2>/dev/null || echo 0) -lt 100000 || $(stat -c %s $mcram.crai 2>/dev/null || echo 0) -lt 1200 ]]; then
+   echo '['$(date '+%m/%d %H:%M')"] merged cram file too small" | tee -a $rlog  
+   /bin/rm -rf $tmpdir
+   exit 1
 fi
 
 
@@ -167,9 +205,12 @@ fi
 run=''
 
 rqc="rqc"; # rnaseqc output subdir
-fmet="$rqc/$oid.metrics.tsv"
+## crampipe is using the merged cram file
+crampipe="samtools view --threads 2 -T $gref -u $mcram |"
+
+fmet="$rqc/$sid.metrics.tsv"
 if [[ ! -f $fmet || $(stat -c%s $fmet) -lt 200 ]]; then
-  cmd="$crampipe rnaseqc $refqc - rqc --mapping-quality=60 --coverage -s $oid"
+  cmd="$crampipe rnaseqc $refqc - rqc --mapping-quality=60 --coverage -s $sid"
   echo -e "running rnaseqc:\n$cmd" | tee -a $rlog
   eval "$cmd" |& tee -a $rlog &
   run="${run}q"
@@ -215,15 +256,16 @@ fi
 if ! fgrep -q Mito_mapped $fmet; then
   echo "adding Mito metrics" | tee -a $rlog
   mtcount=0
-  samtools idxstats $fpri > $oid.pri.chrstats
-  mtcount=$(grep '^chrM\b' $oid.pri.chrstats | cut -f3)
+  mtcount=$(samtools view -F 260 $mcram chrM | wc -l)
+  #samtools idxstats $fpri > $sid.pri.chrstats
+  #mtcount=$(grep '^chrM\b' $sid.pri.chrstats | cut -f3)
   echo -e "Mito_mapped\t$mtcount" >> $fmet
 fi
 
 ## regtools annotate - not needed
 #fjann=$sid.regtools.ann
 #if [[ ! -f $fjann ]]; then
-#  cmd="regtools junctions annotate -o $fjann -S $oid.regtools.bed $gfa $gann"
+#  cmd="regtools junctions annotate -o $fjann -S $sid.regtools.bed $gref $gann"
 #  echo -e "running regtool jx annotation:\n$cmd" | tee -a $rlog
 #  run="${run}J"
 #  eval "$cmd" |& tee -a $rlog &
@@ -238,6 +280,6 @@ if [[ ! -s $fstrand ]]; then
     print "\t$e[1]\t$e[2]\n"}' > $fstrand
 fi
 
-echo 1 > "$oid.counts.done"
+echo 1 > "$sid.counts.done"
 echo -e "["$(date '+%m/%d %H:%M')"]\tcounts task done [$taskid]." | tee -a $rlog
 

@@ -13,7 +13,7 @@
 ## run with:
 # arx sub -m8G -c6 -a1- task_fqtrim.sh ../samples.manifest
 
-ncpus=8
+ncpus=6
 
 function err_exit {
  echo -e "Error: $1"
