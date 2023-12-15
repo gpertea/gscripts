@@ -27,7 +27,7 @@ fcgene=${FCOUNTS_GENE:-$refdir/gtf/gencode25.main.flattened.saf}
 refqc=${RQC_REF:-$refdir/gtf/gencode25.main.collapsed.gtf}
 salmidx=${SALMON_IDX:-$refdir/salmon_idx/gencode25.main}
 ncpus=${SALMON_CPUS:-5}
-
+## note 3 more cpus will be used 
 function err_exit {
  echo -e "Error: $1"
  exit 1
@@ -134,7 +134,11 @@ mcram=$sid.cram
 
 run=''
 
-## Round 1: regtools to write the merged CRAM and get junction counts, Salmon to get transcript counts
+
+## salmon can be quite quick, so we start regtools and rnaseqc first in the background
+## then we start salmon followed by featureCounts in the main script
+
+## Round 1: rnaseqc running on the CRAM alignments; regtools will also write the merged CRAM and get junction counts, Salmon to get transcript counts
 #sampipe="samtools view --threads 2 --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u $cref ${faln[@]} |"
 #sampri="samtools view --threads 2 -F 260 -T $gref -o $fpri --write-index -O cram,version=3.1 ${crams[0]}"
 if ((ncram==1)); then
@@ -145,7 +149,7 @@ if ((ncram==1)); then
      mv ${crams[0]}.crai "$sid.cram.crai"
      crams[0]="$sid.cram"
   fi
-  crampipe="samtools view --threads 2 -T $gref -u ${crams[0]} |" # for regtools, which does not take newer CRAM files
+  crampipe="samtools view -T $gref --threads 2 -u ${crams[0]} |" # for regtools, which does not take newer CRAM files
   bampri="samtools view -F 260 --threads 2 -u ${bams[0]} |" # for featureCounts
 else #if [[ $ncram -gt 1 ]]; then 
   rgf=rg.txt
@@ -161,24 +165,23 @@ else #if [[ $ncram -gt 1 ]]; then
     echo -e "@RG\tID:$rg" >> $rgf
   done
   crams=("${rcrams[@]}")
-  crampipe="samtools merge -rh $rgf --reference=$gref --threads 2 -u - ${crams[@]} | "
+  crampipe="samtools merge -rh $rgf --threads 2 --reference=$gref -u - ${crams[@]} | "
   teemerge="tee >(samtools view -O cram,version=3.1 --threads 2 --write-index --reference=$gref -o $mcram -) |"
   ## | samtools view --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u -|"
   bampri="samtools merge --threads 2 -u - ${bams[@]} | samtools view -F 260 -u -|"
 fi
 
-## start Salmon
-fsalm="salmon/quant.sf"
-if [[ ! -s $fsalm ]]; then
-  cmd="salmon quant -p $ncpus -lA -1 <(gunzip -c ${fqs1[@]}) -2 <(gunzip -c ${fqs2[@]}) \
-   -i $salmidx --gcBias -q --numGibbsSamples 20 --thinningFactor 40 -d -o salmon >& salmon.log"
-  echo -e "running salmon:\n$cmd" | tee -a $rlog
-  run="${run}s"
+rqc="rqc"; # rnaseqc output subdir
+#crampipe="samtools view --threads 2 -T $gref -u $mcram |"
+fmet="$rqc/$sid.metrics.tsv"
+if [[ ! -f $fmet || $(stat -c%s $fmet) -lt 200 ]]; then
+  cmd="$crampipe rnaseqc $refqc - rqc --mapping-quality=60 --coverage -s $sid"
+  echo -e "running rnaseqc:\n$cmd" | tee -a $rlog
   eval "$cmd" |& tee -a $rlog &
+  run="${run}q"
 fi
 
 ## start regtools
-
 fjtab=$sid.regtools.ctab
 ## generate regtools counts
 ## this also writes the merged $sid.cram file if that's not the input
@@ -189,40 +192,25 @@ if [[ ! -f $fjtab || $(stat -c%s $fjtab) -lt 1200 ]]; then
   eval "$cmd" |& tee -a $rlog &  
 fi
 
-if [[ "$run" ]]; then
- wait
+
+## run Salmon
+fsalm="salmon/quant.sf"
+if [[ ! -s $fsalm ]]; then
+  cmd="salmon quant -p $ncpus -lA -1 <(gunzip -c ${fqs1[@]}) -2 <(gunzip -c ${fqs2[@]}) \
+   -i $salmidx --gcBias -q --numGibbsSamples 20 --thinningFactor 40 -d -o salmon >& salmon.log"
+  echo -e "running salmon:\n$cmd" | tee -a $rlog
+  #run="${run}s"
+  eval "$cmd" |& tee -a $rlog 
 fi
 
-if [[ $(stat -c %s $mcram 2>/dev/null || echo 0) -lt 100000 || $(stat -c %s $mcram.crai 2>/dev/null || echo 0) -lt 1200 ]]; then
-   echo '['$(date '+%m/%d %H:%M')"] merged cram file too small" | tee -a $rlog  
-   /bin/rm -rf $tmpdir
-   exit 1
-fi
-
-
-######################
-## Round 2:  rnaseqc, featureCounts
 run=''
-
-rqc="rqc"; # rnaseqc output subdir
-## crampipe is using the merged cram file
-crampipe="samtools view --threads 2 -T $gref -u $mcram |"
-
-fmet="$rqc/$sid.metrics.tsv"
-if [[ ! -f $fmet || $(stat -c%s $fmet) -lt 200 ]]; then
-  cmd="$crampipe rnaseqc $refqc - rqc --mapping-quality=60 --coverage -s $sid"
-  echo -e "running rnaseqc:\n$cmd" | tee -a $rlog
-  eval "$cmd" |& tee -a $rlog &
-  run="${run}q"
-fi
-
 ## run featureCounts for exon and gene counts, on primary alignments only
 ## -s $sflag omitted (default: 0=unstranded)
 fexsum=$sid.exon.fcounts.summary
 if [[ ! -f $fexsum || $(stat -c%s $fexsum) -lt 200 ]]; then
  /bin/rm -f $fexsum
  ## --- Getting exon counts:
- cmd="$bampri featureCounts --tmpDir $tmpdir -p -T 2 -O -f \
+ cmd="$bampri featureCounts --tmpDir $tmpdir -p -T 4 -O -f \
  -a $fcexon -o $sid.exon.fcounts"
  echo -e " running featureCounts/exon:\n$cmd" | tee -a $rlog
  run="${run}e"
@@ -233,21 +221,32 @@ fgsum=$sid.gene.fcounts.summary
 if [[ ! -f $fgsum || $(stat -c%s $fgsum) -lt 200 ]]; then
 ## --- Getting gene counts:
  /bin/rm -f $fgsum
- cmd="$bampri featureCounts --tmpDir $tmpdir -p -T 2 -F SAF -a $fcgene \
+ cmd="$bampri featureCounts --tmpDir $tmpdir -p -T 4 -F SAF -a $fcgene \
  -o $sid.gene.fcounts"
  echo -e "running featureCounts/gene:\n$cmd" | tee -a $rlog
  run="${run}g"
  eval "$cmd" |& tee -a $rlog &
 fi
 
-## wait for background tasks to finish
-if [[ $run ]]; then
+## wait for all background tasks to finish
+#if [[ $run ]]; then
  wait
-fi
-
+#fi
 /bin/rm -rf $tmpdir
 
-if [[ ! -s $fmet || ! -s $fgsum || ! -s $fexsum ]]; then
+## after rnaseqc and regtools finished
+if [[ ! -s $fmet ]]; then
+  echo "rnaseq output $fmet has zero size!" | tee -a $rlog
+  exit 1
+fi
+
+if [[ $(stat -c %s $mcram 2>/dev/null || echo 0) -lt 100000 || $(stat -c %s $mcram.crai 2>/dev/null || echo 0) -lt 1200 ]]; then
+   echo '['$(date '+%m/%d %H:%M')"] merged cram file too small" | tee -a $rlog  
+   exit 1
+fi
+
+
+if [[ ! -s $fgsum || ! -s $fexsum ]]; then
   echo "One of expected outputs is zero size. Check $rlog. " |& tee -a $rlog
   exit 1
 fi
@@ -257,19 +256,14 @@ if ! fgrep -q Mito_mapped $fmet; then
   echo "adding Mito metrics" | tee -a $rlog
   mtcount=0
   mtcount=$(samtools view -F 260 $mcram chrM | wc -l)
+  if [[ -z "$mtcount" ]]; then 
+     echo "Mito counts could not be retrieved. Check $rlog. " |& tee -a $rlog
+  exit 1
+  fi
   #samtools idxstats $fpri > $sid.pri.chrstats
   #mtcount=$(grep '^chrM\b' $sid.pri.chrstats | cut -f3)
   echo -e "Mito_mapped\t$mtcount" >> $fmet
 fi
-
-## regtools annotate - not needed
-#fjann=$sid.regtools.ann
-#if [[ ! -f $fjann ]]; then
-#  cmd="regtools junctions annotate -o $fjann -S $sid.regtools.bed $gref $gann"
-#  echo -e "running regtool jx annotation:\n$cmd" | tee -a $rlog
-#  run="${run}J"
-#  eval "$cmd" |& tee -a $rlog &
-#fi
 
 fstrand='strandness.tab'
 ## adding strandess info if not found
