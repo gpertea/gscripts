@@ -74,6 +74,8 @@ if [[ $host == transfer-* || $host == compute-* ]]; then
 else
  if [[ $host == srv05 ]]; then
    tmpdir=/dev/shm/${USER}-${jobid}_$taskid
+ elif [[ $host == srv16 ]]; then
+   tmpdir=/ssdtemp/scratch/${USER}-${jobid}_$taskid
  else
    tmpdir=$pwd/tmp/${jobid}_$taskid
  fi
