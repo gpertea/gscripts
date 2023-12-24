@@ -21,6 +21,7 @@
 
 refdir=${GREF_DIR:-/dcs04/lieber/lcolladotor/dbDev_LIBD001/ref}
 gref=${GENOME_FA:-$refdir/fa/assembly_hg38_gencode_v25_main.fa}
+snvs="$refdir/Genotyping/common_missense_SNVs_hg38.bed"
 gann=${GENOME_ANN:-$refdir/gtf/gencode25.main.gtf}
 fcexon=${FCOUNTS_EXON:-$refdir/gtf/gencode25.main.exons.gtf}
 fcgene=${FCOUNTS_GENE:-$refdir/gtf/gencode25.main.flattened.saf}
@@ -56,7 +57,7 @@ if [[ -z "$fdb" ]]; then
   err_exit "no task file given!"
 fi
 
-for f in $gref $gann $fcexon $fcgene $refqc $salmidx/pos.bin ; do
+for f in $gref $snvs $gann $fcexon $fcgene $refqc $salmidx/pos.bin ; do
  if [[ ! -f $f ]]; then
     err_exit "cannot find $f"
  fi
@@ -155,7 +156,7 @@ else #if [[ $ncram -gt 1 ]]; then
   rgf=rg.txt
   /bin/rm $rgf
   rcrams=()
-  for fc in ${crams[@]}; do
+  for fc in "${crams[@]}"; do
     rg=${fc/.cram/} # remove cram extension - this will be the RG id
     rg=${rg/_trimmed/}
     rg=${rg/${sid}_/}
@@ -175,42 +176,43 @@ rqc="rqc"; # rnaseqc output subdir
 #crampipe="samtools view --threads 2 -T $gref -u $mcram |"
 fmet="$rqc/$sid.metrics.tsv"
 if [[ ! -f $fmet || $(stat -c%s $fmet) -lt 200 ]]; then
+## -->>> start rnaseqc &&&
   cmd="$crampipe rnaseqc $refqc - rqc --mapping-quality=60 --coverage -s $sid"
   echo -e "running rnaseqc:\n$cmd" | tee -a $rlog
   eval "$cmd" |& tee -a $rlog &
   run="${run}q"
 fi
 
-## start regtools
+run=''
+
 fjtab=$sid.regtools.ctab
-## generate regtools counts
-## this also writes the merged $sid.cram file if that's not the input
 if [[ ! -f $fjtab || $(stat -c%s $fjtab) -lt 1200 ]]; then
+## -->>> start regtools &&&
+## this also writes the merged $sid.cram file if that's not the input
   cmd="$crampipe $teemerge regtools junctions extract -s 0 -c $fjtab -o $sid.regtools.bed -"
   echo -e "running regtools extract:\n$cmd" | tee -a $rlog
   run="${run}j"
   eval "$cmd" |& tee -a $rlog &  
 fi
 
-
-## run Salmon
 fsalm="salmon/quant.sf"
 if [[ ! -s $fsalm ]]; then
+## -->>> run Salmon (and wait for it to finish)
   cmd="salmon quant -p $ncpus -lA -1 <(gunzip -c ${fqs1[@]}) -2 <(gunzip -c ${fqs2[@]}) \
    -i $salmidx --gcBias -q --numGibbsSamples 20 --thinningFactor 40 -d -o salmon >& salmon.log"
   echo -e "running salmon:\n$cmd" | tee -a $rlog
-  #run="${run}s"
+  #run="${run}s" -- no need, wait for salmon to finish
   eval "$cmd" |& tee -a $rlog 
 fi
 
-run=''
-## run featureCounts for exon and gene counts, on primary alignments only
+## - salmon finished, but regtools and rnaseqc might still be running
+
 ## -s $sflag omitted (default: 0=unstranded)
 fexsum=$sid.exon.fcounts.summary
 if [[ ! -f $fexsum || $(stat -c%s $fexsum) -lt 200 ]]; then
- /bin/rm -f $fexsum
- ## --- Getting exon counts:
- cmd="$bampri featureCounts --tmpDir $tmpdir -p -T 4 -O -f \
+ ## -->>> start featureCounts exon level &&& 
+ /bin/rm -f $fexsum 
+ cmd="$bampri featureCounts --tmpDir $tmpdir -p -T 3 -O -f \
  -a $fcexon -o $sid.exon.fcounts"
  echo -e " running featureCounts/exon:\n$cmd" | tee -a $rlog
  run="${run}e"
@@ -219,46 +221,51 @@ fi
 
 fgsum=$sid.gene.fcounts.summary
 if [[ ! -f $fgsum || $(stat -c%s $fgsum) -lt 200 ]]; then
-## --- Getting gene counts:
+ ## -->>> start featureCounts gene level &&&
  /bin/rm -f $fgsum
- cmd="$bampri featureCounts --tmpDir $tmpdir -p -T 4 -F SAF -a $fcgene \
+ cmd="$bampri featureCounts --tmpDir $tmpdir -p -T 3 -F SAF -a $fcgene \
  -o $sid.gene.fcounts"
  echo -e "running featureCounts/gene:\n$cmd" | tee -a $rlog
  run="${run}g"
  eval "$cmd" |& tee -a $rlog &
 fi
 
-## wait for all background tasks to finish
-#if [[ $run ]]; then
+## wait for all background tasks to finish (rnaseqc, regtools, featureCounts exon+gene
+if [[ $run ]]; then
  wait
-#fi
+fi
+##---------------  all processed finished
+## merged cram file $mcram must be created
 /bin/rm -rf $tmpdir
 
-## after rnaseqc and regtools finished
 if [[ ! -s $fmet ]]; then
-  echo "rnaseq output $fmet has zero size!" | tee -a $rlog
+  echo "rnaseqc output $fmet has zero size! Check $rlog" | tee -a $rlog
+  exit 1
+fi
+if [[ ! -s $fjtab ]]; then
+  echo "regtools output $fjtab has zero size! Check $rlog" | tee -a $rlog
   exit 1
 fi
 
+if [[ ! -s $fgsum || ! -s $fexsum ]]; then
+  echo "one of featureCounts outputs has zero size! Check $rlog" | tee -a $rlog
+  exit 1
+fi
+
+## crampipe="samtools view --threads 2 -T $gref -u $mcram |"
 if [[ $(stat -c %s $mcram 2>/dev/null || echo 0) -lt 100000 || $(stat -c %s $mcram.crai 2>/dev/null || echo 0) -lt 1200 ]]; then
    echo '['$(date '+%m/%d %H:%M')"] merged cram file too small" | tee -a $rlog  
    exit 1
-fi
-
-
-if [[ ! -s $fgsum || ! -s $fexsum ]]; then
-  echo "One of expected outputs is zero size. Check $rlog. " |& tee -a $rlog
-  exit 1
 fi
 
 ## adding Mito_mapped metrics if not found
 if ! fgrep -q Mito_mapped $fmet; then
   echo "adding Mito metrics" | tee -a $rlog
   mtcount=0
-  mtcount=$(samtools view -F 260 $mcram chrM | wc -l)
+  mtcount=$(samtools view -T $gref -F 260 $mcram chrM | wc -l)
   if [[ -z "$mtcount" ]]; then 
      echo "Mito counts could not be retrieved. Check $rlog. " |& tee -a $rlog
-  exit 1
+     exit 1
   fi
   #samtools idxstats $fpri > $sid.pri.chrstats
   #mtcount=$(grep '^chrM\b' $sid.pri.chrstats | cut -f3)
@@ -272,6 +279,26 @@ if [[ ! -s $fstrand ]]; then
    perl -ne '($i,$v)=m/([12]) Sense Rate\s+([\d\.]+)$/;$e[$i]=$v; 
     END {$d=$e[1]-$e[2]; print abs($d)<0.2 ? "unstranded" : $d<0 ? "reverse" : "forward";
     print "\t$e[1]\t$e[2]\n"}' > $fstrand
+fi
+
+## finally, run bcftools to call the SNPs
+
+fvcf="$sid.common_SNVs.vcf.gz"
+if [[ ! -s $fvcf.csi ]]; then
+## as seen in SPEAQeasy:
+ bcf_pileup="-q 0 -Q 13 -d 1000000 -AB"
+ bcf_call="-mvOz"
+ cmd="bcftools mpileup -R $snvs $bcf_pileup --threads 3 -Ou -f $gref $mcram | bcftools call $bcf_call --threads 3 -o $fvcf - "
+ echo -e ">> calling variants:\n$cmd" | tee -a $rlog
+ eval "$cmd" |& tee -a $rlog 
+ if [[ -s $fvcf ]]; then
+    cmd="bcftools index --csi $fvcf"
+    echo -e "  indexing vcf: $cmd" | tee -a $rlog
+    eval $cmd |& tee -a $rlog
+ else 
+    echo "Error: $fvcf file not valid" |& tee -a $rlog
+    exit 1
+ fi
 fi
 
 echo 1 > "$sid.counts.done"
