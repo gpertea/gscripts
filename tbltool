@@ -1,0 +1,374 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+
+# Global variables
+my $isCSV;
+my $hasHeader;
+my @headers;
+my %hdrs;
+my $ncols;
+my @colnum; # $ncols-length vector with 1 for numeric columns
+my $fh;
+my @samples;
+my @filters; # populated for -f 
+my $cRow; # reference to current row being processed
+my $USAGE = q/Usage:
+  tbltool [-f flt-exprs] [-s cols] [-t cols] [-C] [-H] [-I] [-S] \
+      [-l num] [-c out_cols]
+
+  Options:
+    -f apply filter expressions using column names or numbers (#1,#2..);
+       conditions >,<,>=,<=,== are recognized, comma delimited if multiple;
+       must be enclosed within quotes
+    -s report sums and mean values for the specified numeric columns
+    -l only show the first num lines
+    -c only show the columns specified in out_cols
+    -t table row counts by the given factor column(s) (max 2 columns)
+    -C just list columns in the header (if present)
+    -I show table info and number of columns (from the first 5 lines)
+    -D only show the number of rows and columns, and the type of table
+    -L list the headers (if present)
+    -H assume first line has column headers (no header autodetection)
+    -N assume column headers are not present (no header autodetection)
+    -R do not output header if present, just data rows
+    -S summary of the row counts (more useful when filters are applied)
+
+ Unless -C, -D, -I, -L,  -S, -s or -t are given, the program outputs tab delimited
+ rows that passed the filters.
+/;
+umask 0002;
+getopts('CRIDLHNSTf:s:o:t:l:c:') || die($USAGE."\n");
+my $outfile=$Getopt::Std::opt_o;
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+  }
+# --
+my $outcols=$Getopt::Std::opt_c;
+my $numl=$Getopt::Std::opt_l;
+my $flt=$Getopt::Std::opt_f; # filters applied to columns
+my $getsum=$Getopt::Std::opt_s; #calculate summ/avg for columns
+
+my $showRows = !($Getopt::Std::opt_C || $Getopt::Std::opt_D || $Getopt::Std::opt_I || 
+  $Getopt::Std::opt_L || $Getopt::Std::opt_S || $Getopt::Std::opt_s || $Getopt::Std::opt_t);
+
+if (-t STDIN && !@ARGV) {
+  die "Usage: ${USAGE}Error: no input file provided and no data piped to STDIN\n";
+}
+# Open file handle based on argument or default to STDIN
+if (@ARGV) {
+  my $infile = shift @ARGV;
+  # Handling gz compressed input
+  open($fh, $infile =~ /\.gz$/ ? "gunzip -c $infile |" : "<$infile") 
+       or die "Error: cannot open file: $!";
+} else {
+  $fh = *STDIN;
+}
+
+# Reading first 5 lines and storing them in @flines array
+my @flines;
+for (1..6) {
+ $_=<$fh>;
+ last unless length($_)>0;
+ s/[\r\n]+$//;
+ push @flines, $_;
+}
+ ;
+
+# T2: Determine if the file is CSV or tab-delimited
+$isCSV = determineFormat(\@flines);
+
+# Convert to tab-delimited if needed
+#foreach my $l (@flines) {
+# push(@samples, csv2tab($l))
+#}
+@samples = map { csv2tab($_) } @flines;
+
+#foreach my $r (@samples) {
+#  print STDERR join("\t", @$r[0..7])."\n";
+#}
+
+# Guessing if header row is present
+if ($Getopt::Std::opt_H) {
+  $hasHeader=1;
+  getColNum(0);
+} elsif ($Getopt::Std::opt_N) {
+  $hasHeader=0;
+  getColNum(0);
+  
+} else { # try to autodetect
+  $hasHeader = checkHeader();
+}
+
+# If header is present, process it
+if ($hasHeader) {
+    my $hline = shift @samples;
+    @headers = @$hline;
+    $ncols=scalar(@headers);
+    %hdrs = map { $headers[$_] => $_ } 0..$#headers;
+} else { $ncols=$#{$samples[0]}; }
+
+my @r; #row data
+
+if ($Getopt::Std::opt_I) {
+  print $isCSV ? "# CSV file " : "tab delimited file ";
+  print "with $ncols columns.\n";
+}
+
+$outcols=$ncols unless $outcols;
+my @selcols; # array of column indexes to process
+foreach my $tok (split(/\,/, $outcols)) {
+  if ($tok=~m/^[\-\d]+$/) { # given as for cut, numeric index or range (1-based)
+    my @spl=split(/\-/,$tok); 
+    if (@spl==2) {
+      my ($st, $en)=@spl;
+      unless ($st) { $st=0 } else { $st-- }
+      if ($en) {
+       $en--;
+       $en=$ncols-1 if $en>=$ncols;
+      } else { $en=$ncols-1 }
+      die("Error: invalid range: $tok\n") if ($en<$st);
+      push(@selcols, $st..$en);
+      next;
+    }
+    if ($tok=~m/^\d+$/) {
+      $tok--; # just a numeric index
+      if ($tok>=0 && $tok<$ncols) {
+         push(@selcols, $tok);
+         next
+      }
+    }
+    die("Error: invalid range or index: $tok\n");
+  }
+  # columns given by their name (but ranges are not accepted
+  #my @spl=split(/[;,]/, $outcols);
+  #foreach my $col (@spl) {
+  my $ci=$hdrs{$tok};
+  if (length($ci)==0) {
+     print STDERR "Warning: unrecognized column: $tok\n";
+     next;
+  }
+  push(@selcols, $ci);
+  #}
+}
+  #$outcols=$ncols if $outcols>$ncols;
+  #@selcols=(0..($outcols-1));
+  
+  #print STDERR "DBG ::: selcols len = ", scalar(@selcols),"\n";
+  #print STDERR "DBG ::: selcols=",join(',',@selcols),"\n";
+
+if (@headers && $showRows && !$Getopt::Std::opt_R) {
+  print join("\t", @headers[@selcols])."\n";
+}
+my $lmax;
+if ($numl) {
+  $lmax=$numl;
+}
+
+parse_filters($flt) if $flt;
+
+
+my $i=1;
+
+while ( getNextRow() ) {
+  ## getNextRow updates $cRow
+  next if $flt && filterRow();
+ 
+  next unless $showRows;
+  #dbgRowPrint();
+  ## for now, just print:
+  print join("\t", @$cRow[@selcols]), "\n";
+  if ($lmax) {
+     $i++;
+     last if $i>$lmax;
+   }
+}
+
+# --
+if ($outfile) {
+ select(STDOUT);
+ close(OUTF);
+ }
+
+
+#************ Subroutines **************
+
+sub dbgRowPrint {
+  my @a=@$cRow;
+  print STDERR "cRow length=", scalar(@a), "\n";
+  print STDERR join(", ",@a)."\n";
+}
+
+sub getNextRow {
+  if (scalar(@samples)) {
+    $cRow=shift @samples;
+    #dbgRowPrint();
+    return 1;
+  }
+  $_=<$fh>;
+  if (length($_)==0) {
+    $cRow=[];
+    return 0;
+  }
+  s/[\r\n]+$//;
+  $cRow=csv2tab($_);
+}
+
+
+# Function to convert CSV to tab-delimited AND split
+sub csv2tab {
+  my $line = shift;
+  return [ split(/\t/, $line) ] unless $isCSV;
+  my $re = qr/,(?=(?:[^"]*"[^"]*")*(?![^"]*"))/;
+  return [ map { s/(?<!\\)"//gr =~ s/\\"/"/gr } split($re, $line) ];
+}
+
+# Function to determine if the input is CSV or tab-delimited
+sub determineFormat {
+    my $lines_ref = shift;
+    my @lines = @$lines_ref;
+
+    my ($c1n, $t1n) = ($lines[0] =~ tr/,//, $lines[0] =~ tr/\t//);  # First comma and tab counts
+    my $c_eq = ($c1n>0);  # Consistent comma
+    my $t_eq = ($t1n>0);  # Consistent tab
+
+    # Check consistency of comma and tab counts across lines
+    for my $i (1 .. $#lines) {
+        my $cnum = ($lines[$i] =~ tr/,//);  # Current line comma count
+        my $tnum = ($lines[$i] =~ tr/\t//); # Current line tab count
+        $c_eq = 0 if $cnum>0 && $c1n != $cnum;
+        $t_eq = 0 if $tnum>0 && $t1n != $tnum;
+    }
+    # Determine format based on consistency and non-zero counts
+    if ($c1n > $t1n && !$t_eq) { # likely a CSV 
+      return 1 if ($c_eq);
+      my $re = qr/,(?=(?:[^"]*"[^"]*")*(?![^"]*"))/;
+      $c1n=scalar(split($re, $lines[0]));
+      $c_eq=1;
+      for my $i (1 .. $#lines) {
+        my $cnum = scalar(split($re, $lines[$i]));
+        if ($c1n!=$cnum) {
+          $c_eq = 0;
+          last;
+        }
+      }
+      return 1 if $c_eq;
+    }
+    if ($c_eq && $c1n > 0 && !$t_eq) {
+          return 1;  # CSV format
+    } elsif ($t_eq && $t1n > 0 && !$c_eq) {
+          return 0;  # Tab-delimited format
+    } else {
+          # If neither is consistent or both are zero, default to one (can be adjusted)
+          die("Error: cannot determine the file type and the number of columns\n");
+          #return 0;  # Default to tab-delimited or implement further logic
+    }
+}
+
+## returns 1 if a numeric value was given, 0 if NA or empty, 2 if non-numeric
+sub numStatus {
+  return 1 if $_[0] =~ m/^-?\d+\.?[\deE\-]*$/;
+  return 0 if $_[0] eq 'NA' || $_[0] eq '';
+  return 2;
+}
+
+## populate @colnum array with 1 for numeric columns
+sub getColNum {
+  my ($sti)=@_; ## 0 or 1 (default 1)
+  #print STDERR "sti=$sti\n";
+  $sti=1 unless length($sti); # 0 should only be passed if -N (forced no-header)
+  $ncols=$#{$samples[$sti]};
+  my $maxr=$#samples;
+  @colnum=( 0 x $ncols );
+  for my $col (0 .. $ncols) {
+      for my $row ($sti .. $maxr) {
+          # Check if the value in this column is either numeric or empty/missing
+          my $ns=numStatus($samples[$row][$col]);
+          last if $ns>1; # has non-numeric, non-empty values
+          $colnum[$col]|=$ns; ## only or-ed with 0 or 1
+      }
+  }
+}
+
+# Function to guess if header is present
+sub checkHeader {
+  # Iterate through each column
+  getColNum(); # this will populate @colnum
+  for my $col (0 .. $ncols) {
+    if ($colnum[$col]) { #numeric column in content
+          return 1 if numStatus($samples[0][$col])>1;
+    }
+  }
+  # If none of the columns fit the criteria, assume no header
+  return 0;
+}
+
+# Parse filter expression and create filter subroutines
+# Parse filter expression into conditions
+sub parse_filters {
+  my ($filter_expr) = @_;
+  # Regex to match groups of column_name operator value
+  $filter_expr=~s/=[=]+/=/g;
+  while ($filter_expr =~ /\s*([^=><\s]+)\s*(<=|>=|<|>|=|!=)\s*([^,; ]+)\s*/g) {
+      my ($column, $op, $cval) = ($1, $2, $3);
+      # Sanity Check: Ensure column exists
+      my $colix=$hdrs{$column};
+      if (length($colix)==0) {
+         if ($column=~m/^#?(\d+)$/) {
+          $column=$1;
+          $colix=$column-1 if ($column<=$ncols);
+         }
+         die "Error: column '$column' not found.\n" unless length($colix);
+      }
+      # Create and add the filter subroutine
+      my $numeric=($colnum[$colix] && numStatus($cval)==1);
+      push @filters, create_filter_sub($colix, $op, $cval, $numeric);
+  }
+  # Additional Sanity Check: If no valid conditions were added
+  die "Error: No valid filter conditions provided or incorrectly formatted conditions.\n" 
+     unless (@filters);
+}
+
+# Function to create a filter subroutine based on the column type and operator
+sub create_filter_sub {
+  my ($colix, $op, $cval, $is_numeric) = @_;
+  if ($is_numeric) {
+      # Numeric comparison
+      return sub {
+          my $row = shift;
+          no warnings 'numeric';  # Suppress string to numeric conversion warnings
+          return ($row->[$colix] <=> $cval) == 0 if $op eq '=' ;
+          return ($row->[$colix] <=> $cval) != 0 if $op eq '!=';
+          return ($row->[$colix] <=> $cval) < 0 if $op eq '<';
+          return ($row->[$colix] <=> $cval) > 0 if $op eq '>';
+          return ($row->[$colix] <=> $cval) <= 0 if $op eq '<=';
+          return ($row->[$colix] <=> $cval) >= 0 if $op eq '>=';
+      };
+  } else {
+      # String comparison
+      return sub {
+          my $row = shift;
+          return ($row->[$colix] cmp $cval) == 0 if $op eq '=';
+          return ($row->[$colix] cmp $cval) != 0 if $op eq '!=';
+          return ($row->[$colix] cmp $cval) < 0 if $op eq '<';
+          return ($row->[$colix] cmp $cval) > 0 if $op eq '>';
+          return ($row->[$colix] cmp $cval) <= 0 if $op eq '<=';
+          return ($row->[$colix] cmp $cval) >= 0 if $op eq '>=';
+      };
+  }
+}
+
+# Function to apply filters
+# return 1 if the row should be skipped
+sub filterRow {
+    foreach my $flt (@filters) {
+        return 1 unless $flt->($cRow);  # Skip row if any filter fails
+    }
+    return 0;  # do not skip, all filters passed
+}
+
+### Usage example
+## my $filter_expr = 'score<=-20.44,call_rate>=0.99,gtype=B';
+## my $filters = parse_filters($filter_expr);
+
