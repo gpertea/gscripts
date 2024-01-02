@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use Getopt::Std;
+use Data::Dumper;
 
 # Global variables
 my $isCSV;
@@ -46,12 +47,13 @@ if ($outfile) {
   }
 # --
 my $outcols=$Getopt::Std::opt_c;
+my $tblcols=$Getopt::Std::opt_t; #maximum two, comma delimited
 my $numl=$Getopt::Std::opt_l;
 my $flt=$Getopt::Std::opt_f; # filters applied to columns
 my $getsum=$Getopt::Std::opt_s; #calculate summ/avg for columns
 
 my $showRows = !($Getopt::Std::opt_C || $Getopt::Std::opt_D || $Getopt::Std::opt_I || 
-  $Getopt::Std::opt_L || $Getopt::Std::opt_S || $Getopt::Std::opt_s || $Getopt::Std::opt_t);
+  $Getopt::Std::opt_L || $Getopt::Std::opt_S || $Getopt::Std::opt_s || $tblcols);
 
 if (-t STDIN && !@ARGV) {
   die "Usage: ${USAGE}Error: no input file provided and no data piped to STDIN\n";
@@ -105,18 +107,27 @@ if ($Getopt::Std::opt_H) {
 if ($hasHeader) {
     my $hline = shift @samples;
     @headers = @$hline;
+    $headers[0]=~s/^#\s*//;
     $ncols=scalar(@headers);
     %hdrs = map { $headers[$_] => $_ } 0..$#headers;
 } else { $ncols=$#{$samples[0]}; }
 
 my @r; #row data
-
+my $hinfo=0;
 if ($Getopt::Std::opt_I) {
+  $hinfo=1;
   print $isCSV ? "# CSV file " : "tab delimited file ";
   print "with $ncols columns.\n";
 }
 
-$outcols=$ncols unless $outcols;
+if ($Getopt::Std::opt_L) {
+  $hinfo=1;
+  print join(', ', @headers)."\n";
+}
+
+exit if ($hinfo);
+
+$outcols="1-$ncols" unless $outcols;
 my @selcols; # array of column indexes to process
 foreach my $tok (split(/\,/, $outcols)) {
   if ($tok=~m/^[\-\d]+$/) { # given as for cut, numeric index or range (1-based)
@@ -168,13 +179,51 @@ if ($numl) {
 
 parse_filters($flt) if $flt;
 
+my @tci; #the index of column(s) requested to be tabled
+my @tcols; # the names of columns requested to be tabled
+if ($tblcols) {
+  @tci=getTableCols($tblcols);
+  die("Error: at most 2 columns can be requested for the table function!\n") if scalar(@tci)>2;
+  @tcols=split(/[^,;\t ]+/, $tblcols);
+}
 
+my @tcf=([], []); #list of factor values for the columns tabled (max two columns) $tcf[0]=[string1, string2, ..]
+my @cf=( {}, {} );  #column factor hashes: $cf[0] is $colvalue => index in @{$tcf[0]}
+my @tcounts=( [], [] ); #total counts per factor level (max 2 columns)
+my @xtbl; # expanding matrix of counts per factor levels (for 2 columns) #not used when single column
+my $tmaxlev=100; #limit of factor levels before showing the error about the columns not being a factor
+my $tmatrix=(scalar(@tci)>1);
 my $i=1;
 
 while ( getNextRow() ) {
   ## getNextRow updates $cRow
   next if $flt && filterRow();
- 
+  if ($tblcols) { #collect per table categories
+    my $cv=$$cRow[$tci[0]];
+    my $ix=$cf[0]{$cv};
+    unless (defined($ix)) {
+      push(@{$tcf[0]}, $cv);
+      $ix=scalar(@{$tcf[0]})-1;
+      die("Error: column $tcols[0] doesn't seem to be a factor (over $tmaxlev levels found)!\n")
+         if $ix>=$tmaxlev;
+      $cf[0]{$cv}=$ix;
+    }
+    $tcounts[0][$ix]++;
+    if ($tmatrix) {
+      my $c2v=$$cRow[$tci[1]];
+      my $ix2=$cf[1]{$c2v};
+      unless (defined($ix2)) {
+        push(@{$tcf[1]}, $c2v);
+        $ix2=scalar(@{$tcf[1]})-1;
+        die("Error: column $tcols[1] doesn't seem to be a factor (over $tmaxlev levels found)!\n")
+           if $ix2>=$tmaxlev;
+        $cf[1]{$c2v}=$ix2;
+      }
+      $tcounts[1][$ix2]++;
+      $xtbl[$ix][$ix2]++;
+    } # 2 columns being tabled
+    
+  } # -t requested
   next unless $showRows;
   #dbgRowPrint();
   ## for now, just print:
@@ -183,6 +232,41 @@ while ( getNextRow() ) {
      $i++;
      last if $i>$lmax;
    }
+}
+
+if ($tblcols) {
+  if ($tmatrix) {
+    #print Dumper(\@tcf);
+    my ($maxcw, $maxrw)=(1,1);
+    map { $maxcw=length if length>$maxcw } @{$tcf[1]};
+    map { $maxrw=length if length>$maxrw } @{$tcf[0]};
+    print sprintf(" %${maxrw}s ", ' ');
+    foreach my $c (@{$tcf[1]}) {
+     print sprintf(" %${maxcw}s ", $c);
+    }
+    print " \n";
+    foreach my $rv (@{$tcf[0]}) {
+       my $ix=$cf[0]{$rv};
+       print sprintf(" %${maxrw}s ", $rv);
+       foreach my $c (@{$tcf[1]}) {
+          my $ci=$cf[1]{$c};
+          print sprintf(" %${maxcw}d ", $xtbl[$ix][$ci]);
+       }
+       print sprintf(" %${maxcw}d\n", $tcounts[0][$ix]);
+    }
+    ## print the last row - total counts by column
+    print sprintf(" %${maxrw}s ", ' ');
+    foreach my $c (@{$tcf[1]}) {
+       my $ci=$cf[1]{$c};
+       print sprintf(" %${maxcw}s ", $tcounts[1][$ci]);
+    }
+    print " \n";
+  } else {
+    foreach my $cv (@{$tcf[0]}) {
+        my $ix=$cf[0]{$cv};
+        print "$cv\t".$tcounts[0][$ix]."\n";
+    }
+  }
 }
 
 # --
@@ -310,16 +394,16 @@ sub parse_filters {
   my ($filter_expr) = @_;
   # Regex to match groups of column_name operator value
   $filter_expr=~s/=[=]+/=/g;
-  while ($filter_expr =~ /\s*([^=><\s]+)\s*(<=|>=|<|>|=|!=)\s*([^,; ]+)\s*/g) {
-      my ($column, $op, $cval) = ($1, $2, $3);
+  while ($filter_expr =~ m/\s*([^=><\s]+)\s*(<=|>=|<|>|=|!=)\s*([^,; ]+)\s*/g) {
+      my ($col, $op, $cval) = ($1, $2, $3);
       # Sanity Check: Ensure column exists
-      my $colix=$hdrs{$column};
+      my $colix=$hdrs{$col};
       if (length($colix)==0) {
-         if ($column=~m/^#?(\d+)$/) {
-          $column=$1;
-          $colix=$column-1 if ($column<=$ncols);
+         if ($col=~m/^#?(\d+)$/) {
+          $col=$1;
+          $colix=$col-1 if ($col<=$ncols);
          }
-         die "Error: column '$column' not found.\n" unless length($colix);
+         die "Error: column '$col' not found.\n" unless length($colix);
       }
       # Create and add the filter subroutine
       my $numeric=($colnum[$colix] && numStatus($cval)==1);
@@ -328,6 +412,26 @@ sub parse_filters {
   # Additional Sanity Check: If no valid conditions were added
   die "Error: No valid filter conditions provided or incorrectly formatted conditions.\n" 
      unless (@filters);
+}
+
+
+sub getTableCols {
+  my ($ts) = @_; #comma or space delimited list of columns
+  my @r; #returning a list of column indexes 
+  while ($ts =~ m/\s*([^,;\t ]+)\s*/g) {
+   my $col=$1;
+   my $colix=$hdrs{$col};
+   if (length($colix)==0) {
+      if ($col=~m/^#?(\d+)$/) {
+       $col=$1;
+       die("Error: column index $col invalid ($ncols columns detected)!\n") if $col>$ncols;
+       $colix=$col-1 if ($col<=$ncols);
+      }
+      die "Error: column '$col' not found.\n" unless length($colix);
+   }
+   push(@r, $colix)
+  }
+ return @r;
 }
 
 # Function to create a filter subroutine based on the column type and operator
