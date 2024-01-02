@@ -107,7 +107,7 @@ if ($Getopt::Std::opt_H) {
 if ($hasHeader) {
     my $hline = shift @samples;
     @headers = @$hline;
-    $headers[0]=~s/^#\s*//;
+    $headers[0]=~s/^# +//;
     $ncols=scalar(@headers);
     %hdrs = map { $headers[$_] => $_ } 0..$#headers;
 } else { $ncols=$#{$samples[0]}; }
