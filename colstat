@@ -36,7 +36,8 @@ foreach my $c (@f) {
 
 while (<>) {
   next if $. < $lskip;
-  my @t=split($delim);
+  chomp;
+  my @t=split(/$delim/);
   foreach my $d (@out) {
    my $v=@t[$$d[0]-1];
    next if $ncheck && $v!~m/[\-\d\.\+\-E]+/i;

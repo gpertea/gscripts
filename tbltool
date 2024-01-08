@@ -49,8 +49,8 @@ if ($outfile) {
 my $outcols=$Getopt::Std::opt_c;
 my $tblcols=$Getopt::Std::opt_t; #maximum two, comma delimited
 my $numl=$Getopt::Std::opt_l;
-my $flt=$Getopt::Std::opt_f; # filters applied to columns
-my $getsum=$Getopt::Std::opt_s; #calculate summ/avg for columns
+my $flt=$Getopt::Std::opt_f;    # filters applied to columns
+my $getsum=$Getopt::Std::opt_s; # calculate summ/avg for columns
 
 my $showRows = !($Getopt::Std::opt_C || $Getopt::Std::opt_D || $Getopt::Std::opt_I || 
   $Getopt::Std::opt_L || $Getopt::Std::opt_S || $Getopt::Std::opt_s || $tblcols);
@@ -87,9 +87,11 @@ $isCSV = determineFormat(\@flines);
 #}
 @samples = map { csv2tab($_) } @flines;
 
+#print STDERR " .... DBG ....\n";
 #foreach my $r (@samples) {
 #  print STDERR join("\t", @$r[0..7])."\n";
 #}
+#print STDERR " .... DBG ....\n";
 
 # Guessing if header row is present
 if ($Getopt::Std::opt_H) {
@@ -110,7 +112,7 @@ if ($hasHeader) {
     $headers[0]=~s/^# +//;
     $ncols=scalar(@headers);
     %hdrs = map { $headers[$_] => $_ } 0..$#headers;
-} else { $ncols=$#{$samples[0]}; }
+} else { $ncols=scalar(@{$samples[0]}); }
 
 my @r; #row data
 my $hinfo=0;
@@ -179,12 +181,14 @@ if ($numl) {
 
 parse_filters($flt) if $flt;
 
+
+### --- for the -t (table) options
 my @tci; #the index of column(s) requested to be tabled
 my @tcols; # the names of columns requested to be tabled
 if ($tblcols) {
   @tci=getTableCols($tblcols);
   die("Error: at most 2 columns can be requested for the table function!\n") if scalar(@tci)>2;
-  @tcols=split(/[^,;\t ]+/, $tblcols);
+  @tcols=split(/[,;\t ]+/, $tblcols);
 }
 
 my @tcf=([], []); #list of factor values for the columns tabled (max two columns) $tcf[0]=[string1, string2, ..]
@@ -195,9 +199,23 @@ my $tmaxlev=100; #limit of factor levels before showing the error about the colu
 my $tmatrix=(scalar(@tci)>1);
 my $i=1;
 
+## -- for the -s option (sum/avg)
+my @sci; #the index of column(s) requested to be summarized
+my @scols; # the names of columns requested to be summarized
+if ($getsum) {
+  @sci=getTableCols($getsum);
+  @scols=split(/[,;\t ]+/, $getsum);
+}
+## option to ignore empty values? (instead of counting them)
+my @colsums; # sum of column values per entry in @scols
+my (@colmin, @colmax);
+
+my $rowcount = 0; ## overall row count passing the filters
+
 while ( getNextRow() ) {
   ## getNextRow updates $cRow
   next if $flt && filterRow();
+  $rowcount++;
   if ($tblcols) { #collect per table categories
     my $cv=$$cRow[$tci[0]];
     my $ix=$cf[0]{$cv};
@@ -224,6 +242,16 @@ while ( getNextRow() ) {
     } # 2 columns being tabled
     
   } # -t requested
+  
+  if ($getsum) { # -s (colsum) requested
+   foreach my $i ( (0 .. $#sci) ) {
+     my $v = $$cRow[$sci[$i]];
+     my ($min, $max)=($colmin[$i], $colmax[$i]);
+     $colmin[$i]=$v unless defined($min) && $v>=$min;
+     $colmax[$i]=$v unless defined($max) && $v<=$max;
+     $colsums[$i] += $v;
+   }
+  }
   next unless $showRows;
   #dbgRowPrint();
   ## for now, just print:
@@ -231,7 +259,7 @@ while ( getNextRow() ) {
   if ($lmax) {
      $i++;
      last if $i>$lmax;
-   }
+  }
 }
 
 if ($tblcols) {
@@ -269,6 +297,14 @@ if ($tblcols) {
   }
 }
 
+if ($getsum) {
+  print "column\taverage\tsum\tmin\tmax\n";
+  foreach my $i ( (0 .. $#sci) ) {
+    print join("\t", $scols[$i], sprintf('%.5g', $colsums[$i]/$rowcount), 
+       sprintf('%s', $colsums[$i]), sprintf('%.5g',$colmin[$i]), sprintf('%.5g',$colmax[$i]))."\n";
+  }
+}
+
 # --
 if ($outfile) {
  select(STDOUT);
@@ -282,6 +318,16 @@ sub dbgRowPrint {
   my @a=@$cRow;
   print STDERR "cRow length=", scalar(@a), "\n";
   print STDERR join(", ",@a)."\n";
+}
+
+
+sub floatfmt {
+ local $_=shift(@_);
+ my $n=shift(@_);
+ $n=5 unless defined($n);
+ $_=sprintf("%.${n}f", $_);
+ s/0+$//; s/\.$//;
+ return $_;
 }
 
 sub getNextRow {
@@ -362,7 +408,7 @@ sub getColNum {
   my ($sti)=@_; ## 0 or 1 (default 1)
   #print STDERR "sti=$sti\n";
   $sti=1 unless length($sti); # 0 should only be passed if -N (forced no-header)
-  $ncols=$#{$samples[$sti]};
+  $ncols=scalar(@{$samples[$sti]});
   my $maxr=$#samples;
   @colnum=( 0 x $ncols );
   for my $col (0 .. $ncols) {
