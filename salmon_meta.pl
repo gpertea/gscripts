@@ -2,7 +2,6 @@
 use strict;
 use Getopt::Std;
 use File::Basename;
-use FindBin;use lib $FindBin::Bin;
 
 my $usage = q/Usage:
   salmon_meta.pl [dir1, dir2, ...]
@@ -36,42 +35,8 @@ foreach my $dir_path (@ARGV) {
    next if $ns==0; #number of samples
    #print STDERR join("\n", @meta_files), "\n";
    my (@uniqIDs,  $idlevel);
-   my @dsplit= map { [ split(/\/+/) ] } @meta_files;
-   my @depths = map { scalar(@$_) } @dsplit;
-   my $d=$depths[0];
-   for (my $i=1;$i<=$#depths;$i++) {
-     if ($depths[$i] ne $d) {
-       die("Error: metadata files not found at the same level\n".
-       $meta_files[0]."\n".$meta_files[$i]."\n");
-     }
-   }
-   $d-=2;
-   for(my $i=$d;$i>=0;$i--) {
-     my %uk; #unique keys
-     @uniqIDs=();
-     $idlevel=$d-$i+1;
-     my $r=0;
-     foreach my $dspl (@dsplit) {
-       my $id=$$dspl[$i];
-       $uk{$id}=1;
-       $r++;
-       if (scalar(keys(%uk))<$r) {
-          @uniqIDs=();
-          undef $idlevel;
-          last
-       }
-       push(@uniqIDs, $id);
-     }
-     last if defined($idlevel);
-   }
-   #if (defined($idlevel)) {
-   #  print STDERR "Found IDs at level $idlevel\n",
-   #     join(", ", @uniqIDs),"\n";
-   #}
-   die("Error: could not find unique IDs for the $ns meta_info files!\n") unless defined($idlevel);
-   die("Error: unique IDs (".scalar(@uniqIDs)." and pathnames ($ns) do not match!\n")
-     unless $ns==scalar(@uniqIDs);
-  my ($frag_len_mean, $frag_len_sd, $num_reads, $num_mapped, $perc_mapped);
+   $idlevel=getUIDs(\@meta_files, \@uniqIDs);
+   my ($frag_len_mean, $frag_len_sd, $num_reads, $num_mapped, $perc_mapped);
    for (my $i=0;$i<$ns;$i++) {
      open(F, '<'.$meta_files[$i]) || die("Error opening $meta_files[$i]\n");
      while (<F>) {
@@ -111,6 +76,44 @@ if ($outfile) {
  }
 
 #************ Subroutines **************
+
+sub getUIDs {
+   my ($mfiles, $uids)=@_;
+   my $ns=scalar(@$mfiles);
+   my $ilevel;
+   my @dsplit = map { [ split(/\/+/) ] } @$mfiles;
+   my @depths = map { scalar(@$_) } @dsplit;
+   my $d=$depths[0];
+   for (my $i=1;$i<=$#depths;$i++) {
+     if ($depths[$i] ne $d) {
+       die("Error: metadata files not found at the same level\n".
+       $$mfiles[0]."\n".$$mfiles[$i]."\n");
+     }
+   }
+   $d-=2;
+   for(my $i=$d;$i>=0;$i--) {
+     my %uk; #unique keys
+     @$uids=();
+     $ilevel=$d-$i+1;
+     my $r=0;
+     foreach my $dspl (@dsplit) {
+       my $id=$$dspl[$i];
+       $uk{$id}=1;
+       $r++;
+       if (scalar(keys(%uk))<$r) {
+          @$uids=();
+          undef $ilevel;
+          last
+       }
+       push(@$uids, $id);
+     }
+     last if defined($ilevel);
+   }
+   die("Error: could not find unique IDs for the $ns metadata files!\n") unless defined($ilevel);
+   die("Error: unique IDs (".scalar(@$uids)." and pathnames ($ns) do not match!\n") 
+       unless $ns==scalar(@$uids);
+   return $ilevel;
+}
 sub get_meta {
     my ($dir_path, $ff, $meta_files) = @_;
     opendir(my $dh, $dir_path) || die "Can't open directory: $!";

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ##x mem=18G
-##x cpus=8
+##x cpus=6
 
 #### Script for generating QC with rnaseqc and expression data (counts) 
 #### using featureCounts (gene, exon), regtools (junctions), salmon (tx)
@@ -15,10 +15,6 @@
 ## if multiple CRAM/BAM files are present for a sample, they will be merged into
 ## a single CRAM, with RG groups assigned accordingly
 
-##TODO: see if tee can be used use names pipes (fifo) so in round 1, the merged
-## SAM stream is also written to a named pipe (to be compressed), just as it is 
-## fed into regtools
-
 refdir=${GREF_DIR:-/dcs04/lieber/lcolladotor/dbDev_LIBD001/ref}
 gref=${GENOME_FA:-$refdir/fa/assembly_hg38_gencode_v25_main.fa}
 snvs="$refdir/Genotyping/common_missense_SNVs_hg38.bed"
@@ -27,7 +23,7 @@ fcexon=${FCOUNTS_EXON:-$refdir/gtf/gencode25.main.exons.gtf}
 fcgene=${FCOUNTS_GENE:-$refdir/gtf/gencode25.main.flattened.saf}
 refqc=${RQC_REF:-$refdir/gtf/gencode25.main.collapsed.gtf}
 salmidx=${SALMON_IDX:-$refdir/salmon_idx/gencode25.main}
-ncpus=${SALMON_CPUS:-5}
+ncpus=${SALMON_CPUS:-4}
 ## note 3 more cpus will be used 
 function err_exit {
  echo -e "Error: $1"
