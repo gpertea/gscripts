@@ -76,8 +76,8 @@ if [[ -z $oid ]]; then
  err_exit "could not parse base sampleID!"
 fi
 
-fqs1=( ${fn1/,/ } )
-fqs2=( ${fn2/,/ } )
+fqs1=( ${fn1//,/ } )
+fqs2=( ${fn2//,/ } )
 
 if [[ ! -f "${fqs1[0]}" ]]; then
    err_exit "FASTQ file ${fqs1[0]} cannot be found!"
