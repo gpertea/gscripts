@@ -19,7 +19,8 @@ function err_exit {
  echo -e "Error: $1"
  exit 1
 }
-
+SW='/dcs04/lieber/lcolladotor/dbDev_LIBD001/sw'
+export PATH=$SW/gscripts:$SW/bin:$PATH
 jobid=$SLURM_JOBID
 taskid="$2" # the task# could be given directly (e.g. by parallel)
 if [[ -z $jobid ]]; then
@@ -107,7 +108,7 @@ if [[ -s $ofq1 ]]; then
   err_exit "output file $outpath/$ofq1 already exists. Skipping."
 fi
 
-cmd="fastp -i $fq1 -I $fq2 -l 30 -Q -w $ncpus --dont_eval_duplication  -j ${ofn}_fastp.json -h ${ofn}_fastp.html \
+cmd="$fastp -i $fq1 -I $fq2 -l 30 -Q -w $ncpus --dont_eval_duplication  -j ${ofn}_fastp.json -h ${ofn}_fastp.html \
     --overlap_diff_percent_limit 10 --detect_adapter_for_pe -z 7 -o $ofq1 -O $ofq2 >& ${ofn}_fastp.log"
 echo -e "running fastp:\n$cmd" | tee -a $rlog
 eval "$cmd" |& tee -a $rlog 
