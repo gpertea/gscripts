@@ -272,7 +272,7 @@ if ($cmd eq 'status') {
    if ($JGRID eq 'slurm') {
        #if ($mail) {
          my $jn=$JNAME ? "w_${JNAME}_$job" : "w_$job";
-         @args=("-J $jn", "--dependency=afterany:$job -o j_$job.watcher.log --mail-type='END,FAIL'", __FILE__, "watch ${jtime}.$job");
+         @args=("-J $jn -m 500M -c 1", "--dependency=afterany:$job -o j_$job.watcher.log --mail-type='END,FAIL'", __FILE__, "watch ${jtime}.$job");
          my $j=$dryrun ? 'w-dryrun' : submit(@args);
          print STDERR " ..submitted watcher job $j :\nsbatch ".join(' ', @args)."\n";
        #}

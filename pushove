@@ -1,0 +1,50 @@
+#!/usr/bin/perl
+use strict;
+use Getopt::Std;
+use LWP::UserAgent;
+
+my ($user_key, $api_token, $pomail)=readConfig();
+LWP::UserAgent->new()->post(
+  "https://api.pushover.net/1/messages.json", [
+  "token" => $api_token,
+  "user" => $user_key,
+  "message" => "Hello from linPush, config read",
+]);
+
+my $usage = q/Usage:
+  
+/;
+umask 0002;
+getopts('o:') || die($usage."\n");
+my $outfile=$Getopt::Std::opt_o;
+if ($outfile) {
+  open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
+  select(OUTF);
+  }
+# --
+
+
+
+# --
+if ($outfile) {
+ select(STDOUT);
+ close(OUTF);
+ }
+
+#************ Subroutines **************
+sub readConfig {
+ open(C, $ENV{HOME}.'/.pushoverrc') || die("Error opening config file ~/.pushoverrc\n");;
+ my ($ukey, $pomail, $api);
+ while (<C>) {
+  chomp; tr/ //d;
+  my ($k,$v)=split(/\s*[=:]\s*/);
+  next unless $v;
+  if ($k =~ m/key/)  { $ukey=$v } elsif ($k =~ m/^api/) { $api=$v }
+    elsif ($k =~ m/mail/) {$pomail=$v }
+ }
+ close(C);
+ return ($ukey, $api, $pomail);
+}
+
+
+
