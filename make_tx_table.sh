@@ -8,7 +8,7 @@ if [[ ! -f $fgff ]]; then
   echo "$fgff file not found!\n"
   exit 1
 fi
-tabcols='@id,@chr,@start,@end,@strand,@numexons,@covlen,@cdslen,@track,@geneid,gene_name,gene_type,tag'
+tabcols='@id,@chr,@start,@end,@strand,@numexons,@covlen,@cdslen,@track,@geneid,gene_name,gene_type,transcript_name,transcript_type,level,tag'
 ftab=${fgff/.gtf/.tab}
 if [[ $ftab == $fgff ]]; then
  ftab=${fgff/.gff/.tab}
