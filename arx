@@ -29,6 +29,7 @@ Usage:
 ## double-dash recognized options for SLURM (anything else is just passed to sbatch)
 # -c, --cpus-per-task=<ncpus>
 # -a, --array=<indexes>
+# -t, --time=hh:mm:ss
 # -p, --partition=<partition_name>
 # -J, --job-name=<jobname>
 # --mem=<size>[units] (-m also recognized as a shortcut by arx, even though sbatch sees it as --distribution)
@@ -71,7 +72,7 @@ while ($i < @ARGV) {
   } else {  $i++ } # just move to the next argument
 }
 
-getopts('MPCDJ:j:l:a:m:p:o:e:c:') || die($usage."\n");
+getopts('MPCDJ:j:t:l:a:m:p:o:e:c:') || die($usage."\n");
 
 my $JGRID=$Getopt::Std::opt_P ? 'par' :'slurm';
 my $dryrun=$Getopt::Std::opt_D;
@@ -96,13 +97,14 @@ my $JOB=$ENV{'SLURM_JOBID'} || '0';
 my $TASK=$ENV{'SLURM_ARRAY_TASK_ID'} || '0';
 #$TASK=$ENV{'SGE_TASK_ID'} unless $TASK; ## support SGE?
 
-my ($JARR, $JMEM, $JCPUS, $JPART, $JMAIL, $JMAILTYPE, $JNAME, $JLOG, $JERRLOG);
+my ($JARR, $JMEM, $JCPUS, $JTIME, $JPART, $JMAIL, $JMAILTYPE, $JNAME, $JLOG, $JERRLOG);
 parseConfigFile($cfgfile) if $cfgfile;
 my @ddpass; ## pass-through options
 foreach my $dd (@ddash) {
   if ($$dd[0] eq 'array') { $JARR=$$dd[1] 
   } elsif ($$dd[0] eq 'cpus-per-task') {  $JCPUS=$$dd[1] 
   } elsif ($$dd[0] eq 'mem') {  $JMEM=$$dd[1] 
+  } elsif ($$dd[0] eq 'time') {  $JTIME=$$dd[1] 
   } elsif ($$dd[0] eq 'partition') {  $JPART=$$dd[1] 
   } elsif ($$dd[0] eq 'mail-type') {  $JMAILTYPE=$$dd[1] 
   } elsif ($$dd[0] eq 'mail-user') {  $JMAIL=$$dd[1] 
@@ -122,6 +124,7 @@ if ($mail) {
   $JMAILTYPE='END,FAIL' unless $JMAILTYPE;
 }
 $JNAME=$Getopt::Std::opt_J if $Getopt::Std::opt_J;
+$JTIME=$Getopt::Std::opt_t if $Getopt::Std::opt_t;
 $JLOG=$Getopt::Std::opt_o if $Getopt::Std::opt_o;
 $JERRLOG=$Getopt::Std::opt_e if $Getopt::Std::opt_e;
 
@@ -193,6 +196,7 @@ if ($cmd eq 'status') {
    if ($JGRID eq 'slurm') {
      unshift(@args, '-a '.$JARR) if $JARR;
      unshift(@args, '--mem='.$JMEM) if $JMEM;
+     unshift(@args, '-t '.$JTIME) if $JTIME;
      unshift(@args, '-p '.$JPART) if $JPART;
      unshift(@args, '-c '.$JCPUS) if $JCPUS;
      unshift(@args, '--mail-user='.$JMAIL) if $JMAIL; # or could be picked up from ~/.slurm/default
