@@ -1,0 +1,69 @@
+#!/bin/bash
+
+# Check if the correct number of arguments are provided
+if [ $# -ne 2 ]; then
+  echo "Usage: $0 <query_file> <data_file>"
+  exit 1
+fi
+
+query_file=$1
+data_file=$2
+
+# Read the SQL query from the query file or stdin
+if [ "$query_file" = "-" ]; then
+  query=$(cat)
+else
+  query=$(cat "$query_file")
+fi
+
+# Count the number of tab-separated columns in the first line of the data file
+if [ "$data_file" = "-" ]; then
+  num_cols=$(head -n 1 | tr '\t' '\n' | wc -l)
+else
+  num_cols=$(head -n 1 "$data_file" | tr '\t' '\n' | wc -l)  
+fi
+
+# Find the highest parameter number used in the query
+max_param=$(echo "$query" | sed -n 's/.*\$\([0-9]\+\).*/\1/p' | sort -nr | head -n 1)
+
+# Generate the CREATE TABLE statement for the temporary table
+create_table="CREATE TEMP TABLE temp_data ("
+for ((i=1; i<=num_cols; i++)); do
+  create_table+="col$i TEXT"
+  if [ $i -lt $num_cols ]; then
+    create_table+=", "
+  fi
+done
+create_table+=") ON COMMIT DROP;"
+
+# Load the data into the temporary table
+if [ "$data_file" = "-" ]; then
+  echo "$create_table" | psql -d mydb
+  psql -d mydb -c "COPY temp_data FROM STDIN DELIMITER E'\t'"
+else
+  echo "$create_table" | psql -d mydb
+  psql -d mydb -c "COPY temp_data FROM '$data_file' DELIMITER E'\t'"
+fi
+
+# Prepare the parameterized query
+echo "PREPARE stmt AS $query;" | psql -d mydb
+
+# Build the SELECT list for the EXECUTE query
+select_list=""
+for ((i=1; i<=max_param; i++)); do
+  select_list+="col$i"
+  if [ $i -lt $max_param ]; then
+    select_list+=", "
+  fi
+done
+
+# Execute the prepared statement for each row in the temporary table
+psql -d mydb <<EOF
+SELECT 'EXECUTE stmt(' || string_agg(quote_nullable(col), ', ' ORDER BY col) || ');'
+FROM (
+  SELECT $select_list
+  FROM temp_data
+) t
+GROUP BY ()
+\gexec
+EOF

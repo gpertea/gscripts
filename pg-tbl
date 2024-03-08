@@ -4,33 +4,35 @@ read -r -d '' USAGE << EOM
 Usage:
  pg-tbl [options] table|qryfile
  
- Default (no -i option given): backup table data or executes the query
- specified in qryfile. If qryfile is '-' then a query is taken from stdin
+ Default (no -i option given): if the first argument is the path to an existing
+ file, and the file content will be assumed to be an sql query to be executed; 
+ if it is '-' then the query is taken from stdin. Otherwise the argument is 
+ taken to be a table name and the content of specified table will be retrieved.
 
- If -i option is given with a file name it attempts to insert
- the content of the file into the named table
+ If -I option is given, the script switches to "table insert" mode, and the
+ first argument of the program must be the name of an existing table, in which the
+ content of the file given with -i will be inserted.
 
  Options:
- Table write/insert mode:
-  -i tbl_backup_file  table restore mode: use pg_restore to restore/insert the 
-                      table data found in the given file
+ Table rows insert mode:
+  -I tbl_data.txt     table insert mode: insert the content of tbl_data.txt
+                      into the specified table; the input data must be tab 
+                      delimited, headerless, and with the exact order of columns.
  Table/query output:
-  -f col1,col2..      comma delimited list of columns (fields)
-                      to extract from table
+  -f col1,col2..      when the script argument is a table name, this option 
+                      specifies the columns (fields) to be selected
+                      (default: all columns)
   -C                  output is CSV instead of tab delimited
   -H                  include table header (only for -C option)
-  -S                  only show table dependencies and exit
+  -S                  show table columns and dependencies
   -h/-s server        override PGHOST with this server name
   -p port             overrides default port
   -b/-d database      override PGDATABASE
   -U/-u               override PGUSER
  
- Note: this utility relies on pg_dump, pg_restore & psql utilties 
+ Note: this utility relies on the psql program
  and ~/.pgpass must be configured for user authentication.
 EOM
-#TODO:
-# -I/-A               for -i, load into a temporary table and insert/append
-#                     only the missing rows into the target table
 
 trunc=""
 server=""
@@ -55,13 +57,27 @@ function psqlget {
   psql $pgopts -c "$qry"
 }
 
+function output_query_result {
+  local qry="$1"
+  local fout="$2"
+  local copyfmt="format 'text'"
+  if [[ -n $csv ]]; then
+    copyfmt="format 'csv'"
+    fout=$fout.csv.gz
+    if [[ -n $hdr ]]; then copyfmt="$copyfmt,header true"; fi
+  else
+    copyfmt="$copyfmt,null ''"
+    fout=$fout.tab.gz
+  fi
+  psql $pgopts -c "COPY ($qry) TO STDOUT WITH ($copyfmt)" | gzip > "$fout"
+}
 
 if [[ -z "$1" || "$1" == "--help" || ( -z "$2" && "$1" == "-h" ) ]]; then
    echo "$USAGE"
    exit 1
 fi
 
-while getopts "s:b:h:d:p:f:u:U:qIAHSCDi:" OPT; do
+while getopts "s:b:h:d:p:f:u:U:qHSCDI:" OPT; do
   case $OPT in
   q)
     quiet=1
@@ -80,7 +96,7 @@ while getopts "s:b:h:d:p:f:u:U:qIAHSCDi:" OPT; do
     ;;
   b | d)
     db="$OPTARG"
-    pgopts="$pgopts -b $dbname"
+    pgopts="$pgopts -d $db"
     ;;
   u | U)
     user="$OPTARG"
@@ -94,7 +110,7 @@ while getopts "s:b:h:d:p:f:u:U:qIAHSCDi:" OPT; do
     port="$OPTARG"
     pgopts="$pgopts -p $port"
     ;;
-  i)
+  I)
     infile="$OPTARG"
     if [[ ! -f $infile ]]; then
       errout "File '$infile' not found!"
@@ -116,33 +132,56 @@ shift $((OPTIND-1))
 if [[ -z $server ]]; then server=$PGHOST; fi
 if [[ -z $db ]]; then db=$PGDATABASE; fi
 
-table="$1" ## could be more than one?
+table_or_file="$1" ## could be more than one?
 
-if [[ -z $table ]]; then
+if [[ -z $table_or_file ]]; then
  errout "database table or query file not specified!"
 fi
 if [[ -z $quiet ]]; then
  >&2 echo "Using server '$server', database '$db'"
 fi
+
+if [[ -f "$table_or_file" ]]; then
+  # Execute query from the file
+  date=$(date '+%y_%m_%d')
+  fout="query_result.$date"
+  qry=$(cat "$table_or_file")
+  output_query_result "$qry" "$fout"
+  exit 0
+fi
+
+if [[ "$table_or_file" == "-" ]]; then
+  # Read query from stdin
+  query=$(cat)
+  date=$(date '+%y_%m_%d')
+  fout="query_result.$date"
+  output_query_result "$query" "$fout"
+  exit 0
+fi
+
 # checking table/view existence
-r=$(psqlget "select exists (select from pg_tables where schemaname='public' AND tablename='$table')")
+r=$(psqlget "select exists (select from pg_tables where schemaname='public' AND tablename='$table_or_file')")
 ##"
 r=$(echo $r | tr '[:upper:]' '[:lower:]')
 if [[ $r == "f" ]]; then
   # try to check if it's a view?
-  r=$(psqlget "select exists (select from pg_views where viewname='$table')")
+  r=$(psqlget "select exists (select from pg_views where viewname='$table_or_file')")
   ##"
   r=$(echo $r | tr '[:upper:]' '[:lower:]')
   if [[ $r == "f" ]]; then
-    errout "table/view '$table' does not exist!"
+    errout "table/view '$table_or_file' does not exist!"
   fi
 fi
 
 if [[ -n $showdeps ]]; then
+  echo "Table columns:"
+  psqlget "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '$table_or_file'"
+  echo ""
+  echo "Table dependencies:"
   psqlget "with recursive chain as ( \
     select classid, objid, objsubid, conrelid from pg_depend d \
     join pg_constraint c on c.oid = objid \
-    where refobjid = '$table'::regclass and deptype = 'n' \
+    where refobjid = '$table_or_file'::regclass and deptype = 'n' \
 union all \
     select d.classid, d.objid, d.objsubid, c.conrelid from pg_depend d \
     join pg_constraint c on c.oid = objid \
@@ -155,27 +194,13 @@ fi
 
 if [[ -z "$infile" ]]; then # output mode
   ## backup to: table.date.gz
-  #date=$(date '+%y_%m_%d-%H:%M')
   date=$(date '+%y_%m_%d')
-  fout="$table.$date"
-  copyfmt="format 'text'"
-  if [[ -n $csv ]]; then
-    copyfmt="format 'csv'"
-    fout=$fout.csv.gz
-    if [[ -n $hdr ]]; then copyfmt="$copyfmt,header true"; fi
-  else
-    copyfmt="$copyfmt,null ''" 
-    fout=$fout.tab.gz
+  fout="$table_or_file.$date"
+  qry="select * from $table_or_file"    
+  if [[ -n $tcols ]]; then
+    qry="select $tcols from $table_or_file"
   fi
-  if [[ -f "$table" ]]; then # execute query in given file
-    psql $pgopts -f "$table"
-  else
-    qry="copy $table to stdout with ($copyfmt)"    
-    if [[ -n $tcols ]]; then
-      qry="copy (select $tcols from $table) to stdout with ($copyfmt)"
-    fi
-    psql $pgopts -c "$qry" 
-  fi
+  output_query_result "$qry" "$fout"
   exit 0
 fi
 ## -- importing given file into table
@@ -187,10 +212,9 @@ else
   copyfmt="$copyfmt,null ''" 
 fi
 
-qry="\\copy $table from stdin with ($copyfmt)"
+qry="\\copy $table_or_file from stdin with ($copyfmt)"
 if [[ $infile =~ \.t?gz$ ]];
   gzip -cd $infile | psql $pgopts -c "$qry"
 else
   psql $pgopts -c "$qry" < $infile
 fi
-
