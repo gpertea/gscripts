@@ -23,7 +23,7 @@ while (my $row = dbFetch()) {
       } @$row) )."\n";
 }
 
-#dbPrint("select * from datasets");
+dbPrint("select * from datasets");
 
 dbLogout();
 
