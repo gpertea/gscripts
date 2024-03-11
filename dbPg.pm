@@ -24,7 +24,7 @@ A wrapper module for DBI, with various helper subroutines
 our ($VERSION, @ISA, @EXPORT);
 @ISA = qw(Exporter);
 @EXPORT = qw( dbErr dbLogin dbQuery dbPrep dbFetch dbFetchAll 
-              dbExec dbDo dbRun dbPrint dbDrop dbLogout);
+              dbExec dbExecPrep dbFetchPrep dbDo dbRun dbPrint dbDrop dbLogout);
 
 #------------ subroutines -----
 ## see: https://docs.mojolicious.org/DBD/Pg
@@ -134,20 +134,33 @@ sub dbPrep {
  return $pg_sth_; 
 }
 
-sub dbExec { # execute non-query statement (update, insert)
+sub dbExec { # execute query or prepared statement
   my ($req, @parm)=@_; # $req could be a query or a $sth
   my $sth;
   if (ref($req)) { # it's a sth
     $sth=$req;
   }
   else { #prep it first
-    $pg_sth_=dbPrep($req);
+    dbPrep($req);
     $sth=$pg_sth_;
   }
   ## execute should return the number of rows affected
   my $r=$sth->execute(@parm);
   dbErr(" *** execute failed! ".$DBI::errstr) if length($r)==0;
   return wantarray ? ($sth, $r) : $r;
+}
+
+sub dbExecPrep { #execute prepared statement $pg_sth_
+ my $r=$pg_sth_->execute(@_);
+ dbErr(" *** execute failed! ".$DBI::errstr) if length($r)==0;
+ return wantarray ? ($pg_sth_, $r) : $r; 
+}
+
+sub dbFetchPrep { #execute and fetch prepared statement in $pg_sth_
+  my $r=$pg_sth_->execute(@_);
+  dbErr(" *** execute failed! ".$DBI::errstr) if length($r)==0;
+  ## fetch all rows and return a ref to array of arrays
+  return $pg_sth_->fetchall_arrayref();
 }
 
 sub dbDo {
