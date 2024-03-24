@@ -104,7 +104,7 @@ echo "["$(date '+%m/%d %H:%M')"] task ${jobid}.${taskid} starting on $host:${pwd
 fsalm="salmon/quant.sf"
 if [[ ! -s $fsalm ]]; then
   cmd="salmon quant -p $ncpus -lA -1 ${fqs1[@]} -2 ${fqs2[@]} \
-   -i $salmidx --numBootstraps 100 --validateMappings -d -o salmon >& salmon.log"
+   -i $salmidx --numBootstraps 60 -d -o salmon >& salmon.log"
   echo -e "running salmon:\n$cmd" | tee -a $rlog
   run="${run}s"
   eval "$cmd" |& tee -a $rlog &

@@ -5,21 +5,18 @@
 
 ## run with arx:
 #    arx sub -a 1- -j 20 -m32G -c6 --cfg fq2cram.cfg task_fq2cram.sh samples.manifest
-## add -P option to run with parallel
+## add -P option to run with GNU parallel
 
 ## or with sbatch: 
 ##   sbatch -a 1-210 --mem=32G -c 6 task_fq2cram.sh samples.manifest
 
 
 kvalue=${HISAT_K:-40} # -k option of HISAT2
-## TODO: these should be pulled from a config file passed to this script
 refdir=${GREF_DIR:-/dcs04/lieber/lcolladotor/annotationFiles_LIBD001/SPEAQeasy/Annotation/reference/hg38}
 gref_base=${GREF_BASE:-gencode_v25_main}
 gref=${GENOME_FA:-$refdir/assembly/fa/assembly_hg38_${gref_base}.fa}
 hsidx=${HISAT_IDX:-$refdir/assembly/index/hisat2_assembly_hg38_${gref_base}}
 hscpus=${HISAT_CPUS:-6}
-#gref_tx="$refdir/transcripts/kallisto/kallisto_index_hg38_gencode_v25"
-#salm_tidx="$refdir/transcripts/salmon/salmon_index_hg38_gencode_v32"
 
 function err_exit {
  echo -e "Error: $1"
