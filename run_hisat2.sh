@@ -128,10 +128,10 @@ hisat2 --mm -p 4 --phred33 --min-intronlen 20 $params | \
  samtools view -b -o $bam
 ## now sort it and convert to BAM
  echo '['$(date '+%m/%d %H:%M')"] running:" >> $rlog
- echo "samtools sort -T $fn.srttmp -l 4 -m 7G --no-PG -@ 4 $bam | \
-scramble -B -I bam -O cram -8 -r $gref -X small -t 4 -n -! - $cram" >> $rlog
+ echo "samtools sort -T $fn.srttmp -l 4 -m 7G -@ 4 $bam | \
+scramble -B -I bam -O cram -8 -r $gref -X small -t 4 -! - $cram" >> $rlog
  samtools sort -T $tmpsrt -l 4 -m 7G --no-PG -@ 4 $bam | \
-  scramble -B -I bam -O cram -8 -r $gref -X small -t 4 -n -! - $cram
+  scramble -B -I bam -O cram -8 -r $gref -X small -t 4 -! - $cram
 if [[ $? -eq 0 ]]; then
  rm -f $bam
 else

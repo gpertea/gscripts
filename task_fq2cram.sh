@@ -167,7 +167,7 @@ fi
 echo '['$(date '+%m/%d %H:%M')"] start sorting+conversion to CRAM" | tee -a $rlog
 tmpsrt=$tmpdir/$ofn.cram_srt_tmp
 /bin/rm -f ${tmpsrt}*
-cmd="samtools sort -O cram,version=3.1 --reference=$gref -T $tmpsrt -o $cram --write-index -m 7G --no-PG -@ 4 $ucram"
+cmd="samtools sort -O cram,version=3.1 --reference=$gref -T $tmpsrt -o $cram --write-index -m 7G -@ 4 $ucram"
 echo -e "$cmd" | tee -a $rlog
 
 eval "$cmd" |& tee -a $rlog
