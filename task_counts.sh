@@ -103,7 +103,7 @@ cd $outpath || err_exit "failed at: cd $outpath"
 ## need actual files, not symlinks
 crams=( $(find . -maxdepth 1 -type f -name "${sid}*.cram") )
 
-bams=( $(ls ${sid}*.bam) ) # the unsorted alignments to use for featureCounts
+bams=( $(ls ${sid}*.bam) ) # the unsorted primary alignments to use for featureCounts
 
 ncram=${#crams[@]}
 if ((ncram==0)); then
