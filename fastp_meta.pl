@@ -2,18 +2,22 @@
 use strict;
 use Getopt::Std;
 use File::Find;
+use File::Basename;
 
 umask 0002;
 ## quick parsing of basic adapter trimming summary from _fastp.json and _fastp.log output
 ## provide only the prefix, _fastp.json and _fastp.log are automatically added
 my $usage = q/Usage:
-  fastp_meta.pl [dir1, dir2, ...]
+  fastp_meta.pl -N [dir1, dir2, ...]
 This script searches recursively for all _fastp.json and _fastp.log files in the given 
 paths (or the current directory if no paths to search in are given) and 
 outputs a table with the relevant metrics reported per sample.
+
+Options
+   -N: use the file name as sample ID instead of folder names
 /;
 
-getopts('o:') || die($usage."\n");
+getopts('No:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
@@ -27,7 +31,7 @@ if (scalar(@ARGV)==0) {
    die("Error: path $d not found!\n") unless -d $d;
  }
 }
-
+my $usefnID=$Getopt::Std::opt_N;
 my $fmask='.+_fastp\.json';
 my @ffiles; # found _fastp json files
 my $hdr=1;
@@ -35,9 +39,11 @@ foreach my $path (@ARGV) {
    my @ffiles;
    # Get a custom subroutine for this iteration
    my $wanted = make_wanted(\@ffiles);
-   find($wanted, $path);
+   find($wanted, $path);  
    my (@uniqIDs,  $idlevel);
-   $idlevel=getUIDs(\@ffiles, \@uniqIDs); ## this populates \@uniqIDs
+   unless ($usefnID) {
+     $idlevel=getUIDs(\@ffiles, \@uniqIDs); ## this populates \@uniqIDs 
+   }
    ## now process @ffiles results
    my $i=-1;
    foreach my $fj (@ffiles) {
@@ -46,7 +52,13 @@ foreach my $path (@ARGV) {
      $i++;
      next unless -f $flog;
      #print STDERR "$flog - $fj\n";
-     my $sid=$uniqIDs[$i];
+     my $sid;
+     if ($usefnID) {
+       $sid=basename($flog);
+       $sid=~s/_fastp\.log$//;
+     } else {
+       $sid=$uniqIDs[$i];
+     }
      my ($bef, $aft, $fr, $ins, $adcut, # sections
          $bef_r1r, $bef_r1b, $bef_r2r,  $bef_r2b,  $bef_r1_avglen, $bef_r2_avglen, 
          $aft_r1r, $aft_r1b, $aft_r2r, $aft_r2b,  $aft_r1_avglen, $aft_r2_avglen, 
