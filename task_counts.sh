@@ -268,10 +268,26 @@ if [[ ! -s $fgsum || ! -s $fexsum ]]; then
   exit 1
 fi
 
+function get_fsize() {
+    local file_path="$1"
+    # Follow symbolic links
+    if [[ -L "$file_path" ]]; then
+        file_path=$(readlink -f "$file_path")
+    fi
+    # Get file size, providing 0 if an error occurs
+    stat -c %s "$file_path" 2>/dev/null || echo 0
+}
+mcram_crai="$mcram.crai"
+
 ## crampipe="samtools view --threads 2 -T $gref -u $mcram |"
-if [[ $(stat -c %s $mcram 2>/dev/null || echo 0) -lt 100000 || $(stat -c %s $mcram.crai 2>/dev/null || echo 0) -lt 1200 ]]; then
-   echo '['$(date '+%m/%d %H:%M')"] merged cram file too small" | tee -a $rlog  
-   exit 1
+#if [[ $(stat -c %s $mcram 2>/dev/null || echo 0) -lt 100000 || $(stat -c %s $mcram.crai 2>/dev/null || echo 0) -lt 1200 ]]; then
+#   echo '['$(date '+%m/%d %H:%M')"] merged cram file too small" | tee -a $rlog  
+#   exit 1
+#fi
+
+if [[ $(get_fsize "$mcram") -lt 100000 || $(get_fsize "$mcram_crai") -lt 1200 ]]; then
+  echo '['$(date '+%m/%d %H:%M')"] Warning: merged cram or cram index suspiciously small" | tee -a $rlog  
+  exit 1
 fi
 
 ## adding Mito_mapped metrics if not found
