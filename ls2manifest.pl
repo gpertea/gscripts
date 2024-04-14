@@ -7,10 +7,13 @@ my $usage = q{Usage:
   ls `pwd -P`/*/*.fastq.gz | ls2manifest.pl > samples.manifest
   
   Quickly build a samples.manifest file for SPEAQeasy (for paired reads)
+  
+  Use -A option to keep all the prefix before _1/_2 read suffixes. 
 };
 umask 0002;
-getopts('o:') || die($usage."\n");
+getopts('Ao:') || die($usage."\n");
 my $outfile=$Getopt::Std::opt_o;
+my $keepall=$Getopt::Std::opt_A;
 if ($outfile) {
   open(OUTF, '>'.$outfile) || die("Error creating output file $outfile\n");
   select(OUTF);
@@ -45,25 +48,31 @@ while (<>) {
  $fn=~s/_([12])\.[^\.]+/_$1/;
  my $fc=$fn; #common pattern 
  my $mate;
+ my $fullpre=0;
  if ($fc=~s/_([12])$// || $fc=~s/_R([12])$// ) { 
-   $mate=$1;
+   $mate=$1; $fullpre=1;
  } elsif ($fc=~s/_R([12])(_[^_]+)$/$2/) {
    $mate=$1;
  }# else { die("Error parsing the mate # from $fn \n"); }
- #print STDERR "   mate=$mate\n";
+ #print STDERR "fc=$fc \n";
  my @s=split(/_/,$fc);
- my $si=(@s>1)?$s[0].'_'.$s[1] : $s[0];
- if ($s[0]=~m/^R\d+$/) {
-  $si=$s[0]; # merge all with same RNum
- }
- #print STDERR "si=$si | \@s: ( ".join(", ", @s)." )\n";
- if (@s>2 && $s[0]=~m/^\d+$/) { 
-   ## for situations like this: 
-   #   10_Br5460_SLC17A7pos_HGW2VBBXY_S43..
-   #   10_Br5460_SLC17A7pos_HGW2VBBXY_S43..
-   #   11_Br5460_SNAP25pos_HGW2VBBXY_S44..
-   #   11_Br5460_SNAP25pos_HGW2VBBXY_S44..
-   $si.='_'.$s[2];
+ my $si;
+ if ($fullpre && $keepall) {
+   $si = $fc;
+ } else { 
+   $si = (@s>1)?$s[0].'_'.$s[1] : $s[0];
+   if ($s[0]=~m/^R\d+$/) {
+    $si=$s[0]; # merge all with same RNum
+   }
+   #print STDERR "si=$si | \@s: ( ".join(", ", @s)." )\n";
+   if (@s>2 && $s[0]=~m/^\d+$/) { 
+     ## for situations like this: 
+     #   10_Br5460_SLC17A7pos_HGW2VBBXY_S43..
+     #   10_Br5460_SLC17A7pos_HGW2VBBXY_S43..
+     #   11_Br5460_SNAP25pos_HGW2VBBXY_S44..
+     #   11_Br5460_SNAP25pos_HGW2VBBXY_S44..
+     $si.='_'.$s[2];
+   }
  }
  my $pre=$d.'/'.$si; # last dir + rnum + flow cell
  #print STDERR "processing: $pre $fn ($fc)\n";
