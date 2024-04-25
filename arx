@@ -11,8 +11,8 @@ Usage:
  Array job executor for SLURM (or for GNU parallel, when used with -P).
  Usage example, running tasks for all lines in ../samples.manifest with
  a concurrency of 20 and a config file specified for environment variables:
-   arx sub -a 1-%20 task_fq2cram.sh ../samples.manifest \
-   --cfg ../fq2cram_config.cfg
+   arx sub -a 1- -j20 -m 24G -t 16:00:00 --cfg ../fq2cram_config.cfg \
+     task_fq2cram.sh ../samples.manifest
 
  Or use -C option to execute each line of <cmdfile> as a task in an array job.
  Example for local run (using GNU parallel) with a maximum concurrency of 6:
