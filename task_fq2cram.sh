@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-##x mem=32G
-##x cpus=6
+##x mem=36G
+##x cpus=8
+##x time=96:00
 #### change refdir below accordingly
 
-## run with arx:
-#    arx sub -a 1- -j 20 -m32G -c6 --cfg fq2cram.cfg task_fq2cram.sh samples.manifest
+## run with arx on SLURM:
+#    arx sub -a 1- -j 20 -t96:00 -m36G -c8 --cfg fq2cram.cfg task_fq2cram.sh samples.manifest
 ## add -P option to run with GNU parallel
-
-## or with sbatch: 
-##   sbatch -a 1-210 --mem=32G -c 6 task_fq2cram.sh samples.manifest
-
 
 kvalue=${HISAT_K:-40} # -k option of HISAT2
 refdir=${GREF_DIR:-/dcs04/lieber/lcolladotor/annotationFiles_LIBD001/SPEAQeasy/Annotation/reference/hg38}
