@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 ##x mem=36G
 ##x cpus=8
-##x time=96:00
+##x time=96:00:00 (or time=4-00:00)
 #### change refdir below accordingly
 
 ## run with arx on SLURM:
-#    arx sub -a 1- -j 20 -t96:00 -m36G -c8 --cfg fq2cram.cfg task_fq2cram.sh samples.manifest
+#    arx sub -a 1- -j 20 -t 4-00:00 -m36G -c8 --cfg fq2cram.cfg task_fq2cram.sh samples.manifest
 ## add -P option to run with GNU parallel
 
 kvalue=${HISAT_K:-40} # -k option of HISAT2
