@@ -116,7 +116,7 @@ foreach my $dd (@ddash) {
 
 $JARR=$Getopt::Std::opt_a if $Getopt::Std::opt_a;
 $JMEM=$Getopt::Std::opt_m if $Getopt::Std::opt_m;
-$JPART=$Getopt::Std::opt_m if $Getopt::Std::opt_p;
+$JPART=$Getopt::Std::opt_p if $Getopt::Std::opt_p;
 $JCPUS=$Getopt::Std::opt_c if $Getopt::Std::opt_c;
 my $mail=$Getopt::Std::opt_M;
 if ($mail) {
