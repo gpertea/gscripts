@@ -73,7 +73,6 @@ for rdest in "${rdirs[@]}" ; do
    fi
 done
 
-
 # clean up files older than 30 days unless those backup files are smaller
 #dbfs=$(stat -c'%s' "$dbf")
 #oldbf=$(ls -1t *.${wiki}_db.sql.gz 2>/dev/null | tail -n +2 | head -1)
