@@ -23,7 +23,7 @@ fcexon=${FCOUNTS_EXON:-$refdir/gtf/gencode25.main.exons.gtf}
 fcgene=${FCOUNTS_GENE:-$refdir/gtf/gencode25.main.flattened.saf}
 refqc=${RQC_REF:-$refdir/gtf/gencode25.main.collapsed.gtf}
 salmidx=${SALMON_IDX:-$refdir/salmon_idx/gencode25.main}
-ncpus=${SALMON_CPUS:-4}
+ncpus=${SALMON_CPUS:-6}
 ## note 3 more cpus will be used 
 function err_exit {
  echo -e "Error: $1"
@@ -70,7 +70,7 @@ else
  if [[ $host == srv05 ]]; then
    tmpdir=/dev/shm/${USER}-${jobid}_$taskid
  elif [[ $host == srv16 ]]; then
-   tmpdir=/ssdtemp/scratch/${USER}-${jobid}_$taskid
+   tmpdir=/tmp/scratch/${USER}-${jobid}_$taskid
  else
    tmpdir=$pwd/tmp/${jobid}_$taskid
  fi

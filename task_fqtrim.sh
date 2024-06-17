@@ -11,9 +11,9 @@
 ##
 ##   where <SeqSampleID> may be <sampleID>_<flowcell>
 ## run with:
-# arx sub -m8G -c6 -a1- task_fqtrim.sh ../samples.manifest
+# arx sub -m8G -c8 -a1- task_fqtrim.sh ../samples.manifest
 
-ncpus=6
+ncpus=8
 
 function err_exit {
  echo -e "Error: $1"

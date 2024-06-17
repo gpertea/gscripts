@@ -152,7 +152,7 @@ eval "$cmd" |& tee -a $rlog
 ## ---- sort and convert to BAM
 echo '['$(date '+%m/%d %H:%M')"] start sorting/conversion to CRAM" | tee -a $rlog
 cmd="samtools sort -T $tmpsrt -l 6 -m 7G --no-PG -@ 4 $bam | \
- scramble -B -I bam -O cram -8 -r $gref -X small -t 4 -n -! - $cram"
+ scramble -B -I bam -O cram -8 -r $gref -X small -t 4 -! - $cram"
 echo -e "$cmd" | tee -a $rlog
 
 eval "$cmd" |& tee -a $rlog
