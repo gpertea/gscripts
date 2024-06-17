@@ -39,7 +39,11 @@ foreach my $path (@ARGV) {
    my @ffiles;
    # Get a custom subroutine for this iteration
    my $wanted = make_wanted(\@ffiles);
-   find($wanted, $path);  
+   #find($wanted, $path);  
+   find({ wanted => $wanted, follow => 1 }, $path);
+   if (@ffiles==0) {
+      warn("Warning: no files found in $path\n");
+   }
    my (@uniqIDs,  $idlevel);
    unless ($usefnID) {
      $idlevel=getUIDs(\@ffiles, \@uniqIDs); ## this populates \@uniqIDs 
