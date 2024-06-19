@@ -101,7 +101,7 @@ outpath=$sid
 cd $outpath || err_exit "failed at: cd $outpath"
 #crams=( $(ls ${sid}*.cram) ) # could be one per flowcell
 ## need actual files, not symlinks
-crams=( $(find . -maxdepth 1 -type f -name "${sid}*.cram") )
+crams=( $(find . -maxdepth 1 -type f -name "${sid}*.cram" | sed 's/.\///') )
 
 bams=( $(ls ${sid}*.bam) ) # the unsorted primary alignments to use for featureCounts
 
@@ -156,8 +156,8 @@ check_cram_nolink() {
 #           Salmon to get transcript counts
 #sampipe="samtools view --threads 2 --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u $cref ${faln[@]} |"
 #sampri="samtools view --threads 2 -F 260 -T $gref -o $fpri --write-index -O cram,version=3.1 ${crams[0]}"
+teemerge=""
 if ((ncram==1)); then
-  teemerge=""
   fn=${crams[0]/.cram/} ## remove .cram
   if [[ "$fn" != "$sid" ]]; then
      check_cram_nolink "$sid.cram"
@@ -183,7 +183,9 @@ else #if [[ $ncram -gt 1 ]]; then
   done
   crams=("${rcrams[@]}")
   crampipe="samtools merge -rh $rgf --threads 2 --reference=$gref -u - ${crams[@]} | "
-  teemerge="tee >(samtools view -O cram,version=3.1 --threads 2 --write-index --reference=$gref -o $mcram -) |"
+  if [[ ! -s $mcram ]]; then
+    teemerge="tee >(samtools view -O cram,version=3.1 --threads 2 --write-index --reference=$gref -o $mcram -) |"
+  fi
   ## | samtools view --input-fmt-option filter='rname=~\"^chr[0-9MXY]+$\"' -u -|"
   bampri="samtools merge --threads 2 -u - ${bams[@]} | samtools view -F 0x900 -u -|"
 fi
@@ -199,7 +201,7 @@ if [[ ! -f $fmet || $(stat -c%s $fmet) -lt 200 ]]; then
   run="${run}q"
 fi
 
-run=''
+# run=''
 
 fjtab=$sid.regtools.ctab
 if [[ ! -f $fjtab || $(stat -c%s $fjtab) -lt 1200 ]]; then
@@ -217,7 +219,7 @@ if [[ ! -s $fsalm ]]; then
   cmd="salmon quant -p $ncpus -lA -1 <(gunzip -c ${fqs1[@]}) -2 <(gunzip -c ${fqs2[@]}) \
    -i $salmidx --gcBias -q --numGibbsSamples 30 --thinningFactor 40 -d -o salmon >& salmon.log"
   echo -e "running salmon:\n$cmd" | tee -a $rlog
-  #run="${run}s" -- no need, wait for salmon to finish
+  #run="${run}s" -- no need, we wait for salmon to finish
   eval "$cmd" |& tee -a $rlog 
 fi
 
