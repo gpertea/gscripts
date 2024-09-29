@@ -1,0 +1,6 @@
+#!/bin/bash 
+if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $0 <remote_host> [additional rsync options]"
+    exit 1
+fi
+rsync -av ./ "$1:$PWD/" "${@:2}"
