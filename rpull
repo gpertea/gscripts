@@ -1,6 +1,23 @@
-#!/bin/bash 
+#!/bin/bash
+
 if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
-    echo "Usage: $0 <remote_host> [additional rsync options]"
+    echo "Usage: $0 <remote_host> [additional rsync options] [go]"
+    echo "rsync current dir from the same dir on <remote_host>"
+    echo "Example:"
+    echo "  rpull gw  --exclude='{polyA,riboZ}_n170'"
     exit 1
 fi
-rsync -av "$1:$PWD/" ./ "${@:2}"
+# Extract the last argument
+last_arg="${@: -1}"
+
+# Check if the last argument is "go" or starts with "do" (case insensitive)
+if [[ "${last_arg,,}" == "go" || "${last_arg,,}" == "do" || "${last_arg,,}" == "doit" ]]; then
+    # Run rsync without --dry-run
+    set -- "${@:1:$#-1}" # pop last argument
+    rsync -av "$1:$PWD/" ./ "${@:2}"
+else
+    # Run rsync with --dry-run
+    rsync -av --dry-run "$1:$PWD/" ./ "${@:2}"
+    echo -e "***** ATTENTION *****\nThis was a dry run. Add 'go' as the last argument to perform the actual rsync."
+fi
+
