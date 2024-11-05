@@ -4,7 +4,7 @@ if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
     echo "Usage: $0 <remote_host> [additional rsync options] [go]"
     echo "rsync current dir from the same dir on <remote_host>"
     echo "Example:"
-    echo "  rpull gw  --exclude='{polyA,riboZ}_n170'"
+    echo "  rpull gw --exclude={'polyA_n*','riboZ_n*'}"
     exit 1
 fi
 # Extract the last argument
