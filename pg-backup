@@ -1,0 +1,72 @@
+#!/bin/bash
+
+# base directories for backups
+BACKUP_DIR="/data/backups/postgres"
+## note: this should NOT be run on gxlin or gwlin
+SECONDARY_LOCATIONS=(# Array of secondary backup locations
+    "gxlin:/data/backups/postgres"
+    "glin:/data/backups/postgres"
+    "glin:/mnt/p2box_d/_backup/postgres"
+)
+DEFAULT_PG_USER="postgres" # Default PostgreSQL user if not provided
+
+# Check if correct number of arguments is provided
+if [ "$#" -ne 2 ]; then
+    echo "Usage: $0 <[user@]server | [user:]server> <database>"
+    exit 1
+fi
+
+# Parse input arguments
+SERVER="$1"
+DB_NAME="$2"
+
+# Extract the server and user (if provided)
+if [[ "$SERVER" =~ ":" ]]; then
+    PG_USER="${SERVER%%:*}"  # Extract user before ":"
+    PG_HOST="${SERVER##*:}"  # Extract server after ":"
+elif [[ "$SERVER" =~ "@" ]]; then
+    PG_USER="${SERVER%%@*}"  # Extract user before "@"
+    PG_HOST="${SERVER##*@}"  # Extract server after "@"
+else
+    PG_USER="$DEFAULT_PG_USER"  # Use default user if none provided
+    PG_HOST="$SERVER"
+fi
+
+echo "user = $PG_USER; host = $PG_HOST ; db = $DB_NAME"
+## Create local backup directory for the server
+SERVER_BACKUP_DIR="${BACKUP_DIR}/${PG_HOST}"
+mkdir -p "$SERVER_BACKUP_DIR" || { echo "Error: Failed to create directory $SERVER_BACKUP_DIR"; exit 1; }
+
+## check secondary locations
+for LOCATION in "${SECONDARY_LOCATIONS[@]}"; do
+    # Construct the path to the server sub-directory in the secondary location
+    if [[ "$LOCATION" == *:* ]]; then
+      # Remote location
+      REMOTE_HOST="${LOCATION%%:*}"      # Extract the remote host
+      REMOTE_PATH="${LOCATION##*:}"      # Extract the path on the remote host
+      LOCATION_DIR="${REMOTE_PATH}/${PG_HOST}"  # Append the server sub-directory
+      ssh "$REMOTE_HOST" "mkdir -p $LOCATION_DIR" || { echo "Error: Failed to create directory $LOCATION_DIR on remote host $REMOTE_HOST"; exit 1; }
+    else
+      # Local location
+      LOCATION_DIR="${LOCATION}/${PG_HOST}"
+       mkdir -p "$LOCATION_DIR" || { echo "Error: Failed to create directory $LOCATION_DIR"; exit 1; }
+      fi
+done
+
+# Create the backup file
+BACKUP_FILE="${SERVER_BACKUP_DIR}/${DB_NAME}_$(date +%Y%m%d_%H%M%S).Fc_dump"
+echo "Creating backup for database '$DB_NAME' on server '$PG_HOST'..."
+pg_dump -h "$PG_HOST" -U "$PG_USER" -Fc "$DB_NAME" -f "$BACKUP_FILE" || { echo "Error: Backup failed"; exit 1; }
+echo "Backup completed: $BACKUP_FILE"
+
+# Copy backup to secondary locations using rsync
+for LOCATION in "${SECONDARY_LOCATIONS[@]}"; do
+    # Construct the path to the server sub-directory in the secondary location
+    LOCATION_DIR="${LOCATION}/${PG_HOST}"
+    # Sync the backup file to the secondary location
+    echo "Syncing backup to $LOCATION_DIR..."
+    rsync -avz "$BACKUP_FILE" "$LOCATION_DIR/" || { echo "Error: Failed to sync backup to $LOCATION_DIR"; exit 1; }
+    echo "   .. done"
+done
+
+echo "All backups completed successfully."
