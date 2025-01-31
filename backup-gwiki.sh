@@ -11,13 +11,19 @@
 H=/home/gpertea
 #local work/backup directory:
 wiki=gwiki
-BDIR=/data1/backups/wiki
+#BDIR=/data1/backups/wiki
+BDIR=/data/backups/wiki
 export PATH=$H/gscripts:/opt/geo/bin:$H/bin:/usr/bin:/bin:/sbin:/usr/sbin
 bn=bck_$(date +%y%m%d_%H-%M)
 host=$(hostname -s)
-wikidir=/data/nginx/melokalia/html/mediawiki
 
-rdirs=( "/mnt/p2box_m/_backup/$wiki" "/mnt/p2box_f/_backup/$wiki" "/data3/backups/$wiki" )
+if [[ ! -d $BDIR/$wiki ]]; then
+  mkdir -p $BDIR/$wiki
+fi
+
+wikidir=/var/www/mediawiki
+
+rdirs=( "glin:/storage/zraid/backups/$wiki" "glin:/mnt/p2box_f/_backup/$wiki" "gdebsrv:/data1/backups/$wiki" )
 
 ferr=$BDIR/$bn.stderr
 echo "Backing up into: $BDIR/${bn}*"
@@ -67,14 +73,6 @@ echo "Backing up database with mysqldump ($dbf).." >> $ferr
    --single-transaction $wiki -c | gzip > $BDIR/$dbf
 ) 2>>$ferr
 
-### -- xml dump:
-## --disable for now
-#xmlf="$bn.${wiki}_xml.bz2"
-#echo "Backing up pages as xml ($xmlf).." >> $ferr
-#( nice -n19 php -d error_reporting=E_ERROR maintenance/dumpBackup.php --current | \
-#  nice -n19 bzip2 -9 > ~/backups/wiki/$xmlf 
-#) 2>>$ferr
-
 ##- restore wiki to read-write:
 #nice -n 19 perl -i -pe 's/^\s*(\$wgReadOnly[ =])/## $1/' LocalSettings.php
 
@@ -118,7 +116,7 @@ errtext=$(grep -E -i 'error|fail|cannot|space|couldn|\bfault' $ferr 2>/dev/null)
 if [[ $dbfs -lt 1024 || $dbfs -lt $oldbfs || $errtext ]]; then
   cleanup_old=0
   echo "Warning: issues encountered during backup ($dbf, size $dbfs, prev. $oldbf size $oldbfs), check $ferr" >> $ferr
-     mail -s "${wiki} backup issue" -r 'backuper@'$host.jhu.edu 'geo.pertea@gmail.com' < $ferr
+     mail -s "${wiki} backup issue" 'geo.pertea@gmail.com' < $ferr
 fi
 
 if [[ $cleanup_old -gt 0 ]]; then
@@ -172,7 +170,7 @@ for rdest in "${rdirs[@]}" ; do
    echo " -- target $rbasedir done --" | tee -a $frerr
  else
    echo "Notifying remote target: ssh $rhost \"$rbasedir/backup_received.sh '$rdir' '$bn' '$cleanup_old' '$ff'\"" | tee -a $frerr
-   ssh $rhost "$rbasedir/backup_received.sh '$rdir' '$bn' '$cleanup_old' '$ff'" 2>&1 | tee -a $frerr
+   ssh $rhost "bash $rbasedir/backup_received.sh '$rdir' '$bn' '$cleanup_old' '$ff'" 2>&1 | tee -a $frerr
    echo " -- remote target $rdest done --" | tee -a $frerr
  fi
 done
