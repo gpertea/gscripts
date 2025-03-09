@@ -5,10 +5,13 @@ use FindBin;use lib $FindBin::Bin;
 
 my $usage = q{Usage:
   ls `pwd -P`/*/*.fastq.gz | ls2manifest.pl > samples.manifest
-  
+   
   Quickly build a samples.manifest file for SPEAQeasy (for paired reads)
   
   Use -A option to keep all the prefix before _1/_2 read suffixes. 
+  
+  NOTE: 
+  make sure `export LC_ALL=C` is set in the shell for sane sorting
 };
 umask 0002;
 getopts('Ao:') || die($usage."\n");
