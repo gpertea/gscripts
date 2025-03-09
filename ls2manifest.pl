@@ -44,12 +44,14 @@ while (<>) {
  my ($d)=($fp=~m{/([^/]+)$}); #last directory
  $fn=~s/\.[gx]z$//i;
  $fn=~s/\.bz2$//i;
- $fn=~s/[._](fq|fastq)$//i;
- $fn=~s/_([12])\.[^\.]+/_$1/;
+ $fn=~s/[\._](fq|fastq)$//i;
+ #print STDERR ">fn=$fn\n";
+ #$fn=~s/[_\.]([12])\.[^\.]+/_$1/;
  my $fc=$fn; #common pattern 
+ #print STDERR " fc=$fc\n";
  my $mate;
  my $fullpre=0;
- if ($fc=~s/_([12])$// || $fc=~s/_R([12])$// ) { 
+ if ($fc=~s/[_\.]([12])$// || $fc=~s/_R([12])$// ) { 
    $mate=$1; $fullpre=1;
  } elsif ($fc=~s/_R([12])(_[^_]+)$/$2/) {
    $mate=$1;
