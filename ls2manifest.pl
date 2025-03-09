@@ -38,6 +38,8 @@ my (@r1, @r2); #list of file names for R1 and R2 respectively
 my (@sid, @fc1, @fc2); #sample_id, common pattern between pairs
 my (@fn1, @fn2); #sample_id, common pattern between pairs
 my $ppre; #previous prefix
+my %cpre; ## keep track of number of rows per sample ID, to warn about -A
+
 while (<>) {
  chomp;
  my ($fn)=(m{/([^/]+)$}); #file name
@@ -85,6 +87,10 @@ while (<>) {
  }
  my $pre=$d.'/'.$si; # last dir + rnum + flow cell
  #print STDERR "processing: $pre $fn ($fc)\n";
+ my $nsid= ($cpre{$si}++);
+ if ($nsid==5) {
+   print STDERR "Warning: sample prefix $si has over 4 entries. Are you sure you don't need -A ?\n" 
+ }
  if ($pre ne $ppre) {
    if (@r1>0) {
      flushData();
