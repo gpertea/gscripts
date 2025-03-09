@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-##x mem=10G
-##x cpus=8
+##x mem=12G
+##x cpus=6
 
 #### Script for adapter trimming with adapter autodetection 
 ###  requires: fastp in the path
 
 ## requires the original samples.manifest file
 ## output is written in a <sampleID> folder for each pair of fastq files
-## as <SeqSampleID>_1.trimmed.fq.gz
+## as <SeqSampleID>_[12].trimmed.fq.gz
 ##
 ##   where <SeqSampleID> may be <sampleID>_<flowcell>
-## run with:
-# arx sub -m8G -c8 -a1- task_fqtrim.sh ../samples.manifest
-
-ncpus=8
+## Example usage on slurm:
+# arx sub -a1- -j25 -c6 -m12G -t 24:00:00 task_fqtrim.sh ../samples.manifest
+ncpus=6
 
 function err_exit {
  echo -e "Error: $1"

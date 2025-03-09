@@ -2,11 +2,11 @@
 ##x mem=36G
 ##x cpus=8
 ##x time=96:00:00 (or time=4-00:00)
-#### change refdir below accordingly
+#### change refdir below accordingly or use a config file
 
 ## run with arx on SLURM:
 #    arx sub -a 1- -j 20 -t 4-00:00 -m36G -c8 --cfg fq2cram.cfg task_fq2cram.sh samples.manifest
-## add -P option to run with GNU parallel
+## add -P option to run with GNU parallel on a single server
 
 kvalue=${HISAT_K:-40} # -k option of HISAT2
 refdir=${GREF_DIR:-/dcs04/lieber/lcolladotor/annotationFiles_LIBD001/SPEAQeasy/Annotation/reference/hg38}
