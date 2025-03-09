@@ -49,7 +49,11 @@ while (<>) {
  $fn=~s/\.bz2$//i;
  $fn=~s/[\._](fq|fastq)$//i;
  #print STDERR ">fn=$fn\n";
- #$fn=~s/[_\.]([12])\.[^\.]+/_$1/;
+ ## trimmed or other tokens after mate indicator, except .R?1 or .R?2:
+ if ($fn=~/[_\.](R?[12])\.([^\.]+)$/) {
+   my ($a,$b)=($1,$2);
+   $fn=~s/[_\.]R?([12])\.[^\.]+$/_$1/ if ($b !~ m/^R?[12]$/)
+ }
  my $fc=$fn; #common pattern 
  #print STDERR " fc=$fc\n";
  my $mate;
@@ -59,7 +63,7 @@ while (<>) {
  } elsif ($fc=~s/_R([12])(_[^_]+)$/$2/) {
    $mate=$1;
  }# else { die("Error parsing the mate # from $fn \n"); }
- #print STDERR "fc=$fc \n";
+ #print STDERR "   mate=$mate ; fullpre=$fullpre\n";
  my @s=split(/_/,$fc);
  my $si;
  if ($fullpre && $keepall) {
