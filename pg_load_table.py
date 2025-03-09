@@ -11,72 +11,52 @@ def csv_to_pg_table(csv_file, table_name, conn_params):
     conn = None
     cur = None
     try:
-        # Use csv.Sniffer to reliably detect the delimiter.
-        try:
-            with open(csv_file, 'r') as f:
-                dialect = csv.Sniffer().sniff(f.read(1024))  # Read a sample to sniff
-                delimiter = dialect.delimiter
-                f.seek(0)  # Reset file pointer to the beginning
-        except Exception as e:
-            print(f"Error determining delimiter: {e}.  Assuming tab-separated.")
-            delimiter = '\t'
+        # Determine delimiter by reading the first line
+        with open(csv_file, 'r') as f:
+            first_line = f.readline()
+            delimiter = '\t' if '\t' in first_line else ','
+            has_header = True  # Assume the file has a header
 
+        # Use pandas to read the file
+        df = pd.read_csv(csv_file, sep=delimiter, engine='python', header=0 if has_header else None)
 
-        try:
-            df = pd.read_csv(csv_file, sep=delimiter, engine='python') # Use the detected delimiter.
-        except FileNotFoundError:
-            print(f"Error: File '{csv_file}' not found.")
-            return
-        except Exception as e:
-            print(f"Error reading CSV: {e}")
-            return
+        conn = psycopg2.connect(**conn_params)
+        cur = conn.cursor()
 
-        try:
-            conn = psycopg2.connect(**conn_params)
-            cur = conn.cursor()
+        # Check if table exists
+        cur.execute(f"SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = '{table_name}');")
+        table_exists = cur.fetchone()[0]
 
-            cur.execute(f"SELECT EXISTS (SELECT 1 FROM pg_tables \
-                WHERE schemaname = 'public' AND \
-                tablename = '{table_name}');")
-            table_exists = cur.fetchone()[0]
+        if not table_exists:
+            # Create table with inferred column types
+            create_table_sql = f"CREATE TABLE {table_name} ("
+            column_names = df.columns if has_header else [f"col{i+1}" for i in range(df.shape[1])]
+            for col_name, col_type in zip(column_names, df.dtypes):
+                if pd.api.types.is_integer_dtype(col_type):
+                    sql_type = "INTEGER"
+                elif pd.api.types.is_float_dtype(col_type):
+                    sql_type = "REAL"
+                elif pd.api.types.is_datetime64_any_dtype(col_type):
+                    sql_type = "TIMESTAMP"
+                elif str(col_type) == 'bool':
+                    sql_type = "BOOLEAN"
+                else:
+                    sql_type = "TEXT"
+                create_table_sql += f"\"{col_name}\" {sql_type}, "
+            create_table_sql = create_table_sql[:-2] + ")"
+            cur.execute(create_table_sql)
+            conn.commit()
 
-            if not table_exists:
-                create_table_sql = f"CREATE TABLE {table_name} ("
-                for col_name, col_type in df.dtypes.items():
-                    if pd.api.types.is_integer_dtype(col_type):
-                        sql_type = "INTEGER"
-                    elif pd.api.types.is_float_dtype(col_type):
-                        sql_type = "REAL"
-                    elif pd.api.types.is_datetime64_any_dtype(col_type):
-                        sql_type = "TIMESTAMP"
-                    elif str(col_type) == 'bool':
-                        sql_type = "BOOLEAN"
-                    elif pd.api.types.is_string_dtype(col_type):
-                        sql_type = "TEXT"
-                    else:
-                        sql_type = "TEXT"
-                    create_table_sql += f"{col_name} {sql_type}, "
-                create_table_sql = create_table_sql[:-2] + ")"
-                cur.execute(create_table_sql)
-                conn.commit()
+        # Load data using COPY
+        with open(csv_file, 'r') as f:
+            cur.copy_expert(f"COPY {table_name} FROM STDIN WITH (FORMAT CSV, HEADER {has_header}, DELIMITER E'{delimiter}')", f)
+            conn.commit()
+            print(f"Data from '{csv_file}' loaded into '{table_name}'.")
 
-            # Use COPY command for faster data loading
-            with open(csv_file, 'r') as f:
-                try:
-                    # Use the detected delimiter in the COPY command
-                    cur.copy_expert(f"COPY {table_name} FROM STDIN WITH (FORMAT CSV, HEADER TRUE, DELIMITER '{delimiter}')", f)
-                    conn.commit()
-                    print(f"Data from '{csv_file}' loaded into '{table_name}'.")
-
-                except Exception as e:
-                    print(f"Error during COPY operation: {e}")
-                    conn.rollback()
-
-        except (Exception, psycopg2.Error) as error:
-            print(f"Error: {error}")
-            if conn:
-                conn.rollback()
-
+    except (Exception, psycopg2.Error) as error:
+        print(f"Error: {error}")
+        if conn:
+            conn.rollback()
     finally:
         if cur:
             cur.close()

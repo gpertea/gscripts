@@ -91,30 +91,29 @@ if [[ ! -f "$fq1" || ! -f "$fq2" ]]; then
    err_exit "Files cannot be found!"
 fi
 
+## output directory (sid) is the merged/common prefix as given in the manifest
+## but ofn / output file base names may have a flowcell and lane suffix etc.
+## NOTE: FASTQ files are not merged across flowcells and lanes at this stage, they are trimmed and QC-ed separately
+## if there are multiple flowcells/lanes, they will be processed independently
+## so $ofn may include a flowcell and lane suffixes
 fn=${fq1##*/} # remove path, keep only filename
 ## if it's RNum_flowcellXX_*_R1_*.fastq.gz
 ## R4225_D1AAPACXX_ATTCCT_L005_R1_001.fastq.gz
-
 if [[ $fn == *.f*q.[gb]z* ]]; then
   fbase=${fn/.f*q.[gb]z*/}
 else
   fbase=${fn/.f*q/}
 fi
 fbase=${fbase/_R1_/_}
-fbase=${fbase/_1[._]/_} # just in case it was _1.token.fastq.gz
-[[ $fbase == *_1 ]] && fbase="${fbase%_*}"
+# in case it was _1.token.fastq.gz or _1_token.fq.gz
+[[ $fbase =~ (.*)_1([_.][^_.]+)$ ]] && fbase="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+# in case it ends with  _1 or .1 
+[[ $fbase == *[_.]1 ]] && fbase="${fbase%[_.]1}"
 
-ofn=$fbase # keep flowcell and lane etc. if they were there
-
-## output directory (sid) is the merged/common prefix as given in the manifest
-## but ofn / output file base names may have a flowcell and lane suffix etc.
-## NOTE: FASTQ files are not merged across flowcells and lanes at this stage, they are trimmed and QC-ed separately
-## if there are multiple flowcells/lanes, they will be aligned independently
-## so $ofn may include a flowcell and lane suffixes !
+ofn=$fbase # kept flowcell and lane etc. if they were there
 
 outpath=$sid
 mkdir -p "$outpath" || err_exit "failed at mkdir -p $outpath"
-
 cd $outpath || err_exit "failed at: cd $outpath"
 
 cram=$ofn.cram
