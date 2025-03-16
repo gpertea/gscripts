@@ -7,8 +7,9 @@
 ## requires a merged manifest file (use fq_merge_manifest.pl on trimmed_samples.manifest)
 ## sampleID folders with cram files are expected in the current directory
 
-## run with:
-# arx sub -m24G -c4 -a1- -j50 --cfg ../strg_g41.cfg task_strg_asm.sh ../merged.manifest
+## run with this command on JHPCE:
+# arx sub -m24G -c4 --qos=shared-200-2 -t 6:00:00 -a1- -j80 --cfg ../strg_g41.cfg task_stringtie.sh ../merged.manifest
+#
 
 gref=${GENOME_FA:-$refdir/fa/assembly_hg38_gencode_v25_main.fa}
 gann=${GENOME_ANN:-$refdir/gtf/gencode25.main.gtf}
