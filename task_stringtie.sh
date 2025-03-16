@@ -96,14 +96,17 @@ agtf=$sid.gtf
 egtf=$sid.eB.gtf
 
 if [[ ! -s $agtf ]]; then
-  cmd="stringtie --cram-ref $gref -o $agtf -G $gann ../$mcram"
+  #cmd="stringtie --cram-ref $gref -o $agtf -G $gann ../$mcram"
+  ## temp fix for cram decoding issues for newer samtools cram files
+  cmd="samtools view -T $gref -u ../$mcram | stringtie -o $agtf -G $gann -"
   echo -e "running stringtie-asm:\n$cmd" | tee -a $rlog
   run="${run}a"
   eval "$cmd" |& tee -a $rlog & 
 fi
 if [[ ! -s $egtf ]]; then
-  cmd="stringtie --cram-ref $gref -eB -o $egtf -A $sid.gabund.tab -G $gann ../$mcram"
-  echo -e "running stringtie-e:\n$cmd" | tee -a $rlog
+  ## cmd="stringtie --cram-ref $gref -eB -o $egtf -A $sid.gabund.tab -G $gann ../$mcram"
+  cmd="samtools view -T $gref -u ../$mcram | stringtie -eB -o $egtf -A $sid.gabund.tab -G $gann -"
+  echo -e "running stringtie -e:\n$cmd" | tee -a $rlog
   run="${run}e"
   eval "$cmd" |& tee -a $rlog &
 fi
