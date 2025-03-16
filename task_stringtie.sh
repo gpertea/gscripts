@@ -8,7 +8,7 @@
 ## sampleID folders with cram files are expected in the current directory
 
 ## run with this command on JHPCE:
-# arx sub -m24G -c4 --qos=shared-200-2 -t 6:00:00 -a1- -j80 --cfg ../strg_g41.cfg task_stringtie.sh ../merged.manifest
+# arx sub -m24G -c4 --qos=shared-200-2 -t 6:00:00 -a1- -j50 --cfg ../strg_g41.cfg task_stringtie.sh ../merged.manifest
 #
 
 gref=${GENOME_FA:-$refdir/fa/assembly_hg38_gencode_v25_main.fa}
