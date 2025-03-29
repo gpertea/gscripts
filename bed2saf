@@ -1,0 +1,28 @@
+#!/bin/bash
+
+# Function to display usage message
+usage() {
+  echo "Usage: $0 <input.bed>"
+  echo "Converts a BED file (given as input) to SAF format and prints to standard output."
+  echo "Input BED format: chr, start(0), end(1), name, score, strand"
+  echo "Output SAF format: GeneID, Chr, Start(1), End(1), Strand"
+  exit 1
+}
+
+# Check for no arguments or help flags
+if [ "$#" -ne 1 ] || [ "$1" == "-h" ] || [ "$1" == "--help" ]; then
+  usage
+fi
+
+BED_FILE="$1"
+
+# Check if input file exists and is readable
+if [ ! -f "$BED_FILE" ] || [ ! -r "$BED_FILE" ]; then
+    echo "Error: Input file '$BED_FILE' not found or not readable." >&2
+    exit 1
+fi
+
+# Convert BED to SAF and print to stdout
+# BED: $1=chr, $2=start(0), $3=end(1), $4=name, $5=score, $6=strand
+# SAF: $1=GeneID, $2=Chr, $3=Start(1), $4=End(1), $5=Strand
+awk 'BEGIN{FS="\t"; OFS="\t"} {print $4, $1, $2+1, $3, $6}' "$BED_FILE"
