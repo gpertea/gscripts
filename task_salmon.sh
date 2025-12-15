@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-##x mem=18G
-##x cpus=8
+##x mem=22G
+##x cpus=6
 
 #### Script for transcript quantification running salmon 
 ###  requires: salmon in the path
@@ -9,9 +9,12 @@
 ## sampleID folders with cram files are expected in the current directory
 
 ## run with:
-# arx sub -m16G -c6 -a1- --cfg ../counts.cfg task_salmon.sh ../merged.manifest
-refbase="/dcs04/lieber/lcolladotor/dbDev_LIBD001/ref"
-salmidx=${SALMON_IDX:-$refbase/salmon_idx/gencode25.main}
+# arx sub -m22G -c6 -a1- -j 30 --qos=shared-200-2 -t 04:00:00 --cfg ../salmon.cfg task_salmon.sh ../merged.manifest
+
+
+
+refbase="/dcs04/lieber/lcolladotor/chessBrain_LIBD4085/ref/gencode49"
+salmidx=${SALMON_IDX:-$refbase/salmidx/gentrome49nri}
 ncpus=${SALMON_CPUS:-6}
 
 function err_exit {
@@ -104,7 +107,7 @@ echo "["$(date '+%m/%d %H:%M')"] task ${jobid}.${taskid} starting on $host:${pwd
 fsalm="salmon/quant.sf"
 if [[ ! -s $fsalm ]]; then
   cmd="salmon quant -p $ncpus -lA -1 ${fqs1[@]} -2 ${fqs2[@]} \
-   -i $salmidx --gcBias -q --numGibbsSamples 20 --thinningFactor 40 -d -o salmon >& salmon.log"
+   -i $salmidx --gcBias -q --numGibbsSamples 50 --thinningFactor 40 -d -o salmon >& salmon.log"
   echo -e "running salmon:\n$cmd" | tee -a $rlog
   run="${run}s"
   eval "$cmd" |& tee -a $rlog &

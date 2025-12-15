@@ -216,7 +216,7 @@ fi
 fsalm="salmon/quant.sf"
 if [[ ! -s $fsalm ]]; then
 ## -->>> run Salmon (and wait for it to finish)
-  cmd="salmon quant -p $ncpus -lA -1 <(gunzip -c ${fqs1[@]}) -2 <(gunzip -c ${fqs2[@]}) \
+  cmd="salmon quant -p $ncpus -lA -1 ${fqs1[@]} -2 ${fqs2[@]} \
    -i $salmidx --gcBias -q --numGibbsSamples 30 --thinningFactor 40 -d -o salmon >& salmon.log"
   echo -e "running salmon:\n$cmd" | tee -a $rlog
   #run="${run}s" -- no need, we wait for salmon to finish
