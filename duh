@@ -11,7 +11,8 @@ umask 0002;
 die($usage."\n") if $ARGV[0]=~m/^\-+h/;
 my $cmd=(@ARGV==1) ? 'du --apparent-size -shx ' : 'du --apparent-size -schx ';
 my $q = @ARGV>0; #user provided target
-$cmd.= $q ? join(' ',@ARGV) : '* .[^.]*';
+#$cmd.= $q ? join(' ',@ARGV) : '* .[^.]*';
+$cmd .= $q ? join(' ', @ARGV) : '* .[!.]* ..?*';
 open(DU, "-|", "$cmd 2>/dev/null") || die("Error starting $cmd | pipe!\n");
 # Schwartzian transform
 my %byte_order=(K => 0, M => 1, G => 2, T => 3);

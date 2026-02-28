@@ -114,7 +114,7 @@ cut -f1 gtcheck_rnum2brnum_missing.tab | fgrep -wf- gtcheck_best_matches.tab > g
 ## see if these matching genotypes were reported before as mapped to a brain having multiple genotypes
 cut -f2 gtcheck_rnum_missing_bestmatch.tab | fgrep -f- ~/work/genotyping/brnum2genoID_postDNAswap_n2584.ctab | \
  awk '{print $2"\t"$1}' | sort -k2,2 > gtcheck_miss_geno2brnum.tab
- if [[ -s gtcheck_miss_geno2brnum.tab ]]; then
+if [[ -s gtcheck_miss_geno2brnum.tab ]]; then
    join --check-order -t $'\t' -1 2 -2 2 gtcheck_rnum2brnum_missing.tab gtcheck_miss_geno2brnum.tab >> gtcheck_gt_rnum_brnum.tab
    noconfx=gtcheck_rnum2brnum_final_notfound.tab
    awk '{print $2"\t"$1}' < gtcheck_gt_rnum_brnum.tab | fgrep -f- -v gtcheck_rnum2brnum.tab > $noconfx
@@ -123,6 +123,5 @@ cut -f2 gtcheck_rnum_missing_bestmatch.tab | fgrep -f- ~/work/genotyping/brnum2g
      exit 0
    fi
    echo $(wc -l < $noconfx)" RNum-to-BrNum mappings could not be confirmed directly, see $noconfx"
- fi
 fi
-fi
+
