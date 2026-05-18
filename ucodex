@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+
+# Keep colors enabled for Codex UI, even if parent env exports NO_COLOR.
+unset NO_COLOR
+export FORCE_COLOR=1
+export CLICOLOR_FORCE=1
+
+# Prefer 256-color TERM values when available.
+if [[ -n "${TMUX:-}" ]]; then
+  if infocmp tmux-256color >/dev/null 2>&1; then
+    export TERM=tmux-256color
+  fi
+elif [[ "${TERM:-}" == "rxvt-unicode" ]]; then
+  if infocmp rxvt-unicode-256color >/dev/null 2>&1; then
+    export TERM=rxvt-unicode-256color
+  fi
+fi
+export COLORTERM=truecolor
+# Keep automatic updates, but don't block startup on transient npm/network issues.
+if command -v npm >/dev/null 2>&1; then
+  npm i -g @openai/codex >/dev/null 2>&1 || true
+fi
+
+exec "$(which codex)" "$@"
