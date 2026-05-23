@@ -4,6 +4,7 @@ umask 077
 
 replace=0
 restore_globals=0
+precheck_only=0
 args=()
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -11,13 +12,14 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 sql_lit() { local s; s=$(printf '%s' "$1" | sed "s/'/''/g"); printf "'%s'" "$s"; }
 
 usage() {
-  printf 'usage: %s [--replace] [--globals] <backup-set-dir|dump-file> <target-db> [jobs]\n' "${0##*/}"
+  printf 'usage: %s [--replace] [--globals] [--precheck-only] <backup-set-dir|dump-file> <target-db> [jobs]\n' "${0##*/}"
 }
 
 while (($#)); do
   case $1 in
     --replace) replace=1 ;;
     --globals) restore_globals=1 ;;
+    --precheck-only) precheck_only=1 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; args+=( "$@" ); break ;;
     -*) die "unknown option: $1" ;;
@@ -33,7 +35,7 @@ jobs=${args[2]:-4}
 [[ $jobs =~ ^[0-9]+$ && $jobs -gt 0 ]] || die "jobs must be a positive integer"
 export PGUSER=${PG_BACKUP_USER:-gpertea}
 
-for cmd in psql pg_restore zstd sha256sum stat awk grep basename dirname createdb dropdb; do need "$cmd"; done
+for cmd in psql pg_restore zstd sha256sum stat awk grep basename dirname createdb dropdb mktemp sort; do need "$cmd"; done
 
 if [[ -d $src ]]; then
   ## a backup set is a directory named exactly like its contained dump.
@@ -66,6 +68,32 @@ while IFS=$'\t' read -r kind path size sum; do
 done < "$manifest"
 
 pg_restore -l "$dump" >/dev/null || die "pg_restore cannot read dump: $dump"
+
+precheck_extensions() {
+  local ext tmp version missing=0
+  tmp=$(mktemp)
+  ## extension names are available in pg_restore's table of contents.
+  { pg_restore -l "$dump" | awk '$0 ~ / EXTENSION - / && $0 !~ /COMMENT - EXTENSION/ {print $NF}'; awk -F '\t' '$1=="extension" {print $2}' "$manifest"; } | sort -u > "$tmp"
+
+  while IFS= read -r ext; do
+    [[ -n $ext ]] || continue
+    if [[ $(psql -d postgres -Atq -v ON_ERROR_STOP=1 -c "select 1 from pg_available_extensions where name = $(sql_lit "$ext")") != 1 ]]; then
+      printf 'missing required extension on target: %s\n' "$ext" >&2
+      missing=1
+      continue
+    fi
+    version=$(awk -F '\t' -v e="$ext" '$1=="extension" && $2==e {print $3; exit}' "$manifest")
+    if [[ -n $version ]] && [[ $(psql -d postgres -Atq -v ON_ERROR_STOP=1 -c "select 1 from pg_available_extension_versions where name = $(sql_lit "$ext") and version = $(sql_lit "$version")") != 1 ]]; then
+      printf 'missing required extension version on target: %s %s\n' "$ext" "$version" >&2
+      missing=1
+    fi
+  done < "$tmp"
+  rm -f "$tmp"
+  ((missing == 0)) || die "restore precheck failed"
+}
+
+precheck_extensions
+((precheck_only)) && { printf 'precheck ok for %s -> %s\n' "$dump" "$target_db"; exit 0; }
 
 exists=$(psql -d postgres -Atq -v ON_ERROR_STOP=1 -c "select 1 from pg_database where datname = $(sql_lit "$target_db")")
 if [[ $exists == 1 ]]; then

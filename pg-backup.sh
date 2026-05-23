@@ -20,22 +20,18 @@ sql_lit() { local s; s=$(printf '%s' "$1" | sed "s/'/''/g"); printf "'%s'" "$s";
 usage() {
   printf 'usage: %s [--check] [db ...]\n' "${0##*/}"
   printf 'env: PG_BACKUP_USER, PGHOST, PGPORT, PG_BACKUP_ROOT, PG_BACKUP_DB, PG_BACKUP_KEEP, PG_BACKUP_COMPRESS\n'
-  exit 0;
 }
-
-if (( $# == 0 )); then usage; fi
 
 while (($#)); do
   case $1 in
     --check) check_only=1 ;;
-    -h|--help) usage ;;
+    -h|--help) usage; exit 0 ;;
     --) shift; dbs+=( "$@" ); break ;;
     -*) die "unknown option: $1" ;;
     *) dbs+=( "$1" ) ;;
   esac
   shift
 done
-
 
 ((${#dbs[@]})) || dbs=( "$default_db" )
 export PGUSER=${PG_BACKUP_USER:-gpertea}
@@ -77,7 +73,7 @@ copy_configs() {
 }
 
 write_manifest() {
-  local setdir=$1 base=$2 db=$3 rel size sum
+  local setdir=$1 base=$2 db=$3 rel size sum ext extver
   local manifest=$setdir/$base.manifest.tsv
   {
     printf 'kind\tpath\tsize\tsha256\n'
@@ -88,6 +84,10 @@ write_manifest() {
     printf 'meta\tpg_dump\t\t%s\n' "$(pg_dump --version)"
     printf 'meta\tpg_restore\t\t%s\n' "$(pg_restore --version)"
     printf 'meta\tcompression\t\t%s\n' "$compress"
+    while IFS=$'\t' read -r ext extver; do
+      [[ -n $ext ]] || continue
+      printf 'extension\t%s\t%s\t\n' "$ext" "$extver"
+    done < <(psql -d "$db" -Atq -v ON_ERROR_STOP=1 -c "select extname || E'\t' || extversion from pg_extension order by extname")
   } > "$manifest"
   ## record every payload file so restore can catch partial or damaged sets.
   while IFS= read -r rel; do
@@ -103,7 +103,8 @@ prune_local() {
   pattern="pgbackup_${server_safe}_p${port_safe}_${db_safe}_*"
   ## retention is local only; remote retention can have its own policy.
   mapfile -t old < <(find "$backup_root" -maxdepth 1 -type d -name "$pattern" | sort -r | tail -n +"$((keep_local + 1))")
-  ((${#old[@]})) && rm -rf -- "${old[@]}"
+  ((${#old[@]})) || return 0
+  rm -rf -- "${old[@]}"
 }
 
 db_exists() {
@@ -142,7 +143,7 @@ for db in "${dbs[@]}"; do
 
   for dest in "${secondary_dests[@]}"; do
     printf 'syncing %s to %s\n' "$base" "$dest"
-    rsync -a --partial "$setdir/" "$dest/$base/" || die "rsync failed for $dest"
+    rsync -a --no-group --partial "$setdir/" "$dest/$base/" || die "rsync failed for $dest"
   done
   prune_local "$db_safe"
   printf 'done %s\n' "$setdir"
