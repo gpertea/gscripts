@@ -113,7 +113,4 @@ fi
 createdb -T template0 "$target_db"
 pg_restore --exit-on-error --no-owner --no-privileges -j "$jobs" -d "$target_db" "$dump"
 
-if [[ -d $setdir/config ]]; then
-  printf 'config backups are in %s/config; review manually, do not auto-install them\n' "$setdir"
-fi
 printf 'restored %s into %s\n' "$dump" "$target_db"
