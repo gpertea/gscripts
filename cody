@@ -1,5 +1,9 @@
 #!/bin/bash
 set -euo pipefail
+## if on JHPCE, load the npm module
+if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
+  module load node
+fi
 
 # Keep colors enabled for Codex UI, even if parent env exports NO_COLOR.
 unset NO_COLOR
