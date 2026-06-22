@@ -2,8 +2,13 @@
 set -euo pipefail
 ## if on JHPCE, load the npm module
 if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
+  echo "Using JHPCE 'node' module with separate codex installation"
   module load node
+  export NPM_CONFIG_PREFIX="$HOME/.local"
   export PATH=$HOME/.local/bin:$PATH
+  hash -r
+  wcodex=$(which codex)
+  echo "codex is run from: $wcodex"
 fi
 
 # Keep colors enabled for Codex UI, even if parent env exports NO_COLOR.
@@ -24,7 +29,12 @@ fi
 export COLORTERM=truecolor
 # Keep automatic updates, but don't block startup on transient npm/network issues.
 if command -v npm >/dev/null 2>&1; then
-  npm i -g @openai/codex >/dev/null 2>&1 || true
+  codex_pkg_parent="$HOME/.local/lib/node_modules/@openai"
+  ## remove npm staging leftovers for codex only
+  if [[ -d "$codex_pkg_parent" ]]; then
+    find "$codex_pkg_parent" -maxdepth 1 -type d -name '.codex-*' -exec rm -rf {} +
+  fi
+  npm i -g --prefix "$HOME/.local" @openai/codex >/dev/null 2>&1 || true
 fi
 
-exec "$(which codex)" --yolo "$@"
+exec "$HOME/.local/bin/codex" --yolo "$@"
