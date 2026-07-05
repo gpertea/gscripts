@@ -1,0 +1,386 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  cat <<'EOF'
+Usage:
+  vnc-fix [options] host
+
+Default mode is read-only diagnosis.
+
+Options:
+  -d, --display N|:N        VNC/X display to inspect (default: auto-detect)
+      --diagnose           Diagnose only (default)
+      --full               Include full xinput output and recent VNC log tail
+      --release-buttons    Send synthetic ButtonRelease events for buttons 1..10
+      --vncconfig-events   Set vncconfig AcceptPointerEvents/AcceptKeyboardEvents=1
+      --jwm-restart        Ask JWM to restart itself
+      --danger-disable-pointer
+                            Disable/enable the TigerVNC pointer device.
+                            This can crash Xtigervnc on Ubuntu 24.04/TigerVNC 1.13.1.
+                            Requires --force.
+      --force              Required for dangerous actions
+  -v, --verbose            Print the remote script commands as they run
+  -h, --help               Show this help
+
+Examples:
+  vnc-fix gglin
+  vnc-fix --release-buttons gglin
+  vnc-fix --display :1 --vncconfig-events gvlin
+EOF
+}
+
+display=""
+action="diagnose"
+force=0
+verbose=0
+full=0
+host=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d|--display)
+      [ "$#" -ge 2 ] || { echo "missing value for $1" >&2; exit 2; }
+      display="$2"
+      shift 2
+      ;;
+    --diagnose)
+      action="diagnose"
+      shift
+      ;;
+    --full)
+      full=1
+      shift
+      ;;
+    --release-buttons)
+      action="release-buttons"
+      shift
+      ;;
+    --vncconfig-events)
+      action="vncconfig-events"
+      shift
+      ;;
+    --jwm-restart)
+      action="jwm-restart"
+      shift
+      ;;
+    --danger-disable-pointer)
+      action="danger-disable-pointer"
+      shift
+      ;;
+    --force)
+      force=1
+      shift
+      ;;
+    -v|--verbose)
+      verbose=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      if [ -n "$host" ]; then
+        echo "unexpected extra argument: $1" >&2
+        usage >&2
+        exit 2
+      fi
+      host="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$host" ]; then
+  usage >&2
+  exit 2
+fi
+
+case "$display" in
+  "") ;;
+  :*) ;;
+  *) display=":$display" ;;
+esac
+
+if [ "$action" = "danger-disable-pointer" ] && [ "$force" -ne 1 ]; then
+  cat >&2 <<'EOF'
+Refusing --danger-disable-pointer without --force.
+
+This action can crash Xtigervnc and kill X-attached terminal processes.
+Prefer:
+  vnc-fix --release-buttons HOST
+EOF
+  exit 3
+fi
+
+ssh "$host" \
+  "VNC_FIX_DISPLAY='$display' VNC_FIX_ACTION='$action' VNC_FIX_FORCE='$force' VNC_FIX_VERBOSE='$verbose' VNC_FIX_FULL='$full' bash -s" <<'REMOTE'
+set -u
+[ "${VNC_FIX_VERBOSE:-0}" = 1 ] && set -x
+
+say() {
+  printf '\n== %s ==\n' "$*"
+}
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+detect_display() {
+  if [ -n "${VNC_FIX_DISPLAY:-}" ]; then
+    printf '%s\n' "$VNC_FIX_DISPLAY"
+    return
+  fi
+
+  ps -u "$USER" -o args= |
+    awk '
+      /[X]tigervnc|[X]vnc/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^:[0-9]+$/) {
+            print $i
+            exit
+          }
+        }
+      }
+    '
+}
+
+display="$(detect_display)"
+if [ -z "$display" ]; then
+  echo "No Xtigervnc/Xvnc display found for user $USER" >&2
+  exit 1
+fi
+
+export DISPLAY="$display"
+export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+
+say "Target"
+echo "host: $(hostname)"
+echo "date: $(date)"
+echo "display: $DISPLAY"
+echo "xauthority: $XAUTHORITY"
+echo "action: ${VNC_FIX_ACTION:-diagnose}"
+
+say "VNC/JWM Processes"
+ps -u "$USER" -o pid,ppid,stat,etime,cmd |
+  awk '/[X]tigervnc|[X]vnc|[v]ncserver|[j]wm|[v]ncconfig/ { print }' || true
+xvnc_pid="$(ps -u "$USER" -o pid=,args= | awk '/[X]tigervnc|[X]vnc/ { print $1; exit }')"
+
+say "Versions"
+printf 'os: '
+(lsb_release -ds 2>/dev/null || sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null || true)
+printf 'kernel: '
+uname -r
+if have dpkg; then
+  dpkg-query -W -f='${Package}: ${Version}\n' \
+    tigervnc-standalone-server tigervnc-tools xserver-xorg-core xinput 2>/dev/null
+fi
+
+say "X Connection"
+if ! xset q >/tmp/vnc-fix-xset.$$ 2>&1; then
+  cat /tmp/vnc-fix-xset.$$
+  rm -f /tmp/vnc-fix-xset.$$
+  exit 1
+fi
+awk '
+  /auto repeat:/ { print "keyboard: " $0 }
+  /Mouse Keys:/ { print "mouse-keys: " $0 }
+  /Pointer Control:/ { getline; print "pointer-control: " $0 }
+' /tmp/vnc-fix-xset.$$
+rm -f /tmp/vnc-fix-xset.$$
+
+say "Pointer State Summary"
+if have xinput; then
+  xinput list --long >/tmp/vnc-fix-xinput.$$ 2>/tmp/vnc-fix-xinput.err.$$
+  cat /tmp/vnc-fix-xinput.$$ |
+    awk '
+      /Virtual core pointer[[:space:]]+id=/ { dev="Virtual core pointer" }
+      /Virtual core XTEST pointer[[:space:]]+id=/ { dev="Virtual core XTEST pointer" }
+      /TigerVNC pointer[[:space:]]+id=/ { dev="TigerVNC pointer" }
+      /Button state:/ {
+        line=$0
+        sub(/^[[:space:]]+/, "", line)
+        state=line
+        sub(/^Button state:[[:space:]]*/, "", state)
+        if (dev == "Virtual core pointer" && state != "") {
+          stuck=state
+        }
+        sub(/^[[:space:]]+/, "")
+        print dev ": " $0
+      }
+      END {
+        if (stuck != "") {
+          print "STUCK-BUTTON-SUSPECTED: Virtual core pointer still reports button(s) down: " stuck
+          print "Safer first recovery action: vnc-fix --release-buttons HOST"
+        } else {
+          print "status: no stuck pointer buttons reported"
+        }
+      }
+    '
+  if [ -s /tmp/vnc-fix-xinput.err.$$ ]; then
+    cat /tmp/vnc-fix-xinput.err.$$
+  fi
+  if [ "${VNC_FIX_FULL:-0}" = 1 ]; then
+    say "Full XInput"
+    cat /tmp/vnc-fix-xinput.$$
+  fi
+  rm -f /tmp/vnc-fix-xinput.$$ /tmp/vnc-fix-xinput.err.$$
+else
+  echo "xinput not found"
+fi
+
+say "Window Manager State"
+xprop -root _NET_ACTIVE_WINDOW _NET_CLIENT_LIST 2>&1 || true
+
+say "VNC Log"
+log="$HOME/.vnc/$(hostname)${DISPLAY}.log"
+if [ -r "$log" ]; then
+  echo "log: $log"
+  echo "inspect: ssh $(hostname) 'tail -120 $log'"
+  echo "errors:  ssh $(hostname) \"egrep -n 'Segmentation|Fatal|signal|timed out|reset by peer|Server shutdown|X connection' $log | tail -80\""
+  if [ "${VNC_FIX_FULL:-0}" = 1 ]; then
+    say "Recent VNC Log Tail"
+    tail -80 "$log"
+  else
+    start_line=""
+    if [ -n "${xvnc_pid:-}" ]; then
+      start_line="$(grep -n "New Xtigervnc server .*${DISPLAY}" "$log" 2>/dev/null | tail -1 | cut -d: -f1)"
+    fi
+    if [ -n "$start_line" ]; then
+      recent="$(tail -n +"$start_line" "$log" 2>/dev/null |
+        egrep -n 'Segmentation|Fatal|signal|timed out|reset by peer|Server shutdown|X connection' |
+        tail -5 || true)"
+      if [ -n "$recent" ]; then
+        recent="$(printf '%s\n' "$recent" |
+          awk -F: -v off="$((start_line - 1))" '{
+            line=$1
+            $1=""
+            sub(/^:/, "")
+            print line + off ":" $0
+          }')"
+      fi
+    else
+      recent="$(egrep -n 'Segmentation|Fatal|signal|timed out|reset by peer|Server shutdown|X connection' "$log" 2>/dev/null | tail -5 || true)"
+    fi
+    if [ -n "$recent" ]; then
+      echo "recent relevant log lines:"
+      printf '%s\n' "$recent"
+    else
+      echo "recent relevant log lines: none"
+    fi
+  fi
+else
+  echo "log not readable: $log"
+fi
+
+release_buttons() {
+  say "Action: Release Pointer Buttons"
+  if ! have python3; then
+    echo "python3 not found; cannot use XTEST release action" >&2
+    return 1
+  fi
+  python3 - <<'PY'
+import ctypes
+import ctypes.util
+import os
+import sys
+import time
+
+display_name = os.environ.get("DISPLAY", "").encode()
+libx11_name = ctypes.util.find_library("X11")
+libxtst_name = ctypes.util.find_library("Xtst")
+if not libx11_name or not libxtst_name:
+    print("Missing libX11 or libXtst", file=sys.stderr)
+    sys.exit(1)
+
+x11 = ctypes.CDLL(libx11_name)
+xtst = ctypes.CDLL(libxtst_name)
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+x11.XFlush.argtypes = [ctypes.c_void_p]
+xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+
+dpy = x11.XOpenDisplay(display_name)
+if not dpy:
+    print(f"Unable to open DISPLAY={os.environ.get('DISPLAY')}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    for button in range(1, 11):
+        xtst.XTestFakeButtonEvent(dpy, button, 0, 0)
+    x11.XFlush(dpy)
+    time.sleep(0.05)
+finally:
+    x11.XCloseDisplay(dpy)
+
+print("sent ButtonRelease events for buttons 1..10")
+PY
+}
+
+vncconfig_events() {
+  say "Action: vncconfig Accept*Events"
+  if ! have vncconfig; then
+    echo "vncconfig not found" >&2
+    return 1
+  fi
+  vncconfig -set AcceptPointerEvents=1 2>&1 || true
+  vncconfig -set AcceptKeyboardEvents=1 2>&1 || true
+}
+
+jwm_restart() {
+  say "Action: JWM Restart"
+  if ! have jwm; then
+    echo "jwm not found" >&2
+    return 1
+  fi
+  jwm -restart 2>&1
+}
+
+danger_disable_pointer() {
+  say "Action: DANGEROUS TigerVNC Pointer Disable/Enable"
+  echo "WARNING: this can crash Xtigervnc and kill X-attached terminal processes."
+  ptr_id="$(xinput list --id-only 'TigerVNC pointer' 2>/dev/null || true)"
+  if [ -z "$ptr_id" ]; then
+    echo "TigerVNC pointer not found" >&2
+    return 1
+  fi
+  echo "TigerVNC pointer id: $ptr_id"
+  xinput disable "$ptr_id"
+  sleep 0.3
+  xinput enable "$ptr_id" || xinput enable 'TigerVNC pointer'
+}
+
+case "${VNC_FIX_ACTION:-diagnose}" in
+  diagnose)
+    ;;
+  release-buttons)
+    release_buttons
+    say "Post-Action Pointer State"
+    xinput list --long 2>&1 | sed -n '/Virtual core pointer/,/Virtual core keyboard/p'
+    ;;
+  vncconfig-events)
+    vncconfig_events
+    ;;
+  jwm-restart)
+    jwm_restart
+    ;;
+  danger-disable-pointer)
+    danger_disable_pointer
+    ;;
+  *)
+    echo "unknown remote action: ${VNC_FIX_ACTION:-}" >&2
+    exit 2
+    ;;
+esac
+REMOTE
