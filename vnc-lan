@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+## MacOS script - assumes tightvnc viewer installed
+usage() {
+  printf 'Usage: %s <ssh-host> [vnc-host] [geometry]\n' "$(basename "$0")" >&2
+  printf '       %s <ssh-and-vnc-host> [geometry]\n' "$(basename "$0")" >&2
+  printf 'Set VNC_SCALE to client-side scale percent, Auto, or FixedRatio; default: 90.\n' >&2
+}
+
+if [[ $# -lt 1 || $# -gt 3 ]]; then
+  usage
+  exit 2
+fi
+
+ssh_host=$1
+vnc_host=$ssh_host
+geometry=1820x960
+passwd_file=$HOME/.vnc/passwd
+
+case $# in
+  1)
+    ;;
+  2)
+    if [[ $2 =~ ^[0-9]+x[0-9]+$ ]]; then
+      geometry=$2
+    else
+      vnc_host=$2
+    fi
+    ;;
+  3)
+    vnc_host=$2
+    geometry=$3
+    ;;
+esac
+
+if [[ ! $geometry =~ ^[0-9]+x[0-9]+$ ]]; then
+  printf 'Invalid geometry: %s\n' "$geometry" >&2
+  exit 2
+fi
+
+if [[ ! -r $passwd_file ]]; then
+  printf 'Missing VNC password file: %s\n' "$passwd_file" >&2
+  exit 1
+fi
+
+scale=${VNC_SCALE:-90}
+viewer=${VNC_VIEWER:-tvncviewer}
+
+if [[ ! $scale =~ ^([0-9]+|Auto|auto|FixedRatio|fixedratio)$ ]]; then
+  printf 'Invalid VNC_SCALE: %s\n' "$scale" >&2
+  exit 2
+fi
+
+if ! command -v "$viewer" >/dev/null 2>&1; then
+  printf 'Missing %s; install TurboVNC Viewer or set VNC_VIEWER.\n' "$viewer" >&2
+  exit 1
+fi
+
+display_output=$(ssh "$ssh_host" "~/bin/vnc-get-display '$geometry'")
+display=$(
+  printf '%s\n' "$display_output" |
+    sed -n 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' |
+    tail -n 1
+)
+
+if [[ -z $display ]]; then
+  printf 'Could not determine VNC display from %s.\n' "$ssh_host" >&2
+  printf '%s\n' "$display_output" >&2
+  exit 1
+fi
+
+printf 'vnc display#=%s\n' "$display"
+printf 'connecting to %s:%s\n' "$vnc_host" "$display"
+"$viewer" passwd="$passwd_file" -DesktopSize Server -Scale "$scale" "$vnc_host:$display" &
