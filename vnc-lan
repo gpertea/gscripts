@@ -1,74 +1,136 @@
 #!/usr/bin/env bash
 set -euo pipefail
-## MacOS script - assumes tightvnc viewer installed
+
+## macOS client; assumes TurboVNC Viewer is installed
 usage() {
-  printf 'Usage: %s <ssh-host> [vnc-host] [geometry]\n' "$(basename "$0")" >&2
-  printf '       %s <ssh-and-vnc-host> [geometry]\n' "$(basename "$0")" >&2
-  printf 'Set VNC_SCALE to client-side scale percent, Auto, or FixedRatio; default: 90.\n' >&2
+  printf '%s\n' \
+    "Usage:" \
+    "  $(basename "$0") SSH_HOST [VNC_HOST] [GEOMETRY]" \
+    "  $(basename "$0") SSH_HOST --session NAME [GEOMETRY]" \
+    "  $(basename "$0") SSH_HOST --status NAME" \
+    "  $(basename "$0") SSH_HOST --stop NAME" \
+    "Set VNC_SCALE to a percent, Auto, or FixedRatio; default: 90."
 }
 
-if [[ $# -lt 1 || $# -gt 3 ]]; then
-  usage
-  exit 2
-fi
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
 
-ssh_host=$1
-vnc_host=$ssh_host
-geometry=1820x960
-passwd_file=$HOME/.vnc/passwd
+action="legacy"
+session=""
+ssh_host=""
+vnc_host=""
+geometry="1820x960"
 
-case $# in
-  1)
+case "${1:-}" in
+  --help|-h)
+    usage
+    exit 0
     ;;
-  2)
-    if [[ $2 =~ ^[0-9]+x[0-9]+$ ]]; then
-      geometry=$2
-    else
-      vnc_host=$2
-    fi
+  --session)
+    [[ $# -ge 3 && $# -le 4 ]] || { usage >&2; exit 2; }
+    action="session"
+    session="$2"
+    ssh_host="$3"
+    geometry="${4:-$geometry}"
     ;;
-  3)
-    vnc_host=$2
-    geometry=$3
+  --status|--stop)
+    [[ $# -eq 3 ]] || { usage >&2; exit 2; }
+    action="${1#--}"
+    session="$2"
+    ssh_host="$3"
+    ;;
+  *)
+    [[ $# -ge 1 && $# -le 4 ]] || { usage >&2; exit 2; }
+    ssh_host="$1"
+    vnc_host="$ssh_host"
+    case "${2:-}" in
+      --session)
+        [[ $# -ge 3 && $# -le 4 ]] || { usage >&2; exit 2; }
+        action="session"
+        session="$3"
+        geometry="${4:-$geometry}"
+        ;;
+      --status|--stop)
+        [[ $# -eq 3 ]] || { usage >&2; exit 2; }
+        action="${2#--}"
+        session="$3"
+        ;;
+      *)
+        [[ $# -le 3 ]] || { usage >&2; exit 2; }
+        if [[ $# -ge 2 ]]; then
+          if [[ "$2" =~ ^[0-9]+x[0-9]+$ ]]; then
+            geometry="$2"
+          else
+            vnc_host="$2"
+          fi
+        fi
+        [[ $# -lt 3 ]] || geometry="$3"
+        ;;
+    esac
     ;;
 esac
 
-if [[ ! $geometry =~ ^[0-9]+x[0-9]+$ ]]; then
-  printf 'Invalid geometry: %s\n' "$geometry" >&2
-  exit 2
+[[ "$geometry" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || die "invalid geometry: $geometry"
+if [[ -n "$session" ]]; then
+  [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid session name: $session"
 fi
 
-if [[ ! -r $passwd_file ]]; then
-  printf 'Missing VNC password file: %s\n' "$passwd_file" >&2
-  exit 1
+readonly control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
+readonly control_path="${control_dir}/ssh-${session:-legacy}-%C"
+
+if [[ "$action" == "status" ]]; then
+  exec ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' --status "$session"
+fi
+if [[ "$action" == "stop" ]]; then
+  ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' --stop "$session"
+  ssh -n -S "$control_path" -O exit "$ssh_host" >/dev/null 2>&1 || true
+  exit 0
 fi
 
-scale=${VNC_SCALE:-90}
-viewer=${VNC_VIEWER:-tvncviewer}
+readonly passwd_file="${HOME}/.vnc/passwd"
+readonly scale="${VNC_SCALE:-90}"
+readonly viewer="${VNC_VIEWER:-tvncviewer}"
 
-if [[ ! $scale =~ ^([0-9]+|Auto|auto|FixedRatio|fixedratio)$ ]]; then
-  printf 'Invalid VNC_SCALE: %s\n' "$scale" >&2
-  exit 2
+[[ -r "$passwd_file" ]] || die "missing VNC password file: $passwd_file"
+[[ "$scale" =~ ^([0-9]+|Auto|auto|FixedRatio|fixedratio)$ ]] || die "invalid VNC_SCALE: $scale"
+command -v "$viewer" >/dev/null 2>&1 || \
+  die "missing $viewer; install TurboVNC Viewer or set VNC_VIEWER"
+
+if [[ "$action" == "session" ]]; then
+  display_output="$(ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' --session "$session" "$geometry")"
+else
+  display_output="$(ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' "$geometry")"
 fi
-
-if ! command -v "$viewer" >/dev/null 2>&1; then
-  printf 'Missing %s; install TurboVNC Viewer or set VNC_VIEWER.\n' "$viewer" >&2
-  exit 1
-fi
-
-display_output=$(ssh "$ssh_host" "~/bin/vnc-get-display '$geometry'")
-display=$(
+display="$(
   printf '%s\n' "$display_output" |
     sed -n 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' |
     tail -n 1
-)
-
-if [[ -z $display ]]; then
-  printf 'Could not determine VNC display from %s.\n' "$ssh_host" >&2
-  printf '%s\n' "$display_output" >&2
+)"
+[[ -n "$display" ]] || {
+  printf 'Could not determine VNC display from %s.\n%s\n' "$ssh_host" "$display_output" >&2
   exit 1
+}
+
+if [[ "$action" == "session" ]]; then
+  local_display="${VNC_LOCAL_DISPLAY:-$((display + 10))}"
+  [[ "$local_display" =~ ^[1-9][0-9]*$ ]] || die "invalid VNC_LOCAL_DISPLAY: $local_display"
+  remote_port=$((5900 + display))
+  local_port=$((5900 + local_display))
+  (( remote_port <= 65535 && local_port <= 65535 )) || die "VNC display is too large"
+
+  mkdir -p "$control_dir"
+  chmod 700 "$control_dir"
+  if ! ssh -n -S "$control_path" -O check "$ssh_host" >/dev/null 2>&1; then
+    ssh -fNT -M -S "$control_path" \
+      -o ExitOnForwardFailure=yes \
+      -L "127.0.0.1:${local_port}:127.0.0.1:${remote_port}" \
+      "$ssh_host"
+  fi
+  vnc_host="localhost"
+  display="$local_display"
 fi
 
-printf 'vnc display#=%s\n' "$display"
 printf 'connecting to %s:%s\n' "$vnc_host" "$display"
 "$viewer" passwd="$passwd_file" -DesktopSize Server -Scale "$scale" "$vnc_host:$display" &

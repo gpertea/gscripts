@@ -1,0 +1,413 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+umask 077
+
+script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+readonly script_path
+script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+readonly script_dir
+readonly machine_id="${VNC_SESSION_MACHINE:-$(hostname -s | tr -cd 'A-Za-z0-9._-')}"
+readonly state_root="${XDG_STATE_HOME:-${HOME}/.local/state}/vnc-session/${machine_id}"
+readonly config_root="${XDG_CONFIG_HOME:-${HOME}/.config}/vnc-session"
+jwm_config="${VNC_SESSION_JWM_CONFIG:-${config_root}/jwm.xml}"
+if [[ -z "${VNC_SESSION_JWM_CONFIG:-}" && ! -r "$jwm_config" && -r "${script_dir}/jwm-vnc-session.xml" ]]; then
+  jwm_config="${script_dir}/jwm-vnc-session.xml"
+fi
+readonly jwm_config
+readonly password_file="${VNC_SESSION_PASSWORD_FILE:-${HOME}/.vnc/passwd}"
+readonly default_geometry="${VNC_SESSION_GEOMETRY:-1820x960}"
+
+usage() {
+  printf '%s\n' \
+    "Usage:" \
+    "  vnc-session start NAME [DISPLAY] [GEOMETRY]" \
+    "  vnc-session list" \
+    "  vnc-session status NAME|:DISPLAY" \
+    "  vnc-session display NAME|:DISPLAY" \
+    "  vnc-session run NAME|:DISPLAY COMMAND [ARG ...]" \
+    "  vnc-session stop NAME"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+validate_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || \
+    die "session name must contain only letters, numbers, dot, underscore, or hyphen"
+}
+
+normalize_display() {
+  local value="${1#:}"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "display must look like :2 or 2"
+  (( 5900 + 10#$value <= 65535 )) || die "display is too large: $1"
+  printf '%s\n' "$((10#$value))"
+}
+
+validate_geometry() {
+  [[ "$1" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || \
+    die "geometry must look like 1820x960"
+}
+
+session_file() {
+  printf '%s/%s.conf\n' "$state_root" "$1"
+}
+
+env_file() {
+  printf '%s/%s.env\n' "$state_root" "$1"
+}
+
+load_session() {
+  local file
+  file="$(session_file "$1")"
+  [[ -r "$file" ]] || die "unknown managed VNC session: $1"
+
+  session_display=""
+  session_geometry=""
+  while IFS='=' read -r key value; do
+    case "$key" in
+      display) session_display="$value" ;;
+      geometry) session_geometry="$value" ;;
+    esac
+  done < "$file"
+  session_display="$(normalize_display "$session_display")"
+  validate_geometry "$session_geometry"
+}
+
+save_session() {
+  local file temporary
+  file="$(session_file "$1")"
+  temporary="$(mktemp "${state_root}/.session.XXXXXX")"
+  printf 'display=%s\ngeometry=%s\n' "$2" "$3" > "$temporary"
+  mv -f -- "$temporary" "$file"
+}
+
+vnc_is_running() {
+  local display="$1"
+  [[ -S "/tmp/.X11-unix/X${display}" ]] &&
+    pgrep -u "$(id -u)" -f "(^|/)Xtigervnc :${display}( |$)" >/dev/null
+}
+
+display_is_free() {
+  local display="$1"
+  local port=$((5900 + display))
+  ! [[ -e "/tmp/.X11-unix/X${display}" || -e "/tmp/.X${display}-lock" ]] &&
+    ! pgrep -u "$(id -u)" -f "(^|/)Xtigervnc :${display}( |$)" >/dev/null &&
+    ! ss -H -ltn "sport = :${port}" | grep -q .
+}
+
+display_is_reserved() {
+  local display="$1"
+  local file
+  for file in "$state_root"/*.conf; do
+    [[ -e "$file" ]] || continue
+    grep -qx "display=${display}" "$file" && return 0
+  done
+  return 1
+}
+
+allocate_display() {
+  local display
+  for ((display = 2; display <= 99; display++)); do
+    if display_is_free "$display" && ! display_is_reserved "$display"; then
+      printf '%s\n' "$display"
+      return
+    fi
+  done
+  die "no free VNC display was found from :2 through :99"
+}
+
+resolve_spec() {
+  local spec="$1"
+  if [[ "$spec" == :* || "$spec" =~ ^[1-9][0-9]*$ ]]; then
+    resolved_name=""
+    resolved_display="$(normalize_display "$spec")"
+    resolved_geometry="unknown"
+  else
+    validate_name "$spec"
+    load_session "$spec"
+    resolved_name="$spec"
+    resolved_display="$session_display"
+    resolved_geometry="$session_geometry"
+  fi
+}
+
+write_session_environment() {
+  local name="$1"
+  local file temporary
+  file="$(env_file "$name")"
+  temporary="$(mktemp "${state_root}/.environment.XXXXXX")"
+  {
+    printf 'DISPLAY=%s\n' "$DISPLAY"
+    printf 'XAUTHORITY=%s\n' "${XAUTHORITY:-${HOME}/.Xauthority}"
+    printf 'XDG_RUNTIME_DIR=%s\n' "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "$DBUS_SESSION_BUS_ADDRESS"
+  } > "$temporary"
+  mv -f -- "$temporary" "$file"
+}
+
+run_xstartup() {
+  local name="$1"
+  local preserved_display="${DISPLAY:?DISPLAY is required}"
+  local preserved_xauthority="${XAUTHORITY:-${HOME}/.Xauthority}"
+
+  if [[ "${VNC_SESSION_PRIVATE_DBUS:-}" != "1" ]]; then
+    require_command dbus-run-session
+    exec env \
+      -u DBUS_SESSION_BUS_ADDRESS \
+      -u DBUS_SESSION_BUS_PID \
+      -u DBUS_SESSION_BUS_WINDOWID \
+      VNC_SESSION_PRIVATE_DBUS=1 \
+      VNC_SESSION_NAME="$name" \
+      dbus-run-session -- "$script_path" __xstartup "$name"
+  fi
+
+  export DISPLAY="$preserved_display"
+  export XAUTHORITY="$preserved_xauthority"
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  export PATH="${HOME}/bin:${PATH}"
+  write_session_environment "$name"
+
+  [[ -r "${HOME}/.Xresources" ]] && xrdb -merge "${HOME}/.Xresources"
+  xsetroot -solid '#202030'
+  vncconfig -nowin &
+  exec jwm -f "$jwm_config"
+}
+
+start_session() {
+  local name="$1"
+  local requested_display="${2:-}"
+  local geometry="${3:-$default_geometry}"
+  local mode attempt
+
+  validate_name "$name"
+  validate_geometry "$geometry"
+  require_command vncserver
+  require_command Xtigervnc
+  require_command dbus-run-session
+  require_command jwm
+  require_command ss
+  [[ -r "$jwm_config" ]] || die "JWM configuration is missing: $jwm_config"
+  [[ -r "$password_file" ]] || die "VNC password file is missing: $password_file"
+  mode="$(stat -c '%a' "$password_file")"
+  (( (8#$mode & 077) == 0 )) || die "VNC password file must be private: $password_file"
+
+  install -d -m 700 "$state_root"
+  exec 9>"${state_root}/manager.lock"
+  flock 9
+
+  if [[ -r "$(session_file "$name")" ]]; then
+    load_session "$name"
+    if [[ -n "$requested_display" && "$(normalize_display "$requested_display")" != "$session_display" ]]; then
+      die "$name is already assigned to :${session_display}"
+    fi
+    requested_display="$session_display"
+    geometry="$session_geometry"
+  elif [[ -n "$requested_display" ]]; then
+    requested_display="$(normalize_display "$requested_display")"
+    display_is_reserved "$requested_display" && \
+      die "display :${requested_display} is assigned to another managed session"
+  else
+    requested_display="$(allocate_display)"
+  fi
+
+  if vnc_is_running "$requested_display"; then
+    printf 'VNC session %s is already running on :%s\n' "$name" "$requested_display"
+    return
+  fi
+  display_is_free "$requested_display" || die "display :${requested_display} is already in use or stale"
+  save_session "$name" "$requested_display" "$geometry"
+  flock -u 9
+  exec 9>&-
+
+  VNC_SESSION_NAME="$name" vncserver ":${requested_display}" \
+    -localhost yes \
+    -geometry "$geometry" \
+    -depth 24 \
+    -SecurityTypes VncAuth \
+    -PasswordFile "$password_file" \
+    -autokill yes \
+    -desktop "vnc-${name}" \
+    -xstartup "$script_path"
+
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    if vnc_is_running "$requested_display" && [[ -r "$(env_file "$name")" ]]; then
+      printf 'VNC session %s started on :%s, loopback port %s\n' \
+        "$name" "$requested_display" "$((5900 + requested_display))"
+      return
+    fi
+    sleep 0.1
+  done
+  die "VNC session started but its desktop environment did not become ready"
+}
+
+import_environment_from_desktop() {
+  local display="$1"
+  local pid entry found_display bus="" xauthority="" runtime=""
+  local -a entries=()
+
+  for pid in $(pgrep -u "$(id -u)" -x jwm || true); do
+    entries=()
+    mapfile -d '' -t entries < "/proc/${pid}/environ" || continue
+    found_display=""
+    for entry in "${entries[@]}"; do
+      case "$entry" in
+        DISPLAY=*) found_display="${entry#DISPLAY=}" ;;
+        DBUS_SESSION_BUS_ADDRESS=*) bus="${entry#DBUS_SESSION_BUS_ADDRESS=}" ;;
+        XAUTHORITY=*) xauthority="${entry#XAUTHORITY=}" ;;
+        XDG_RUNTIME_DIR=*) runtime="${entry#XDG_RUNTIME_DIR=}" ;;
+      esac
+    done
+    if [[ "$found_display" == ":${display}" ]]; then
+      export DISPLAY="$found_display"
+      export XAUTHORITY="${xauthority:-${HOME}/.Xauthority}"
+      export XDG_RUNTIME_DIR="${runtime:-/run/user/$(id -u)}"
+      [[ -n "$bus" ]] && export DBUS_SESSION_BUS_ADDRESS="$bus"
+      return
+    fi
+  done
+  die "could not discover the desktop environment for :${display}"
+}
+
+load_run_environment() {
+  local name="$1"
+  local display="$2"
+  local file=""
+  local key value
+
+  if [[ -n "$name" ]]; then
+    file="$(env_file "$name")"
+  fi
+  if [[ -n "$file" && -r "$file" ]]; then
+    while IFS='=' read -r key value; do
+      case "$key" in
+        DISPLAY) DISPLAY="$value" ;;
+        XAUTHORITY) XAUTHORITY="$value" ;;
+        XDG_RUNTIME_DIR) XDG_RUNTIME_DIR="$value" ;;
+        DBUS_SESSION_BUS_ADDRESS) DBUS_SESSION_BUS_ADDRESS="$value" ;;
+      esac
+    done < "$file"
+    export DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+  else
+    import_environment_from_desktop "$display"
+  fi
+  export PATH="${HOME}/bin:${PATH}"
+}
+
+run_command() {
+  local spec="$1"
+  shift
+  [[ $# -gt 0 ]] || die "run requires a command"
+  resolve_spec "$spec"
+  vnc_is_running "$resolved_display" || die "VNC display :${resolved_display} is not running"
+  load_run_environment "$resolved_name" "$resolved_display"
+
+  local log_name="${resolved_name:-display-${resolved_display}}"
+  local log_file="${state_root}/${log_name}.commands.log"
+  setsid -f "$@" >> "$log_file" 2>&1 < /dev/null
+  printf 'Started %s on :%s; log: %s\n' "$1" "$resolved_display" "$log_file"
+}
+
+show_status() {
+  resolve_spec "$1"
+  printf 'Session: %s\n' "${resolved_name:-(unmanaged)}"
+  printf 'Display: :%s\n' "$resolved_display"
+  printf 'Geometry: %s\n' "$resolved_geometry"
+  printf 'VNC port: %s\n' "$((5900 + resolved_display))"
+  if vnc_is_running "$resolved_display"; then
+    printf 'State: running\n'
+  else
+    printf 'State: stopped\n'
+    return 1
+  fi
+}
+
+list_sessions() {
+  local display file name state
+  local -A mapped_displays=()
+  printf 'NAME\tDISPLAY\tSTATE\n'
+
+  for file in "$state_root"/*.conf; do
+    [[ -e "$file" ]] || continue
+    name="$(basename "$file" .conf)"
+    load_session "$name"
+    mapped_displays["$session_display"]=1
+    state="stopped"
+    vnc_is_running "$session_display" && state="running"
+    printf '%s\t:%s\t%s\n' "$name" "$session_display" "$state"
+  done
+
+  for ((display = 1; display <= 99; display++)); do
+    if vnc_is_running "$display" && [[ -z "${mapped_displays[$display]:-}" ]]; then
+      printf '%s\t:%s\trunning\n' "-" "$display"
+    fi
+  done
+}
+
+stop_session() {
+  local name="$1"
+  [[ "$name" != :* ]] || die "refusing to stop an unmanaged display; use a managed session name"
+  validate_name "$name"
+  load_session "$name"
+  if ! vnc_is_running "$session_display"; then
+    rm -f -- "$(env_file "$name")"
+    printf 'VNC session %s is already stopped\n' "$name"
+    return
+  fi
+  vncserver -kill ":${session_display}"
+  rm -f -- "$(env_file "$name")"
+  printf 'VNC session %s stopped\n' "$name"
+}
+
+if [[ $# -eq 0 && -n "${VNC_SESSION_NAME:-}" && -n "${DISPLAY:-}" ]]; then
+  set -- __xstartup "$VNC_SESSION_NAME"
+fi
+
+install -d -m 700 "$state_root"
+
+case "${1:-}" in
+  start)
+    [[ $# -ge 2 && $# -le 4 ]] || die "start requires NAME [DISPLAY] [GEOMETRY]"
+    start_session "$2" "${3:-}" "${4:-}"
+    ;;
+  list)
+    [[ $# -eq 1 ]] || die "list accepts no arguments"
+    list_sessions
+    ;;
+  status)
+    [[ $# -eq 2 ]] || die "status requires NAME or :DISPLAY"
+    show_status "$2"
+    ;;
+  display)
+    [[ $# -eq 2 ]] || die "display requires NAME or :DISPLAY"
+    resolve_spec "$2"
+    printf '%s\n' "$resolved_display"
+    ;;
+  run)
+    [[ $# -ge 3 ]] || die "run requires NAME|:DISPLAY COMMAND [ARG ...]"
+    spec="$2"
+    shift 2
+    run_command "$spec" "$@"
+    ;;
+  stop)
+    [[ $# -eq 2 ]] || die "stop requires a managed session name"
+    stop_session "$2"
+    ;;
+  __xstartup)
+    [[ $# -eq 2 ]] || exit 1
+    run_xstartup "$2"
+    ;;
+  --help|-h)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

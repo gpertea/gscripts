@@ -1,13 +1,69 @@
-#!/bin/bash
-SIZE=1820x960
-if [[ -n "$1" ]]; then
-  SIZE="$1"
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly default_geometry="1820x960"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly script_dir
+readonly vnc_session="${script_dir}/vnc-session"
+
+if [[ ! -x "$vnc_session" ]]; then
+  printf 'error: required helper is missing or not executable: %s\n' "$vnc_session" >&2
+  exit 1
 fi
-#set -e
-ps=$(ps x | grep 'X.*[v]nc' | awk '{ print $6 }' | sed s/://)
-if [[ -z $ps ]]; then
-vncserver -localhost=no -geometry="$SIZE"  -SecurityTypes=VncAuth 2>&1 | \
-    sed -n 's/.*display :\([0-9][0-9]*\).*/\1/p'
-else 
-  echo "$ps"
+
+usage() {
+  printf '%s\n' \
+    "Usage:" \
+    "  vnc-get-display [GEOMETRY]" \
+    "  vnc-get-display --list" \
+    "  vnc-get-display --session NAME [GEOMETRY]" \
+    "  vnc-get-display --status NAME|:DISPLAY" \
+    "  vnc-get-display --stop NAME"
+}
+
+case "${1:-}" in
+  --list)
+    [[ $# -eq 1 ]] || { usage >&2; exit 1; }
+    exec "$vnc_session" list
+    ;;
+  --session)
+    [[ $# -ge 2 && $# -le 3 ]] || { usage >&2; exit 1; }
+    name="$2"
+    geometry="${3:-$default_geometry}"
+    "$vnc_session" start "$name" "" "$geometry" >&2
+    exec "$vnc_session" display "$name"
+    ;;
+  --status)
+    [[ $# -eq 2 ]] || { usage >&2; exit 1; }
+    exec "$vnc_session" status "$2"
+    ;;
+  --stop)
+    [[ $# -eq 2 ]] || { usage >&2; exit 1; }
+    exec "$vnc_session" stop "$2"
+    ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+esac
+
+## preserve the scalar legacy interface used by existing viewer scripts
+geometry="${1:-$default_geometry}"
+[[ "$geometry" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || {
+  printf 'error: geometry must look like 1820x960\n' >&2
+  exit 1
+}
+
+display="$("$vnc_session" list | awk '$3 == "running" {sub(/^:/, "", $2); print $2; exit}')"
+if [[ -n "$display" ]]; then
+  printf '%s\n' "$display"
+  exit 0
 fi
+
+## retain direct-LAN behavior for existing un-tunneled clients
+vncserver -localhost=no \
+  -geometry="$geometry" \
+  -SecurityTypes=VncAuth \
+  -rfbauth "${HOME}/.vnc/passwd" 2>&1 |
+  sed -n 's/^.*:\([0-9][0-9]*\).*$/\1/p' |
+  head -n 1

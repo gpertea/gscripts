@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf '%s\n' \
+    "Usage: vnc-session-view [--status|--stop] NAME|:DISPLAY [SSH_HOST]" \
+    "Default SSH_HOST: srv16"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+action="start"
+case "${1:-}" in
+  --status|--stop)
+    action="${1#--}"
+    shift
+    ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+esac
+
+[[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 1; }
+readonly session="$1"
+readonly remote_host="${2:-${VNC_SESSION_HOST:-srv16}}"
+readonly password_file="${VNC_SESSION_PASSWORD_FILE:-${HOME}/.vnc/passwd}"
+
+if [[ "$session" == :* ]]; then
+  [[ "$session" =~ ^:[1-9][0-9]*$ ]] || die "display must look like :2"
+  safe_session="display-${session#:}"
+else
+  [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid session name"
+  safe_session="$session"
+fi
+
+remote_vnc() {
+  ssh -n "$remote_host" '"$HOME/bin/vnc-session"' "$@"
+}
+
+if [[ "$action" == "status" ]]; then
+  remote_vnc status "$session"
+  exit
+fi
+
+readonly control_dir="${XDG_RUNTIME_DIR:-/tmp}/vnc-session-${UID}"
+readonly control_path="${control_dir}/ssh-${safe_session}-%C"
+mkdir -p "$control_dir"
+chmod 700 "$control_dir"
+
+if [[ "$action" == "stop" ]]; then
+  remote_vnc stop "$session"
+  ssh -n -S "$control_path" -O exit "$remote_host" >/dev/null 2>&1 || true
+  exit 0
+fi
+
+[[ -r "$password_file" ]] || die "VNC password file is missing: $password_file"
+command -v vncviewer >/dev/null 2>&1 || die "vncviewer is not installed"
+
+if [[ "$session" != :* ]]; then
+  remote_vnc start "$session"
+fi
+remote_display="$(remote_vnc display "$session")"
+[[ "$remote_display" =~ ^[1-9][0-9]*$ ]] || die "invalid remote display: $remote_display"
+remote_vnc status ":${remote_display}" >/dev/null
+
+local_display="${VNC_SESSION_LOCAL_DISPLAY:-$((remote_display + 10))}"
+[[ "$local_display" =~ ^[1-9][0-9]*$ ]] || die "invalid local display"
+readonly remote_port=$((5900 + remote_display))
+readonly local_port=$((5900 + local_display))
+(( remote_port <= 65535 && local_port <= 65535 )) || die "VNC display is too large"
+
+## create one control tunnel per host and named session
+if ! ssh -n -S "$control_path" -O check "$remote_host" >/dev/null 2>&1; then
+  ssh -fNT -M -S "$control_path" \
+    -o ExitOnForwardFailure=yes \
+    -L "127.0.0.1:${local_port}:127.0.0.1:${remote_port}" \
+    "$remote_host"
+fi
+
+printf 'Opening %s %s (:%s) as local VNC :%s\n' \
+  "$remote_host" "$session" "$remote_display" "$local_display"
+exec vncviewer "passwd=${password_file}" "localhost:${local_display}"
