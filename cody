@@ -6,12 +6,12 @@ if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
   export PATH=$HOME/.local/bin:$PATH
 fi
 
-# Keep colors enabled for Codex UI, even if parent env exports NO_COLOR.
+## Keep colors enabled for Codex UI, even if parent env exports NO_COLOR.
 unset NO_COLOR
 export FORCE_COLOR=1
 export CLICOLOR_FORCE=1
 
-# Prefer 256-color TERM values when available.
+## Prefer 256-color TERM values when available.
 if [[ -n "${TMUX:-}" ]]; then
   if infocmp tmux-256color >/dev/null 2>&1; then
     export TERM=tmux-256color
@@ -22,9 +22,33 @@ elif [[ "${TERM:-}" == "rxvt-unicode" ]]; then
   fi
 fi
 export COLORTERM=truecolor
-# Keep automatic updates, but don't block startup on transient npm/network issues.
-if command -v npm >/dev/null 2>&1; then
-  npm i -g @openai/codex >/dev/null 2>&1 || true
+
+## Update only when explicitly requested; normal launches do no network work.
+if [[ "${1:-}" == "--update" ]]; then
+  if ! command -v npm >/dev/null 2>&1; then
+    printf 'cody: npm is required to update Codex\n' >&2
+    exit 127
+  fi
+
+  printf 'Updating Codex CLI...\n'
+  npm install --global @openai/codex@latest
+  hash -r
+
+  codex_bin="$(command -v codex || true)"
+  if [[ -z "$codex_bin" ]]; then
+    printf 'cody: Codex was updated but is not available on PATH\n' >&2
+    exit 127
+  fi
+
+  "$codex_bin" --version
+  exit 0
 fi
 
-exec "$(which codex)" --yolo "$@"
+## Resolve once and replace the wrapper with Codex for correct signal handling.
+codex_bin="$(command -v codex || true)"
+if [[ -z "$codex_bin" ]]; then
+  printf 'cody: codex is not available on PATH\n' >&2
+  exit 127
+fi
+
+exec "$codex_bin" --yolo "$@"
