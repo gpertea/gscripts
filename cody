@@ -51,4 +51,11 @@ if [[ -z "$codex_bin" ]]; then
   exit 127
 fi
 
-exec "$codex_bin" --yolo "$@"
+## opt into the OpenAI documentation MCP for this launch only
+declare -a codex_args=(--yolo)
+if [[ "${1:-}" == "--docs" ]]; then
+  codex_args+=(-c 'mcp_servers.openaiDeveloperDocs.enabled=true')
+  shift
+fi
+
+exec "$codex_bin" "${codex_args[@]}" "$@"
