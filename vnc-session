@@ -531,20 +531,30 @@ stop_session() {
   local spec="$1"
   local force_stop="${2:-false}"
   local name="$spec"
+  local managed="true"
 
   [[ "$force_stop" == "true" || "$force_stop" == "false" ]] || die "invalid force-stop value"
 
   if [[ "$spec" == :* ]]; then
     resolve_spec "$spec"
-    [[ -n "$resolved_name" ]] || die "refusing to stop unmanaged display $spec"
-    name="$resolved_name"
+    if [[ -n "$resolved_name" ]]; then
+      name="$resolved_name"
+    else
+      managed="false"
+      name="(unmanaged)"
+      session_display="$resolved_display"
+    fi
   else
     validate_name "$name"
+    load_session "$name"
   fi
-  load_session "$name"
   if ! vnc_is_running "$session_display"; then
-    rm -f -- "$(env_file "$name")"
-    printf 'VNC session %s is already stopped\n' "$name"
+    if [[ "$managed" == "true" ]]; then
+      rm -f -- "$(env_file "$name")"
+      printf 'VNC session %s is already stopped\n' "$name"
+    else
+      printf 'Unmanaged VNC display :%s is already stopped\n' "$session_display"
+    fi
     return
   fi
 
@@ -562,8 +572,12 @@ stop_session() {
     "WARNING: host=$(hostname -s) session=${name} display=:${session_display}" \
     'WARNING: all GUI processes in this desktop, including bru, will be terminated.' >&2
   vncserver -kill ":${session_display}"
-  rm -f -- "$(env_file "$name")"
-  printf 'VNC session %s stopped\n' "$name"
+  if [[ "$managed" == "true" ]]; then
+    rm -f -- "$(env_file "$name")"
+    printf 'VNC session %s stopped\n' "$name"
+  else
+    printf 'Unmanaged VNC display :%s stopped\n' "$session_display"
+  fi
 }
 
 if [[ $# -eq 0 && -n "${VNC_SESSION_NAME:-}" && -n "${DISPLAY:-}" ]]; then

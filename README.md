@@ -143,8 +143,9 @@ vnc-session-view --stop --force srv16:2 # same operation on another host
 
 `vnc-HOST --stop --force 2` is the equivalent host-alias form. Stopping keeps
 the managed display assignment, so a later open recreates the same desktop on
-the same display. A stopped desktop may be checked or stopped again without
-`--force`.
+the same display. An explicit display also permits guarded stopping of an older
+unmanaged desktop such as `:1`. A stopped desktop may be checked or stopped
+again without `--force`.
 
 Direct mode uses VNC password authentication but does not encrypt screen,
 keyboard, pointer, or clipboard traffic. Use it only on trusted routed LANs.
