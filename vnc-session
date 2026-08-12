@@ -10,9 +10,19 @@ readonly script_dir
 readonly machine_id="${VNC_SESSION_MACHINE:-$(hostname -s | tr -cd 'A-Za-z0-9._-')}"
 readonly state_root="${XDG_STATE_HOME:-${HOME}/.local/state}/vnc-session/${machine_id}"
 readonly config_root="${XDG_CONFIG_HOME:-${HOME}/.config}/vnc-session"
-jwm_config="${VNC_SESSION_JWM_CONFIG:-${config_root}/jwm.xml}"
-if [[ -z "${VNC_SESSION_JWM_CONFIG:-}" && ! -r "$jwm_config" && -r "${script_dir}/jwm-vnc-session.xml" ]]; then
-  jwm_config="${script_dir}/jwm-vnc-session.xml"
+jwm_config="${VNC_SESSION_JWM_CONFIG:-}"
+if [[ -z "$jwm_config" ]]; then
+  for candidate in \
+    "${config_root}/jwm.xml" \
+    "${HOME}/.jwmrc-vnc" \
+    "${HOME}/.jwmrc" \
+    "${script_dir}/jwm-vnc-session.xml"; do
+    if [[ -r "$candidate" ]]; then
+      jwm_config="$candidate"
+      break
+    fi
+  done
+  jwm_config="${jwm_config:-${config_root}/jwm.xml}"
 fi
 readonly jwm_config
 readonly password_file="${VNC_SESSION_PASSWORD_FILE:-${HOME}/.vnc/passwd}"

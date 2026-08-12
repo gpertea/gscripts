@@ -18,6 +18,11 @@ the Linux entry points as links; do not maintain copies in `~/bin`.
 
 Installation backs up an existing regular managed file before replacing it
 with a canonical link. It does not alter host-specific `vnc-HOST` commands.
+The JWM configuration is a host-specific regular copy, not a repository link.
+Installation refreshes `~/.config/vnc-session/jwm.xml` from `~/.jwmrc-vnc` when
+present, otherwise from `~/.jwmrc`; the minimal repository configuration is
+used only when neither file exists. `install-vnc-tools check` detects a stale
+copy.
 
 Each Linux VNC host requires Bash, TigerVNC, JWM, `dbus-run-session`, `flock`,
 `ss`, `pgrep`, `setsid`, `xrdb`, `xsetroot`, and a private `~/.vnc/passwd`.

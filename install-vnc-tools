@@ -30,6 +30,46 @@ check_link() {
   [[ -L "$target" && "$(readlink -f -- "$target")" == "$source" ]]
 }
 
+preferred_jwm_source() {
+  if [[ -r "${HOME}/.jwmrc-vnc" ]]; then
+    printf '%s\n' "${HOME}/.jwmrc-vnc"
+  elif [[ -r "${HOME}/.jwmrc" ]]; then
+    printf '%s\n' "${HOME}/.jwmrc"
+  else
+    printf '%s\n' "${script_dir}/jwm-vnc-session.xml"
+  fi
+}
+
+check_copy() {
+  local source="$1"
+  local target="$2"
+
+  [[ -f "$target" && ! -L "$target" ]] && cmp -s -- "$source" "$target"
+}
+
+install_copy() {
+  local source="$1"
+  local target="$2"
+  local backup temporary
+
+  [[ -r "$source" ]] || die "configuration source is missing: $source"
+  if check_copy "$source" "$target"; then
+    printf 'Current copy %s <- %s\n' "$target" "$source"
+    return
+  fi
+  if [[ -e "$target" && ! -L "$target" ]]; then
+    backup="${target}.${backup_tag}"
+    mv -- "$target" "$backup"
+    printf 'Backed up %s to %s\n' "$target" "$backup"
+  fi
+
+  ## replace a prior symlink atomically without modifying its source
+  temporary="$(mktemp "${config_dir}/.jwm.xml.XXXXXX")"
+  install -m 600 -- "$source" "$temporary"
+  mv -Tf -- "$temporary" "$target"
+  printf 'Copied %s <- %s\n' "$target" "$source"
+}
+
 install_link() {
   local source="$1"
   local target="$2"
@@ -53,7 +93,8 @@ case "$action" in
     for command_name in "${commands[@]}"; do
       install_link "${script_dir}/${command_name}" "${bin_dir}/${command_name}"
     done
-    install_link "${script_dir}/jwm-vnc-session.xml" "${config_dir}/jwm.xml"
+    jwm_source="$(preferred_jwm_source)"
+    install_copy "$jwm_source" "${config_dir}/jwm.xml"
     "${bin_dir}/vnc-session" doctor
     ;;
   check)
@@ -66,10 +107,10 @@ case "$action" in
         failed=1
       fi
     done
-    source="${script_dir}/jwm-vnc-session.xml"
+    source="$(preferred_jwm_source)"
     target="${config_dir}/jwm.xml"
-    if ! check_link "$source" "$target"; then
-      printf 'MISMATCH %s (expected %s)\n' "$target" "$source" >&2
+    if ! check_copy "$source" "$target"; then
+      printf 'MISMATCH %s (expected a copy of %s)\n' "$target" "$source" >&2
       failed=1
     fi
     (( failed == 0 )) || exit 1
