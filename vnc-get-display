@@ -47,23 +47,12 @@ case "${1:-}" in
     ;;
 esac
 
-## preserve the scalar legacy interface used by existing viewer scripts
+## preserve the scalar legacy interface used by vnc-HOST viewer scripts
 geometry="${1:-$default_geometry}"
 [[ "$geometry" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || {
   printf 'error: geometry must look like 1820x960\n' >&2
   exit 1
 }
 
-display="$("$vnc_session" list | awk '$3 == "running" {sub(/^:/, "", $2); print $2; exit}')"
-if [[ -n "$display" ]]; then
-  printf '%s\n' "$display"
-  exit 0
-fi
-
-## retain direct-LAN behavior for existing un-tunneled clients
-vncserver -localhost=no \
-  -geometry="$geometry" \
-  -SecurityTypes=VncAuth \
-  -rfbauth "${HOME}/.vnc/passwd" 2>&1 |
-  sed -n 's/^.*:\([0-9][0-9]*\).*$/\1/p' |
-  head -n 1
+## legacy default is always direct-LAN display :1, never another named session
+exec "$vnc_session" ensure --direct :1 "$geometry"

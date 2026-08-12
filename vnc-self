@@ -1,7 +1,61 @@
-#!/bin/bash
-#set -e
-GEOMETRY=1820x960
-vncdn=$(~/bin/vnc-get-display $GEOMETRY)
-echo "vnc display#=$vncdn"
-port=`expr 5900 + $vncdn`
-vncviewer passwd=$HOME/.vnc/passwd :$port &
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly default_session="${VNC_SELF_SESSION:-self}"
+readonly default_geometry="${VNC_SESSION_GEOMETRY:-1820x960}"
+readonly password_file="${VNC_SESSION_PASSWORD_FILE:-${HOME}/.vnc/passwd}"
+readonly viewer="${VNC_VIEWER:-vncviewer}"
+script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+readonly script_dir
+readonly vnc_session="${script_dir}/vnc-session"
+
+usage() {
+  printf '%s\n' \
+    "Usage:" \
+    "  vnc-self [NAME|:DISPLAY] [GEOMETRY]" \
+    "  vnc-self --list" \
+    "  vnc-self --status NAME|:DISPLAY" \
+    "  vnc-self --stop NAME|:DISPLAY" \
+    "Default session: ${default_session}"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ -x "$vnc_session" ]] || die "required helper is missing: $vnc_session"
+
+case "${1:-}" in
+  --list)
+    [[ $# -eq 1 ]] || { usage >&2; exit 1; }
+    exec "$vnc_session" list
+    ;;
+  --status)
+    [[ $# -eq 2 ]] || { usage >&2; exit 1; }
+    exec "$vnc_session" status "$2"
+    ;;
+  --stop)
+    [[ $# -eq 2 ]] || { usage >&2; exit 1; }
+    exec "$vnc_session" stop "$2"
+    ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+esac
+
+[[ $# -le 2 ]] || { usage >&2; exit 1; }
+target="${1:-$default_session}"
+geometry="${2:-$default_geometry}"
+[[ "$geometry" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || die "invalid geometry: $geometry"
+
+## ensure an exact display or allocate/reuse the named target
+display="$("$vnc_session" ensure "$target" "$geometry")"
+
+[[ -r "$password_file" ]] || die "VNC password file is missing: $password_file"
+command -v "$viewer" >/dev/null 2>&1 || die "VNC viewer is not installed: $viewer"
+
+printf 'Opening local VNC %s on :%s\n' "$target" "$display"
+exec "$viewer" "passwd=${password_file}" "localhost:${display}"

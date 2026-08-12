@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+readonly script_dir
+readonly bin_dir="${HOME}/bin"
+readonly config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/vnc-session"
+backup_tag="pre-gscripts-vnc-$(date +%Y%m%d-%H%M%S)"
+readonly backup_tag
+readonly -a commands=(
+  vnc-get-display vnc-session vnc-self vnc-session-view vnc-host
+)
+
+usage() {
+  printf '%s\n' \
+    "Usage: install-vnc-tools [install|check]" \
+    "Default action: install"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+check_link() {
+  local source="$1"
+  local target="$2"
+
+  [[ -L "$target" && "$(readlink -f -- "$target")" == "$source" ]]
+}
+
+install_link() {
+  local source="$1"
+  local target="$2"
+  local backup
+
+  [[ -e "$source" ]] || die "canonical source is missing: $source"
+  if [[ -e "$target" && ! -L "$target" ]]; then
+    backup="${target}.${backup_tag}"
+    mv -- "$target" "$backup"
+    printf 'Backed up %s to %s\n' "$target" "$backup"
+  fi
+  ln -sfn -- "$source" "$target"
+  printf 'Linked %s -> %s\n' "$target" "$source"
+}
+
+action="${1:-install}"
+[[ $# -le 1 ]] || { usage >&2; exit 1; }
+case "$action" in
+  install)
+    install -d -m 700 "$bin_dir" "$config_dir"
+    for command_name in "${commands[@]}"; do
+      install_link "${script_dir}/${command_name}" "${bin_dir}/${command_name}"
+    done
+    install_link "${script_dir}/jwm-vnc-session.xml" "${config_dir}/jwm.xml"
+    "${bin_dir}/vnc-session" doctor
+    ;;
+  check)
+    failed=0
+    for command_name in "${commands[@]}"; do
+      source="${script_dir}/${command_name}"
+      target="${bin_dir}/${command_name}"
+      if ! check_link "$source" "$target"; then
+        printf 'MISMATCH %s (expected %s)\n' "$target" "$source" >&2
+        failed=1
+      fi
+    done
+    source="${script_dir}/jwm-vnc-session.xml"
+    target="${config_dir}/jwm.xml"
+    if ! check_link "$source" "$target"; then
+      printf 'MISMATCH %s (expected %s)\n' "$target" "$source" >&2
+      failed=1
+    fi
+    (( failed == 0 )) || exit 1
+    "${bin_dir}/vnc-session" doctor
+    printf 'VNC tool links: OK\n'
+    ;;
+  --help|-h)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

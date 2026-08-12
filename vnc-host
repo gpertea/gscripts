@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+program="$(basename -- "$0")"
+transport="--direct"
+force_restart=""
+action=""
+
+usage() {
+  printf '%s\n' \
+    "Usage:" \
+    "  vnc-host [--direct|--tunnel] [--force-restart] HOST[:DISPLAY|:NAME]" \
+    "  vnc-HOST [--direct|--tunnel] [--force-restart] [DISPLAY|NAME]" \
+    "  vnc-HOST [--status|--stop] [DISPLAY|NAME]" \
+    "Default transport: --direct; default display: :1"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --direct|--tunnel) transport="$1" ;;
+    --force-restart) force_restart="$1" ;;
+    --status|--stop) action="$1" ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
+
+if [[ "$program" == "vnc-host" ]]; then
+  [[ $# -eq 1 ]] || { usage >&2; exit 1; }
+  target="$1"
+else
+  host="${program#vnc-}"
+  [[ -n "$host" && "$host" != "$program" ]] || die "cannot derive host from $program"
+  [[ $# -le 1 ]] || { usage >&2; exit 1; }
+  suffix="${1:-1}"
+  suffix="${suffix#:}"
+  target="${host}:${suffix}"
+fi
+
+if [[ -n "$action" ]]; then
+  [[ -z "$force_restart" ]] || die "--force-restart is not valid with $action"
+  exec vnc-session-view "$action" "$target"
+fi
+
+args=("$transport")
+[[ -z "$force_restart" ]] || args+=("$force_restart")
+exec vnc-session-view "${args[@]}" "$target"

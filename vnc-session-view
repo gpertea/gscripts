@@ -3,8 +3,10 @@ set -euo pipefail
 
 usage() {
   printf '%s\n' \
-    "Usage: vnc-session-view [--status|--stop] NAME|:DISPLAY [SSH_HOST]" \
-    "Default SSH_HOST: srv16"
+    "Usage: vnc-session-view [--direct] [--force-restart] SSH_HOST[:DISPLAY|:NAME]" \
+    "       vnc-session-view [--tunnel] SSH_HOST[:DISPLAY|:NAME]" \
+    "       vnc-session-view [--status|--stop] SSH_HOST[:DISPLAY|:NAME]" \
+    "Default transport: --tunnel; default target: display :1"
 }
 
 die() {
@@ -13,32 +15,110 @@ die() {
 }
 
 action="start"
-case "${1:-}" in
-  --status|--stop)
-    action="${1#--}"
-    shift
-    ;;
-  --help|-h)
-    usage
-    exit 0
-    ;;
-esac
+transport="tunnel"
+force_restart="false"
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --direct|--tunnel) transport="${1#--}" ;;
+    --force-restart) force_restart="true" ;;
+    --status|--stop) action="${1#--}" ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
+[[ "$action" == "start" || "$force_restart" == "false" ]] || die "--force-restart is only valid when opening a viewer"
+[[ "$transport" == "direct" || "$force_restart" == "false" ]] || die "--force-restart is only valid with --direct"
 
-[[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 1; }
-readonly session="$1"
-readonly remote_host="${2:-${VNC_SESSION_HOST:-srv16}}"
+[[ $# -eq 1 ]] || { usage >&2; exit 1; }
+target="$1"
+if [[ "$target" == *:* ]]; then
+  remote_host="${target%%:*}"
+  requested_target="${target#*:}"
+else
+  remote_host="$target"
+  requested_target="1"
+fi
+[[ -n "$remote_host" && -n "$requested_target" ]] || die "target must look like srv16, srv16:2, or srv16:browser"
+
+if [[ "$requested_target" =~ ^[1-9][0-9]*$ ]]; then
+  session=":$requested_target"
+else
+  session="$requested_target"
+fi
+readonly session remote_host
 readonly password_file="${VNC_SESSION_PASSWORD_FILE:-${HOME}/.vnc/passwd}"
+readonly viewer="${VNC_VIEWER:-vncviewer}"
 
 if [[ "$session" == :* ]]; then
   [[ "$session" =~ ^:[1-9][0-9]*$ ]] || die "display must look like :2"
-  safe_session="display-${session#:}"
 else
   [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid session name"
-  safe_session="$session"
 fi
 
 remote_vnc() {
   ssh -n "$remote_host" '"$HOME/bin/vnc-session"' "$@"
+}
+
+ensure_remote_target() {
+  local display mapped_name="" remote_help=""
+
+  remote_help="$(remote_vnc --help 2>&1)" || {
+    printf '%s\n' "$remote_help" >&2
+    die "could not inspect vnc-session on $remote_host"
+  }
+  if grep -Fq -- '--direct|--tunnel' <<< "$remote_help"; then
+    if [[ "$transport" == "direct" ]]; then
+      if [[ "$force_restart" == "true" ]]; then
+        remote_vnc ensure --direct --force-restart "$session"
+      else
+        remote_vnc ensure --direct "$session"
+      fi
+    else
+      ## tunneling works with either loopback or LAN listener policy
+      remote_vnc ensure "$session"
+    fi
+    return
+  fi
+
+  [[ "$transport" != "direct" ]] || die "remote vnc-session must be updated for --direct"
+
+  ## support hosts that have not yet pulled the exact-display ensure command
+  if [[ "$session" != :* ]]; then
+    remote_vnc start "$session" >&2
+    remote_vnc display "$session"
+    return
+  fi
+
+  display="${session#:}"
+  mapped_name="$(
+    remote_vnc list |
+      awk -v target=":${display}" '$2 == target && $1 != "-" {print $1; exit}'
+  )"
+  if [[ -n "$mapped_name" ]]; then
+    remote_vnc start "$mapped_name" >&2
+  elif ! remote_vnc status "$session" >/dev/null 2>&1; then
+    remote_vnc start "display-${display}" "$session" >&2
+  fi
+  printf '%s\n' "$display"
+}
+
+stop_remote_target() {
+  local display mapped_name=""
+
+  if [[ "$session" != :* ]] || remote_vnc --help 2>&1 | grep -q 'stop NAME|:DISPLAY'; then
+    remote_vnc stop "$session"
+    return
+  fi
+
+  ## resolve a managed name when stopping by display on an older host
+  display="${session#:}"
+  mapped_name="$(
+    remote_vnc list |
+      awk -v target=":${display}" '$2 == target && $1 != "-" {print $1; exit}'
+  )"
+  [[ -n "$mapped_name" ]] || die "remote display $session is not managed"
+  remote_vnc stop "$mapped_name"
 }
 
 if [[ "$action" == "status" ]]; then
@@ -46,26 +126,35 @@ if [[ "$action" == "status" ]]; then
   exit
 fi
 
-readonly control_dir="${XDG_RUNTIME_DIR:-/tmp}/vnc-session-${UID}"
-readonly control_path="${control_dir}/ssh-${safe_session}-%C"
-mkdir -p "$control_dir"
-chmod 700 "$control_dir"
-
 if [[ "$action" == "stop" ]]; then
-  remote_vnc stop "$session"
+  stop_display="$(remote_vnc display "$session")"
+  [[ "$stop_display" =~ ^[1-9][0-9]*$ ]] || die "invalid remote display: $stop_display"
+  control_dir="${XDG_RUNTIME_DIR:-/tmp}/vnc-session-${UID}"
+  control_path="${control_dir}/ssh-display-${stop_display}-%C"
+  stop_remote_target
   ssh -n -S "$control_path" -O exit "$remote_host" >/dev/null 2>&1 || true
   exit 0
 fi
 
 [[ -r "$password_file" ]] || die "VNC password file is missing: $password_file"
-command -v vncviewer >/dev/null 2>&1 || die "vncviewer is not installed"
+command -v "$viewer" >/dev/null 2>&1 || die "VNC viewer is not installed: $viewer"
 
-if [[ "$session" != :* ]]; then
-  remote_vnc start "$session"
-fi
-remote_display="$(remote_vnc display "$session")"
+## ensure the requested listener mode before choosing the data transport
+remote_display="$(ensure_remote_target)"
 [[ "$remote_display" =~ ^[1-9][0-9]*$ ]] || die "invalid remote display: $remote_display"
 remote_vnc status ":${remote_display}" >/dev/null
+
+## aliases for one remote display share one optional tunnel
+readonly control_dir="${XDG_RUNTIME_DIR:-/tmp}/vnc-session-${UID}"
+readonly control_path="${control_dir}/ssh-display-${remote_display}-%C"
+if [[ "$transport" == "direct" ]]; then
+  ## close a stale tunnel because this viewer will use the direct data plane
+  ssh -n -S "$control_path" -O exit "$remote_host" >/dev/null 2>&1 || true
+  direct_host="${VNC_DIRECT_HOST:-$(ssh -G "$remote_host" 2>/dev/null | awk '$1 == "hostname" {print $2; exit}')}"
+  [[ -n "$direct_host" ]] || die "could not resolve direct VNC host for $remote_host"
+  printf 'Opening direct VNC %s:%s after SSH session initiation\n' "$direct_host" "$remote_display"
+  exec "$viewer" "passwd=${password_file}" "${direct_host}:${remote_display}"
+fi
 
 local_display="${VNC_SESSION_LOCAL_DISPLAY:-$((remote_display + 10))}"
 [[ "$local_display" =~ ^[1-9][0-9]*$ ]] || die "invalid local display"
@@ -73,7 +162,10 @@ readonly remote_port=$((5900 + remote_display))
 readonly local_port=$((5900 + local_display))
 (( remote_port <= 65535 && local_port <= 65535 )) || die "VNC display is too large"
 
-## create one control tunnel per host and named session
+mkdir -p "$control_dir"
+chmod 700 "$control_dir"
+
+## create one control tunnel per host and remote display
 if ! ssh -n -S "$control_path" -O check "$remote_host" >/dev/null 2>&1; then
   ssh -fNT -M -S "$control_path" \
     -o ExitOnForwardFailure=yes \
@@ -83,4 +175,4 @@ fi
 
 printf 'Opening %s %s (:%s) as local VNC :%s\n' \
   "$remote_host" "$session" "$remote_display" "$local_display"
-exec vncviewer "passwd=${password_file}" "localhost:${local_display}"
+exec "$viewer" "passwd=${password_file}" "localhost:${local_display}"
