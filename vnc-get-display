@@ -18,7 +18,7 @@ usage() {
     "  vnc-get-display --list" \
     "  vnc-get-display --session NAME [GEOMETRY]" \
     "  vnc-get-display --status NAME|:DISPLAY" \
-    "  vnc-get-display --stop NAME"
+    "  vnc-get-display --stop [--force] NAME|:DISPLAY"
 }
 
 case "${1:-}" in
@@ -38,8 +38,13 @@ case "${1:-}" in
     exec "$vnc_session" status "$2"
     ;;
   --stop)
-    [[ $# -eq 2 ]] || { usage >&2; exit 1; }
-    exec "$vnc_session" stop "$2"
+    shift
+    if [[ "${1:-}" == "--force" ]]; then
+      [[ $# -eq 2 ]] || { usage >&2; exit 1; }
+      exec "$vnc_session" stop --force "$2"
+    fi
+    [[ $# -eq 1 ]] || { usage >&2; exit 1; }
+    exec "$vnc_session" stop "$1"
     ;;
   --help|-h)
     usage

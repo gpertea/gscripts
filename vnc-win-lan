@@ -11,7 +11,7 @@ usage() {
     "  $(basename "$0") HOST [GEOMETRY]" \
     "  $(basename "$0") HOST --session NAME [GEOMETRY]" \
     "  $(basename "$0") HOST --status NAME" \
-    "  $(basename "$0") HOST --stop NAME" \
+    "  $(basename "$0") HOST --stop [--force] NAME" \
     "Set VNC_LOCAL_PORT to override the local tunnel port for a named session."
 }
 
@@ -30,6 +30,7 @@ vnc_host="${VNC_HOST:-${ssh_host#*@}}"
 shift
 
 action="legacy"
+force_stop="false"
 session=""
 geometry="1820x960"
 case "${1:-}" in
@@ -39,10 +40,22 @@ case "${1:-}" in
     session="$2"
     geometry="${3:-$geometry}"
     ;;
-  --status|--stop)
+  --status)
     [[ $# -eq 2 ]] || { usage >&2; exit 2; }
     action="${1#--}"
     session="$2"
+    ;;
+  --stop)
+    [[ $# -ge 2 && $# -le 3 ]] || { usage >&2; exit 2; }
+    action="stop"
+    if [[ "${2:-}" == "--force" ]]; then
+      [[ $# -eq 3 ]] || { usage >&2; exit 2; }
+      force_stop="true"
+      session="$3"
+    else
+      [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+      session="$2"
+    fi
     ;;
   --help|-h)
     usage
@@ -68,7 +81,9 @@ if [[ "$action" == "status" ]]; then
   exec ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' --status "$session"
 fi
 if [[ "$action" == "stop" ]]; then
-  ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' --stop "$session"
+  stop_args=(--stop)
+  [[ "$force_stop" == "false" ]] || stop_args+=(--force)
+  ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' "${stop_args[@]}" "$session"
   ssh -n -S "$control_path" -O exit "$ssh_host" >/dev/null 2>&1 || true
   exit 0
 fi

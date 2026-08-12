@@ -32,7 +32,7 @@ usage() {
     "  vnc-session status NAME|:DISPLAY" \
     "  vnc-session display NAME|:DISPLAY" \
     "  vnc-session run NAME|:DISPLAY COMMAND [ARG ...]" \
-    "  vnc-session stop NAME|:DISPLAY" \
+    "  vnc-session stop [--force] NAME|:DISPLAY" \
     "  vnc-session doctor"
 }
 
@@ -529,7 +529,10 @@ list_sessions() {
 
 stop_session() {
   local spec="$1"
+  local force_stop="${2:-false}"
   local name="$spec"
+
+  [[ "$force_stop" == "true" || "$force_stop" == "false" ]] || die "invalid force-stop value"
 
   if [[ "$spec" == :* ]]; then
     resolve_spec "$spec"
@@ -544,6 +547,20 @@ stop_session() {
     printf 'VNC session %s is already stopped\n' "$name"
     return
   fi
+
+  if [[ "$force_stop" != "true" ]]; then
+    printf '%s\n' \
+      'WARNING: stopping a running VNC desktop is destructive.' \
+      "WARNING: host=$(hostname -s) session=${name} display=:${session_display}" \
+      'WARNING: all GUI processes in this desktop, including bru, will be terminated.' \
+      "WARNING: to proceed, rerun: vnc-session stop --force :${session_display}" >&2
+    die "refusing to stop running VNC desktop :${session_display} without --force"
+  fi
+
+  printf '%s\n' \
+    'WARNING: DESTRUCTIVE VNC DESKTOP STOP REQUESTED' \
+    "WARNING: host=$(hostname -s) session=${name} display=:${session_display}" \
+    'WARNING: all GUI processes in this desktop, including bru, will be terminated.' >&2
   vncserver -kill ":${session_display}"
   rm -f -- "$(env_file "$name")"
   printf 'VNC session %s stopped\n' "$name"
@@ -608,8 +625,14 @@ case "${1:-}" in
     run_command "$spec" "$@"
     ;;
   stop)
-    [[ $# -eq 2 ]] || die "stop requires a managed session name or display"
-    stop_session "$2"
+    shift
+    force_stop="false"
+    if [[ "${1:-}" == "--force" ]]; then
+      force_stop="true"
+      shift
+    fi
+    [[ $# -eq 1 ]] || die "stop requires [--force] NAME|:DISPLAY"
+    stop_session "$1" "$force_stop"
     ;;
   doctor)
     [[ $# -eq 1 ]] || die "doctor accepts no arguments"

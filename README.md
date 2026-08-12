@@ -36,7 +36,6 @@ Create and inspect independent sessions on any Linux host:
 vnc-get-display --session browser-a
 vnc-get-display --list
 vnc-get-display --status browser-a
-vnc-get-display --stop browser-a
 ```
 
 The no-option `vnc-get-display [GEOMETRY]` interface remains compatible with
@@ -131,6 +130,21 @@ Returning a running session to loopback-only mode has the same guard:
 vnc-session ensure --tunnel :2                 # refuses while running
 vnc-session ensure --tunnel --force-restart :2 # explicit destructive change
 ```
+
+Stopping a running desktop terminates Xtigervnc and every GUI process inside
+it. A normal stop therefore refuses and prints the exact destructive command:
+
+```bash
+vnc-session stop :2                  # refuses while running
+vnc-session stop --force :2          # explicit destructive stop
+vnc-self --stop --force :2           # same operation on this host
+vnc-session-view --stop --force srv16:2 # same operation on another host
+```
+
+`vnc-HOST --stop --force 2` is the equivalent host-alias form. Stopping keeps
+the managed display assignment, so a later open recreates the same desktop on
+the same display. A stopped desktop may be checked or stopped again without
+`--force`.
 
 Direct mode uses VNC password authentication but does not encrypt screen,
 keyboard, pointer, or clipboard traffic. Use it only on trusted routed LANs.

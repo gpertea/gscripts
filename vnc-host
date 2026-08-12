@@ -4,6 +4,7 @@ set -euo pipefail
 program="$(basename -- "$0")"
 transport="--direct"
 force_restart=""
+force_stop=""
 action=""
 
 usage() {
@@ -11,7 +12,8 @@ usage() {
     "Usage:" \
     "  vnc-host [--direct|--tunnel] [--force-restart] HOST[:DISPLAY|:NAME]" \
     "  vnc-HOST [--direct|--tunnel] [--force-restart] [DISPLAY|NAME]" \
-    "  vnc-HOST [--status|--stop] [DISPLAY|NAME]" \
+    "  vnc-HOST --status [DISPLAY|NAME]" \
+    "  vnc-HOST --stop [--force] [DISPLAY|NAME]" \
     "Default transport: --direct; default display: :1"
 }
 
@@ -24,6 +26,7 @@ while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --direct|--tunnel) transport="$1" ;;
     --force-restart) force_restart="$1" ;;
+    --force) force_stop="$1" ;;
     --status|--stop) action="$1" ;;
     --help|-h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -45,8 +48,13 @@ fi
 
 if [[ -n "$action" ]]; then
   [[ -z "$force_restart" ]] || die "--force-restart is not valid with $action"
-  exec vnc-session-view "$action" "$target"
+  [[ "$action" == "--stop" || -z "$force_stop" ]] || die "--force is only valid with --stop"
+  args=("$action")
+  [[ -z "$force_stop" ]] || args+=("$force_stop")
+  exec vnc-session-view "${args[@]}" "$target"
 fi
+
+[[ -z "$force_stop" ]] || die "--force is only valid with --stop"
 
 args=("$transport")
 [[ -z "$force_restart" ]] || args+=("$force_restart")

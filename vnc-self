@@ -16,7 +16,7 @@ usage() {
     "  vnc-self [NAME|:DISPLAY] [GEOMETRY]" \
     "  vnc-self --list" \
     "  vnc-self --status NAME|:DISPLAY" \
-    "  vnc-self --stop NAME|:DISPLAY" \
+    "  vnc-self --stop [--force] NAME|:DISPLAY" \
     "Default target: display ${default_display}"
 }
 
@@ -37,8 +37,13 @@ case "${1:-}" in
     exec "$vnc_session" status "$2"
     ;;
   --stop)
-    [[ $# -eq 2 ]] || { usage >&2; exit 1; }
-    exec "$vnc_session" stop "$2"
+    shift
+    if [[ "${1:-}" == "--force" ]]; then
+      [[ $# -eq 2 ]] || { usage >&2; exit 1; }
+      exec "$vnc_session" stop --force "$2"
+    fi
+    [[ $# -eq 1 ]] || { usage >&2; exit 1; }
+    exec "$vnc_session" stop "$1"
     ;;
   --help|-h)
     usage
