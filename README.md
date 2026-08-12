@@ -8,8 +8,9 @@ named desktops, view its own desktops, and be viewed from Linux, macOS, or
 Windows. `lin-browser-use` consumes this layer but does not own or install it.
 
 `vnc-get-display`, `vnc-session`, `vnc-self`, `vnc-session-view`, `vnc-lan`,
-`vnc-win-lan`, `vnc-host`, and `jwm-vnc-session.xml` are canonical here. Install
-the Linux entry points as links; do not maintain copies in `~/bin`.
+`vnc-win-lan`, `vnc-host`, `flameshot-vnc`, and `jwm-vnc-session.xml` are
+canonical here. Install the Linux entry points as links; do not maintain copies
+in `~/bin`.
 
 ```bash
 ~/gscripts/install-vnc-tools install
@@ -23,6 +24,13 @@ Installation refreshes `~/.config/vnc-session/jwm.xml` from `~/.jwmrc-vnc` when
 present, otherwise from `~/.jwmrc`; the minimal repository configuration is
 used only when neither file exists. `install-vnc-tools check` detects a stale
 copy.
+
+`flameshot-vnc` supports any numeric `DISPLAY`. Flameshot uses both D-Bus and a
+Qt local socket for single-instance routing, neither of which is keyed by
+`DISPLAY`. The wrapper gives every display a separate `TMPDIR`. It reuses the
+private D-Bus already supplied by a managed `vnc-session`; for a legacy desktop
+sharing the `:0` user bus, it creates a display-specific private bus. The
+historical `:1` socket paths remain compatible with an already-running daemon.
 
 Each Linux VNC host requires Bash, TigerVNC, JWM, `dbus-run-session`, `flock`,
 `ss`, `pgrep`, `setsid`, `xrdb`, `xsetroot`, and a private `~/.vnc/passwd`.

@@ -9,7 +9,7 @@ readonly config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/vnc-session"
 backup_tag="pre-gscripts-vnc-$(date +%Y%m%d-%H%M%S)"
 readonly backup_tag
 readonly -a commands=(
-  vnc-get-display vnc-session vnc-self vnc-session-view vnc-host
+  vnc-get-display vnc-session vnc-self vnc-session-view vnc-host flameshot-vnc
 )
 
 usage() {
