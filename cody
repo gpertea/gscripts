@@ -1,5 +1,40 @@
 #!/bin/bash
 set -euo pipefail
+
+is_windows_msys=false
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) is_windows_msys=true ;;
+esac
+
+windows_codex_bin() {
+  local local_app_data="${LOCALAPPDATA:-}"
+
+  if [[ -z "$local_app_data" ]] && command -v powershell.exe >/dev/null 2>&1; then
+    local_app_data="$(powershell.exe -NoLogo -NoProfile -Command \
+      '[Environment]::GetFolderPath("LocalApplicationData")' | tr -d '\r')"
+  fi
+  if [[ -n "$local_app_data" ]] && command -v cygpath >/dev/null 2>&1; then
+    local_app_data="$(cygpath -u "$local_app_data")"
+  fi
+
+  [[ -n "$local_app_data" ]] || return 1
+  printf '%s/Programs/OpenAI/Codex/bin/codex.exe\n' "$local_app_data"
+}
+
+resolve_codex_bin() {
+  local candidate
+
+  if $is_windows_msys; then
+    candidate="$(windows_codex_bin || true)"
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+
+  command -v codex
+}
+
 ## if on JHPCE, load the npm module
 if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
   module load node
@@ -25,16 +60,27 @@ export COLORTERM=truecolor
 
 ## Update only when explicitly requested; normal launches do no network work.
 if [[ "${1:-}" == "--update" ]]; then
-  if ! command -v npm >/dev/null 2>&1; then
-    printf 'cody: npm is required to update Codex\n' >&2
-    exit 127
-  fi
-
   printf 'Updating Codex CLI...\n'
-  npm install --global @openai/codex@latest
+  if $is_windows_msys; then
+    if ! command -v powershell.exe >/dev/null 2>&1; then
+      printf 'cody: powershell.exe is required to update Codex on Windows\n' >&2
+      exit 127
+    fi
+
+    # Use the native Windows standalone installer. Prepending System32 keeps
+    # MSYS2 tar.exe from receiving Windows paths from the PowerShell installer.
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \
+      '$ErrorActionPreference = "Stop"; $env:Path = "$env:SystemRoot\System32;$env:Path"; $env:CODEX_NON_INTERACTIVE = "1"; Invoke-RestMethod "https://chatgpt.com/codex/install.ps1" | Invoke-Expression'
+  else
+    if ! command -v npm >/dev/null 2>&1; then
+      printf 'cody: npm is required to update Codex\n' >&2
+      exit 127
+    fi
+    npm install --global @openai/codex@latest
+  fi
   hash -r
 
-  codex_bin="$(command -v codex || true)"
+  codex_bin="$(resolve_codex_bin || true)"
   if [[ -z "$codex_bin" ]]; then
     printf 'cody: Codex was updated but is not available on PATH\n' >&2
     exit 127
@@ -45,7 +91,7 @@ if [[ "${1:-}" == "--update" ]]; then
 fi
 
 ## Resolve once and replace the wrapper with Codex for correct signal handling.
-codex_bin="$(command -v codex || true)"
+codex_bin="$(resolve_codex_bin || true)"
 if [[ -z "$codex_bin" ]]; then
   printf 'cody: codex is not available on PATH\n' >&2
   exit 127
