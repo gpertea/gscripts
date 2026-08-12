@@ -174,10 +174,30 @@ On macOS, `vnc-lan linwks34 --session browser-a` creates the same tunnel and
 opens TurboVNC. Legacy direct-LAN usage remains
 `vnc-lan linwks34 [vnc-host] [geometry]`.
 
-On Windows/MSYS2, `vnc-win-lan linwks34 --session browser-a` provides the same
-named-session behavior while retaining the established
-`C:\util\vnc\tigervncviewer.exe` invocation. Legacy direct-LAN usage is
-`vnc-win-lan linwks34 [geometry]`.
+On Windows/MSYS2, `vnc-win-lan` now accepts the same host/session target form
+as `vnc-session-view` while retaining the established
+`C:\util\vnc\tigervncviewer.exe` invocation:
+
+```bash
+vnc-win-lan gglin:2                  # direct LAN data connection
+vnc-win-lan --direct gglin:browser-a
+vnc-win-lan --tunnel srv16:2         # per-display SSH tunnel
+vnc-win-lan --status srv16:2
+vnc-win-lan --stop --force srv16:2
+```
+
+The legacy `vnc-win-lan HOST [GEOMETRY]` and
+`vnc-win-lan HOST --session NAME [GEOMETRY]` forms remain accepted. Direct
+mode resolves the VNC endpoint from `ssh -G HOST`; `VNC_DIRECT_HOST` and
+`VNC_DIRECT_PORT_BASE` can override forwarded LAN endpoints. Tunnel control
+sockets and local ports are keyed by the resolved remote display, so `:2`,
+`:3`, and named sessions can coexist.
+
+`vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin and to
+`vnc-session-view` on Linux. Small Windows host wrappers can set
+`VNC_HOST_ALIAS`; off-LAN wrappers can additionally set
+`VNC_HOST_DEFAULT_TRANSPORT=--tunnel`. Explicit `--direct` or `--tunnel`
+arguments always override the wrapper default.
 
 ## Update a VNC network
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 program="$(basename -- "$0")"
-transport="--direct"
+transport="${VNC_HOST_DEFAULT_TRANSPORT:---direct}"
 force_restart=""
 force_stop=""
 action=""
@@ -14,7 +14,7 @@ usage() {
     "  vnc-HOST [--direct|--tunnel] [--force-restart] [DISPLAY|NAME]" \
     "  vnc-HOST --status [DISPLAY|NAME]" \
     "  vnc-HOST --stop [--force] [DISPLAY|NAME]" \
-    "Default transport: --direct; default display: :1"
+    "Default transport: --direct (overridable by VNC_HOST_DEFAULT_TRANSPORT); default display: :1"
 }
 
 die() {
@@ -34,7 +34,13 @@ while [[ "${1:-}" == --* ]]; do
   shift
 done
 
-if [[ "$program" == "vnc-host" ]]; then
+if [[ -n "${VNC_HOST_ALIAS:-}" ]]; then
+  host="$VNC_HOST_ALIAS"
+  [[ $# -le 1 ]] || { usage >&2; exit 1; }
+  suffix="${1:-1}"
+  suffix="${suffix#:}"
+  target="${host}:${suffix}"
+elif [[ "$program" == "vnc-host" ]]; then
   [[ $# -eq 1 ]] || { usage >&2; exit 1; }
   target="$1"
 else
@@ -46,16 +52,30 @@ else
   target="${host}:${suffix}"
 fi
 
+case "$transport" in
+  --direct|--tunnel) ;;
+  *) die "invalid VNC_HOST_DEFAULT_TRANSPORT: $transport" ;;
+esac
+
+script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+case "${OSTYPE:-$(uname -s)}" in
+  msys*|cygwin*|MINGW*|MSYS*|CYGWIN*) viewer_helper="${script_dir}/vnc-win-lan" ;;
+  *) viewer_helper="${script_dir}/vnc-session-view" ;;
+esac
+[[ -x "$viewer_helper" ]] || die "viewer helper is missing or not executable: $viewer_helper"
+
 if [[ -n "$action" ]]; then
   [[ -z "$force_restart" ]] || die "--force-restart is not valid with $action"
   [[ "$action" == "--stop" || -z "$force_stop" ]] || die "--force is only valid with --stop"
   args=("$action")
   [[ -z "$force_stop" ]] || args+=("$force_stop")
-  exec vnc-session-view "${args[@]}" "$target"
+  exec "$viewer_helper" "${args[@]}" "$target"
 fi
 
 [[ -z "$force_stop" ]] || die "--force is only valid with --stop"
 
 args=("$transport")
 [[ -z "$force_restart" ]] || args+=("$force_restart")
-exec vnc-session-view "${args[@]}" "$target"
+
+exec "$viewer_helper" "${args[@]}" "$target"

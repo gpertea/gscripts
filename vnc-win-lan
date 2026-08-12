@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-## Windows/MSYS2 client; preserve the established TigerVNC installation
+## Windows/MSYS2 VNC client.  SSH controls the remote session; the viewer data
+## plane is direct on a LAN by default and can be switched to an SSH tunnel.
 readonly VNC_VIEWER="${VNC_VIEWER:-/c/util/vnc/tigervncviewer.exe}"
-readonly VNC_PASSWORD='C:\util\vnc\vnc-gxlin-passwd'
+readonly VNC_PASSWORD="${VNC_PASSWORD:-C:\util\vnc\vnc-gxlin-passwd}"
 
 usage() {
   printf '%s\n' \
     "Usage:" \
-    "  $(basename "$0") HOST [GEOMETRY]" \
-    "  $(basename "$0") HOST --session NAME [GEOMETRY]" \
-    "  $(basename "$0") HOST --status NAME" \
-    "  $(basename "$0") HOST --stop [--force] NAME" \
-    "Set VNC_LOCAL_PORT to override the local tunnel port for a named session."
+    "  $(basename "$0") [--direct|--tunnel] [--force-restart] SSH_HOST[:DISPLAY|:NAME]" \
+    "  $(basename "$0") --status SSH_HOST[:DISPLAY|:NAME]" \
+    "  $(basename "$0") --stop [--force] SSH_HOST[:DISPLAY|:NAME]" \
+    "  $(basename "$0") SSH_HOST [DISPLAY|NAME|GEOMETRY] [GEOMETRY]" \
+    "  $(basename "$0") SSH_HOST --session NAME [GEOMETRY]" \
+    "Default transport: --direct; default target: display :1" \
+    "Set VNC_DIRECT_HOST or VNC_DIRECT_PORT_BASE for a forwarded LAN endpoint." \
+    "Set VNC_LOCAL_PORT to override the local port used by --tunnel."
 }
 
 die() {
@@ -20,113 +24,192 @@ die() {
   exit 1
 }
 
+action="start"
+transport="direct"
+force_restart="false"
+force_stop="false"
+geometry="${VNC_SESSION_GEOMETRY:-1820x960}"
+
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --direct|--tunnel) transport="${1#--}" ;;
+    --force-restart) force_restart="true" ;;
+    --force) force_stop="true" ;;
+    --status|--stop) action="${1#--}" ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
+
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
-if [[ "$1" == "--help" || "$1" == "-h" ]]; then
-  usage
-  exit 0
-fi
-ssh_host="$1"
-vnc_host="${VNC_HOST:-${ssh_host#*@}}"
+target="$1"
 shift
 
-action="legacy"
-force_stop="false"
-session=""
-geometry="1820x960"
-case "${1:-}" in
-  --session)
-    [[ $# -ge 2 && $# -le 3 ]] || { usage >&2; exit 2; }
-    action="session"
-    session="$2"
-    geometry="${3:-$geometry}"
-    ;;
-  --status)
-    [[ $# -eq 2 ]] || { usage >&2; exit 2; }
-    action="${1#--}"
-    session="$2"
-    ;;
-  --stop)
-    [[ $# -ge 2 && $# -le 3 ]] || { usage >&2; exit 2; }
-    action="stop"
-    if [[ "${2:-}" == "--force" ]]; then
-      [[ $# -eq 3 ]] || { usage >&2; exit 2; }
-      force_stop="true"
-      session="$3"
-    else
+## Keep compatibility with the original host-first vnc-win-lan interface.
+if [[ $# -gt 0 ]]; then
+  target_host="${target%%:*}"
+  [[ "$target_host" == "$target" ]] || die "extra arguments are not valid with $target"
+  case "$1" in
+    --session)
+      [[ $# -ge 2 && $# -le 3 ]] || { usage >&2; exit 2; }
+      target="${target_host}:$2"
+      geometry="${3:-$geometry}"
+      ;;
+    --status)
       [[ $# -eq 2 ]] || { usage >&2; exit 2; }
-      session="$2"
-    fi
-    ;;
-  --help|-h)
-    usage
-    exit 0
-    ;;
-  "")
-    ;;
-  *)
-    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
-    geometry="$1"
-    ;;
-esac
-
-[[ "$geometry" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || die "invalid geometry: $geometry"
-if [[ -n "$session" ]]; then
-  [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid session name: $session"
+      action="status"
+      target="${target_host}:$2"
+      ;;
+    --stop)
+      if [[ "${2:-}" == "--force" ]]; then
+        [[ $# -eq 3 ]] || { usage >&2; exit 2; }
+        force_stop="true"
+        target="${target_host}:$3"
+      else
+        [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+        target="${target_host}:$2"
+      fi
+      action="stop"
+      ;;
+    *)
+      [[ $# -le 2 ]] || { usage >&2; exit 2; }
+      if [[ "$1" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
+        geometry="$1"
+        [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+      else
+        target="${target_host}:${1#:}"
+        geometry="${2:-$geometry}"
+      fi
+      ;;
+  esac
 fi
 
-readonly control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
-readonly control_path="${control_dir}/ssh-${session:-legacy}-%C"
+[[ "$action" == "start" || "$force_restart" == "false" ]] || \
+  die "--force-restart is only valid when opening a viewer"
+[[ "$transport" == "direct" || "$force_restart" == "false" ]] || \
+  die "--force-restart is only valid with --direct"
+[[ "$action" == "stop" || "$force_stop" == "false" ]] || \
+  die "--force is only valid with --stop"
+[[ "$geometry" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || die "invalid geometry: $geometry"
+
+if [[ "$target" == *:* ]]; then
+  remote_host="${target%%:*}"
+  requested_target="${target#*:}"
+else
+  remote_host="$target"
+  requested_target="1"
+fi
+[[ -n "$remote_host" && -n "$requested_target" ]] || \
+  die "target must look like gglin, gglin:2, or gglin:browser"
+
+if [[ "$requested_target" =~ ^[1-9][0-9]*$ ]]; then
+  session=":$requested_target"
+else
+  session="$requested_target"
+fi
+if [[ "$session" == :* ]]; then
+  [[ "$session" =~ ^:[1-9][0-9]*$ ]] || die "display must look like :2"
+else
+  [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid session name"
+fi
+
+remote_vnc() {
+  ssh -n "$remote_host" '"$HOME/bin/vnc-session"' "$@"
+}
+
+ensure_remote_target() {
+  local display_output="" remote_help=""
+
+  if ! remote_help="$(remote_vnc --help 2>&1)" || \
+      ! grep -Fq -- '--direct|--tunnel' <<< "$remote_help"; then
+    [[ "$session" == ":1" ]] || \
+      die "remote vnc-session on $remote_host must be updated for $session"
+    display_output="$(ssh -n "$remote_host" '"$HOME/bin/vnc-get-display"' "$geometry")" || {
+      printf '%s\n' "$display_output" >&2
+      die "could not start the legacy VNC session on $remote_host"
+    }
+    printf '%s\n' "$display_output" |
+      sed -n 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' |
+      tail -n 1
+    return
+  fi
+
+  if [[ "$transport" == "direct" ]]; then
+    if [[ "$force_restart" == "true" ]]; then
+      remote_vnc ensure --direct --force-restart "$session" "$geometry"
+    else
+      remote_vnc ensure --direct "$session" "$geometry"
+    fi
+  else
+    ## A tunnel works with either remote listener policy and never needs a
+    ## destructive listener-mode restart.
+    remote_vnc ensure "$session" "$geometry"
+  fi
+}
+
+stop_remote_target() {
+  if [[ "$force_stop" == "true" ]]; then
+    remote_vnc stop --force "$session"
+  else
+    remote_vnc stop "$session"
+  fi
+}
 
 if [[ "$action" == "status" ]]; then
-  exec ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' --status "$session"
+  remote_vnc status "$session"
+  exit
 fi
+
 if [[ "$action" == "stop" ]]; then
-  stop_args=(--stop)
-  [[ "$force_stop" == "false" ]] || stop_args+=(--force)
-  ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' "${stop_args[@]}" "$session"
-  ssh -n -S "$control_path" -O exit "$ssh_host" >/dev/null 2>&1 || true
+  stop_display="$(remote_vnc display "$session")"
+  [[ "$stop_display" =~ ^[1-9][0-9]*$ ]] || die "invalid remote display: $stop_display"
+  control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
+  control_path="${control_dir}/ssh-display-${stop_display}-%C"
+  stop_remote_target
+  ssh -n -S "$control_path" -O exit "$remote_host" >/dev/null 2>&1 || true
   exit 0
 fi
 
 command -v cygstart >/dev/null 2>&1 || die "cygstart is not available"
 [[ -e "$VNC_VIEWER" ]] || die "TigerVNC Viewer is missing: $VNC_VIEWER"
 
-if [[ "$action" == "session" ]]; then
-  display_output="$(ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' --session "$session" "$geometry")"
+remote_display="$(ensure_remote_target)"
+[[ "$remote_display" =~ ^[1-9][0-9]*$ ]] || die "invalid remote display: $remote_display"
+
+readonly control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
+readonly control_path="${control_dir}/ssh-display-${remote_display}-%C"
+if [[ "$transport" == "direct" ]]; then
+  ssh -n -S "$control_path" -O exit "$remote_host" >/dev/null 2>&1 || true
+  resolved_host="$(ssh -G "$remote_host" 2>/dev/null | sed -n 's/^hostname //p' | head -n 1)"
+  direct_host="${VNC_DIRECT_HOST:-${VNC_HOST:-$resolved_host}}"
+  direct_port_base="${VNC_DIRECT_PORT_BASE:-5900}"
+  [[ -n "$direct_host" ]] || die "could not resolve direct VNC host for $remote_host"
+  [[ "$direct_port_base" =~ ^[1-9][0-9]*$ ]] || \
+    die "invalid VNC_DIRECT_PORT_BASE: $direct_port_base"
+  viewer_port=$((direct_port_base + remote_display))
+  (( viewer_port <= 65535 )) || die "VNC port is too large"
+  printf 'Opening direct VNC %s:%s (%s :%s)\n' \
+    "$direct_host" "$viewer_port" "$remote_host" "$remote_display"
 else
-  display_output="$(ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' "$geometry")"
-fi
-display="$(
-  printf '%s\n' "$display_output" |
-    sed -n 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' |
-    tail -n 1
-)"
-[[ -n "$display" ]] || {
-  printf 'Could not determine VNC display from %s.\n%s\n' "$ssh_host" "$display_output" >&2
-  exit 1
-}
-
-remote_port=$((5900 + display))
-viewer_host="$vnc_host"
-viewer_port="$remote_port"
-
-if [[ "$action" == "session" ]]; then
-  local_port="${VNC_LOCAL_PORT:-$((16500 + display))}"
+  remote_port=$((5900 + remote_display))
+  local_port="${VNC_LOCAL_PORT:-$((16500 + remote_display))}"
   [[ "$local_port" =~ ^[1-9][0-9]*$ ]] || die "invalid VNC_LOCAL_PORT: $local_port"
   (( remote_port <= 65535 && local_port <= 65535 )) || die "VNC port is too large"
 
   mkdir -p "$control_dir"
   chmod 700 "$control_dir"
-  if ! ssh -n -S "$control_path" -O check "$ssh_host" >/dev/null 2>&1; then
+  if ! ssh -n -S "$control_path" -O check "$remote_host" >/dev/null 2>&1; then
     ssh -fNT -M -S "$control_path" \
       -o ExitOnForwardFailure=yes \
       -L "127.0.0.1:${local_port}:127.0.0.1:${remote_port}" \
-      "$ssh_host"
+      "$remote_host"
   fi
-  viewer_host="localhost"
+  direct_host="localhost"
   viewer_port="$local_port"
+  printf 'Opening tunneled VNC %s :%s on localhost:%s\n' \
+    "$remote_host" "$remote_display" "$viewer_port"
 fi
 
-printf 'connecting to %s:%s\n' "$viewer_host" "$viewer_port"
 cygstart "$VNC_VIEWER" -passwd "$VNC_PASSWORD" -NoJpeg \
-  -ShortcutModifiers=Ctrl,Alt "$viewer_host:$viewer_port"
+  -ShortcutModifiers=Ctrl,Alt "${direct_host}:${viewer_port}"
