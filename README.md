@@ -57,10 +57,11 @@ vnc-srv16 2
 vnc-srv16 --tunnel 2
 ```
 
-Open multiple local sessions independently. With no name, `vnc-self` uses the
-retained session name `self`:
+Open local sessions independently. With no argument, `vnc-self` always targets
+exact display `:1`; it never allocates or selects a named session:
 
 ```bash
+vnc-self
 vnc-self browser-a
 vnc-self browser-b
 vnc-self :2

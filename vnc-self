@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly default_session="${VNC_SELF_SESSION:-self}"
+readonly default_display=":1"
 readonly default_geometry="${VNC_SESSION_GEOMETRY:-1820x960}"
 readonly password_file="${VNC_SESSION_PASSWORD_FILE:-${HOME}/.vnc/passwd}"
 readonly viewer="${VNC_VIEWER:-vncviewer}"
@@ -17,7 +17,7 @@ usage() {
     "  vnc-self --list" \
     "  vnc-self --status NAME|:DISPLAY" \
     "  vnc-self --stop NAME|:DISPLAY" \
-    "Default session: ${default_session}"
+    "Default target: display ${default_display}"
 }
 
 die() {
@@ -47,7 +47,7 @@ case "${1:-}" in
 esac
 
 [[ $# -le 2 ]] || { usage >&2; exit 1; }
-target="${1:-$default_session}"
+target="${1:-$default_display}"
 geometry="${2:-$default_geometry}"
 [[ "$geometry" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || die "invalid geometry: $geometry"
 
