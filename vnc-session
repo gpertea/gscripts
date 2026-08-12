@@ -30,7 +30,7 @@ readonly default_geometry="${VNC_SESSION_GEOMETRY:-1820x960}"
 readonly default_listen="loopback"
 readonly -a required_host_commands=(
   vncserver Xtigervnc dbus-run-session jwm ss pgrep setsid flock
-  xrdb xsetroot vncconfig
+  xrdb xsetroot vncconfig urxvtd urxvtc
 )
 
 usage() {
@@ -249,8 +249,40 @@ write_session_environment() {
     printf 'XAUTHORITY=%s\n' "${XAUTHORITY:-${HOME}/.Xauthority}"
     printf 'XDG_RUNTIME_DIR=%s\n' "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
     printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "$DBUS_SESSION_BUS_ADDRESS"
+    printf 'RXVT_SOCKET=%s\n' "$RXVT_SOCKET"
   } > "$temporary"
   mv -f -- "$temporary" "$file"
+}
+
+start_urxvt_daemon() {
+  local display_number=""
+  local attempt=0
+  local socket_dir=""
+
+  [[ "$DISPLAY" =~ ^:([0-9]+)(\.[0-9]+)?$ ]] || \
+    die "DISPLAY must look like :1 or :2"
+  display_number="$((10#${BASH_REMATCH[1]}))"
+  socket_dir="${XDG_RUNTIME_DIR}/vnc-session"
+  install -d -m 700 "$socket_dir"
+
+  ## isolate daemon lifetime and clients by VNC display
+  export RXVT_SOCKET="${socket_dir}/urxvtd-${display_number}"
+  if ss -xlH | awk -v socket="$RXVT_SOCKET" '$5 == socket { found=1 } END { exit !found }'; then
+    return
+  fi
+  if [[ -e "$RXVT_SOCKET" || -S "$RXVT_SOCKET" ]]; then
+    ## a stopped display can leave a dead socket during the same boot
+    unlink -- "$RXVT_SOCKET"
+  fi
+  urxvtd -q -f -o
+
+  for ((attempt = 0; attempt < 20; attempt++)); do
+    if ss -xlH | awk -v socket="$RXVT_SOCKET" '$5 == socket { found=1 } END { exit !found }'; then
+      return
+    fi
+    sleep 0.05
+  done
+  die "urxvtd did not listen on $RXVT_SOCKET"
 }
 
 run_xstartup() {
@@ -273,6 +305,7 @@ run_xstartup() {
   export XAUTHORITY="$preserved_xauthority"
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export PATH="${HOME}/bin:${PATH}"
+  start_urxvt_daemon
   write_session_environment "$name"
 
   [[ -r "${HOME}/.Xresources" ]] && xrdb -merge "${HOME}/.Xresources"
@@ -431,7 +464,7 @@ ensure_session() {
 
 import_environment_from_desktop() {
   local display="$1"
-  local pid entry found_display bus="" xauthority="" runtime=""
+  local pid entry found_display bus="" xauthority="" runtime="" rxvt_socket=""
   local -a entries=()
 
   for pid in $(pgrep -u "$(id -u)" -x jwm || true); do
@@ -444,6 +477,7 @@ import_environment_from_desktop() {
         DBUS_SESSION_BUS_ADDRESS=*) bus="${entry#DBUS_SESSION_BUS_ADDRESS=}" ;;
         XAUTHORITY=*) xauthority="${entry#XAUTHORITY=}" ;;
         XDG_RUNTIME_DIR=*) runtime="${entry#XDG_RUNTIME_DIR=}" ;;
+        RXVT_SOCKET=*) rxvt_socket="${entry#RXVT_SOCKET=}" ;;
       esac
     done
     if [[ "$found_display" == ":${display}" ]]; then
@@ -451,6 +485,7 @@ import_environment_from_desktop() {
       export XAUTHORITY="${xauthority:-${HOME}/.Xauthority}"
       export XDG_RUNTIME_DIR="${runtime:-/run/user/$(id -u)}"
       [[ -n "$bus" ]] && export DBUS_SESSION_BUS_ADDRESS="$bus"
+      [[ -n "$rxvt_socket" ]] && export RXVT_SOCKET="$rxvt_socket"
       return
     fi
   done
@@ -463,6 +498,9 @@ load_run_environment() {
   local file=""
   local key value
 
+  ## never carry a client socket from the caller into another display
+  unset RXVT_SOCKET
+
   if [[ -n "$name" ]]; then
     file="$(env_file "$name")"
   fi
@@ -473,9 +511,10 @@ load_run_environment() {
         XAUTHORITY) XAUTHORITY="$value" ;;
         XDG_RUNTIME_DIR) XDG_RUNTIME_DIR="$value" ;;
         DBUS_SESSION_BUS_ADDRESS) DBUS_SESSION_BUS_ADDRESS="$value" ;;
+        RXVT_SOCKET) RXVT_SOCKET="$value" ;;
       esac
     done < "$file"
-    export DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+    export DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS RXVT_SOCKET
   else
     import_environment_from_desktop "$display"
   fi

@@ -32,12 +32,19 @@ private D-Bus already supplied by a managed `vnc-session`; for a legacy desktop
 sharing the `:0` user bus, it creates a display-specific private bus. The
 historical `:1` socket paths remain compatible with an already-running daemon.
 
-Each Linux VNC host requires Bash, TigerVNC, JWM, `dbus-run-session`, `flock`,
-`ss`, `pgrep`, `setsid`, `xrdb`, `xsetroot`, and a private `~/.vnc/passwd`.
+Managed sessions also start an independent urxvtd for every display. JWM and
+`vnc-session run` inherit a display-specific `RXVT_SOCKET` below
+`$XDG_RUNTIME_DIR/vnc-session`, so stopping one display cannot terminate or
+misroute terminals in another display. The runtime directory is cleared on
+reboot, avoiding stale sockets from prior boots.
+
+Each Linux VNC host requires Bash, TigerVNC, JWM, rxvt-unicode,
+`dbus-run-session`, `flock`, `ss`, `pgrep`, `setsid`, `xrdb`, `xsetroot`, and a
+private `~/.vnc/passwd`.
 On Debian or Ubuntu install `bash`, `tigervnc-standalone-server`,
 `tigervnc-tools`, `tigervnc-viewer`, `jwm`, `dbus-daemon`, `util-linux`,
-`iproute2`, `procps`, and `x11-xserver-utils`. Then verify without starting a
-desktop:
+`iproute2`, `procps`, `x11-xserver-utils`, and `rxvt-unicode`. Then verify
+without starting a desktop:
 
 ```bash
 vnc-session doctor
