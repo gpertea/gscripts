@@ -193,6 +193,12 @@ mode resolves the VNC endpoint from `ssh -G HOST`; `VNC_DIRECT_HOST` and
 sockets and local ports are keyed by the resolved remote display, so `:2`,
 `:3`, and named sessions can coexist.
 
+Before opening the Windows viewer, `vnc-win-lan` normalizes the server's live
+desktop name to `SHORT_HOST:DISPLAY` with `vncconfig`. This produces stable
+window and taskbar titles such as `gglin:1`, `gglin:2`, and `srv16:3`, even
+when the server originally advertised a session name or a fully-qualified
+hostname. Changing the title does not restart the VNC desktop.
+
 `vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin and to
 `vnc-session-view` on Linux. Small Windows host wrappers can set
 `VNC_HOST_ALIAS`; off-LAN wrappers can additionally set

@@ -156,6 +156,20 @@ stop_remote_target() {
   fi
 }
 
+set_remote_desktop_title() {
+  local remote_short title
+
+  remote_short="$(ssh -n "$remote_host" hostname -s)" || \
+    die "could not determine the short hostname for $remote_host"
+  [[ "$remote_short" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || \
+    die "invalid remote short hostname: $remote_short"
+  title="${remote_short}:${remote_display}"
+  ssh -n "$remote_host" vncconfig -display ":${remote_display}" \
+    -set "desktop=${title}" >/dev/null || \
+    die "could not set the VNC desktop title to $title"
+  printf '%s\n' "$title"
+}
+
 if [[ "$action" == "status" ]]; then
   remote_vnc status "$session"
   exit
@@ -176,6 +190,7 @@ command -v cygstart >/dev/null 2>&1 || die "cygstart is not available"
 
 remote_display="$(ensure_remote_target)"
 [[ "$remote_display" =~ ^[1-9][0-9]*$ ]] || die "invalid remote display: $remote_display"
+desktop_title="$(set_remote_desktop_title)"
 
 readonly control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
 readonly control_path="${control_dir}/ssh-display-${remote_display}-%C"
@@ -189,8 +204,8 @@ if [[ "$transport" == "direct" ]]; then
     die "invalid VNC_DIRECT_PORT_BASE: $direct_port_base"
   viewer_port=$((direct_port_base + remote_display))
   (( viewer_port <= 65535 )) || die "VNC port is too large"
-  printf 'Opening direct VNC %s:%s (%s :%s)\n' \
-    "$direct_host" "$viewer_port" "$remote_host" "$remote_display"
+  printf 'Opening direct VNC %s:%s as %s\n' \
+    "$direct_host" "$viewer_port" "$desktop_title"
 else
   remote_port=$((5900 + remote_display))
   local_port="${VNC_LOCAL_PORT:-$((16500 + remote_display))}"
@@ -207,8 +222,8 @@ else
   fi
   direct_host="localhost"
   viewer_port="$local_port"
-  printf 'Opening tunneled VNC %s :%s on localhost:%s\n' \
-    "$remote_host" "$remote_display" "$viewer_port"
+  printf 'Opening tunneled VNC %s on localhost:%s\n' \
+    "$desktop_title" "$viewer_port"
 fi
 
 cygstart "$VNC_VIEWER" -passwd "$VNC_PASSWORD" -NoJpeg \
