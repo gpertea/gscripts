@@ -199,6 +199,13 @@ window and taskbar titles such as `gglin:1`, `gglin:2`, and `srv16:3`, even
 when the server originally advertised a session name or a fully-qualified
 hostname. Changing the title does not restart the VNC desktop.
 
+Windows SSH tunnel control checks are bounded, and tunnel master PIDs are
+recorded below the per-user control directory. If a retained master becomes
+unresponsive after sleep or a network change, `vnc-win-lan` replaces only that
+local forwarding process and its control socket. New masters use SSH server
+keepalives so dead connections are normally removed automatically. Replacing a
+tunnel does not stop the remote VNC desktop or any process running inside it.
+
 `vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin and to
 `vnc-session-view` on Linux. Small Windows host wrappers can set
 `VNC_HOST_ALIAS`; off-LAN wrappers can additionally set

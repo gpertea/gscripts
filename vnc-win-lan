@@ -170,6 +170,100 @@ set_remote_desktop_title() {
   printf '%s\n' "$title"
 }
 
+is_ssh_pid() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 1
+  ps -p "$1" 2>/dev/null | grep -q '/usr/bin/ssh'
+}
+
+is_control_master_pid() {
+  local pid="$1"
+  local cmdline_file="/proc/${pid}/cmdline"
+
+  is_ssh_pid "$pid" || return 1
+  [[ -r "$cmdline_file" ]] || return 1
+  tr '\0' '\n' < "$cmdline_file" | grep -Fxq -- '-M' &&
+    tr '\0' '\n' < "$cmdline_file" | grep -Fxq -- "$control_path" &&
+    tr '\0' '\n' < "$cmdline_file" | grep -Fxq -- "$remote_host"
+}
+
+bounded_control_command() {
+  local operation="$1"
+  local check_pid status=0 finished="false"
+  local output_file
+
+  output_file="$(mktemp "${control_dir}/.control.XXXXXX")"
+  ssh -n -S "$control_path" -O "$operation" "$remote_host" \
+    >"$output_file" 2>&1 &
+  check_pid=$!
+  for ((attempt = 0; attempt < 30; attempt++)); do
+    if ! kill -0 "$check_pid" 2>/dev/null; then
+      finished="true"
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ "$finished" == "false" ]]; then
+    kill "$check_pid" 2>/dev/null || true
+    sleep 0.2
+    kill -9 "$check_pid" 2>/dev/null || true
+    status=124
+    wait "$check_pid" 2>/dev/null || true
+  else
+    wait "$check_pid" || status=$?
+  fi
+  control_output="$(<"$output_file")"
+  rm -f -- "$output_file"
+  return "$status"
+}
+
+remember_control_master() {
+  local reported_pid msys_pid
+
+  reported_pid="$(
+    sed -n 's/^Master running (pid=\([0-9][0-9]*\)).*/\1/p' <<< "$control_output"
+  )"
+  [[ -n "$reported_pid" ]] || return 0
+  msys_pid="$reported_pid"
+  if ! is_ssh_pid "$msys_pid"; then
+    msys_pid="$(
+      ps -W 2>/dev/null |
+        awk -v winpid="$reported_pid" '$4 == winpid && $8 ~ /\/ssh$/ {print $1; exit}'
+    )"
+  fi
+  is_control_master_pid "$msys_pid" || return 0
+  printf '%s\n' "$msys_pid" > "$control_pid_file"
+}
+
+stop_recorded_master() {
+  local master_pid=""
+
+  if [[ -r "$control_pid_file" ]]; then
+    master_pid="$(<"$control_pid_file")"
+  fi
+  if is_control_master_pid "$master_pid"; then
+    kill "$master_pid" 2>/dev/null || true
+    for ((attempt = 0; attempt < 20; attempt++)); do
+      is_control_master_pid "$master_pid" || break
+      sleep 0.1
+    done
+    if is_control_master_pid "$master_pid"; then
+      kill -9 "$master_pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f -- "$control_pid_file"
+}
+
+remove_display_control_sockets() {
+  local socket
+
+  ## One local port is reserved per display, so at most one of these control
+  ## masters can be usable at a time.
+  for socket in "${control_dir}/ssh-display-${remote_display}-"*; do
+    [[ -S "$socket" ]] || continue
+    rm -f -- "$socket"
+  done
+}
+
 if [[ "$action" == "status" ]]; then
   remote_vnc status "$session"
   exit
@@ -194,8 +288,18 @@ desktop_title="$(set_remote_desktop_title)"
 
 readonly control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
 readonly control_path="${control_dir}/ssh-display-${remote_display}-%C"
+remote_key="$(printf '%s' "$remote_host" | tr -c 'A-Za-z0-9_.-' '_')"
+readonly remote_key
+readonly control_pid_file="${control_dir}/ssh-${remote_key}-display-${remote_display}.pid"
+mkdir -p "$control_dir"
+chmod 700 "$control_dir"
 if [[ "$transport" == "direct" ]]; then
-  ssh -n -S "$control_path" -O exit "$remote_host" >/dev/null 2>&1 || true
+  if bounded_control_command exit; then
+    rm -f -- "$control_pid_file"
+  else
+    stop_recorded_master
+    remove_display_control_sockets
+  fi
   resolved_host="$(ssh -G "$remote_host" 2>/dev/null | sed -n 's/^hostname //p' | head -n 1)"
   direct_host="${VNC_DIRECT_HOST:-${VNC_HOST:-$resolved_host}}"
   direct_port_base="${VNC_DIRECT_PORT_BASE:-5900}"
@@ -212,13 +316,24 @@ else
   [[ "$local_port" =~ ^[1-9][0-9]*$ ]] || die "invalid VNC_LOCAL_PORT: $local_port"
   (( remote_port <= 65535 && local_port <= 65535 )) || die "VNC port is too large"
 
-  mkdir -p "$control_dir"
-  chmod 700 "$control_dir"
-  if ! ssh -n -S "$control_path" -O check "$remote_host" >/dev/null 2>&1; then
+  if bounded_control_command check; then
+    remember_control_master
+  else
+    stop_recorded_master
+    remove_display_control_sockets
     ssh -fNT -M -S "$control_path" \
       -o ExitOnForwardFailure=yes \
+      -o ConnectTimeout=10 \
+      -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=2 \
+      -o TCPKeepAlive=yes \
       -L "127.0.0.1:${local_port}:127.0.0.1:${remote_port}" \
       "$remote_host"
+    if ! bounded_control_command check; then
+      printf '%s\n' "$control_output" >&2
+      die "new SSH VNC tunnel did not become responsive"
+    fi
+    remember_control_master
   fi
   direct_host="localhost"
   viewer_port="$local_port"
