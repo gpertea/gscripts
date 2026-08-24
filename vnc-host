@@ -2,7 +2,11 @@
 set -euo pipefail
 
 program="$(basename -- "$0")"
-transport="${VNC_HOST_DEFAULT_TRANSPORT:---direct}"
+case "${OSTYPE:-$(uname -s)}" in
+  msys*|cygwin*|MINGW*|MSYS*|CYGWIN*) default_transport="--direct" ;;
+  *) default_transport="--tunnel" ;;
+esac
+transport="${VNC_HOST_DEFAULT_TRANSPORT:-$default_transport}"
 force_restart=""
 force_stop=""
 action=""
@@ -14,7 +18,7 @@ usage() {
     "  vnc-HOST [--direct|--tunnel] [--force-restart] [DISPLAY|NAME]" \
     "  vnc-HOST --status [DISPLAY|NAME]" \
     "  vnc-HOST --stop [--force] [DISPLAY|NAME]" \
-    "Default transport: --direct (overridable by VNC_HOST_DEFAULT_TRANSPORT); default display: :1"
+    "Default transport: ${default_transport} (overridable by VNC_HOST_DEFAULT_TRANSPORT); default display: :1"
 }
 
 die() {

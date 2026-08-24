@@ -65,15 +65,15 @@ higher. Existing copied wrappers therefore continue working after the remote
 host installs these tools.
 
 To replace copied wrappers with one maintained implementation, link
-`vnc-HOST` to `vnc-host`. Its defaults match the legacy behavior: direct LAN
-and display `:1`.
+`vnc-HOST` to `vnc-host`. Linux and macOS default to an SSH tunnel and display
+`:1`; Windows retains the legacy direct-LAN default.
 
 ```bash
 mv ~/bin/vnc-srv16 ~/bin/vnc-srv16.legacy
 ln -s ~/gscripts/vnc-host ~/bin/vnc-srv16
 vnc-srv16
 vnc-srv16 2
-vnc-srv16 --tunnel 2
+vnc-srv16 --direct 2
 ```
 
 Open local sessions independently. With no argument, `vnc-self` always targets
@@ -207,10 +207,10 @@ keepalives so dead connections are normally removed automatically. Replacing a
 tunnel does not stop the remote VNC desktop or any process running inside it.
 
 `vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin and to
-`vnc-session-view` on Linux. Small Windows host wrappers can set
-`VNC_HOST_ALIAS`; off-LAN wrappers can additionally set
-`VNC_HOST_DEFAULT_TRANSPORT=--tunnel`. Explicit `--direct` or `--tunnel`
-arguments always override the wrapper default.
+`vnc-session-view` elsewhere. Its platform default follows that viewer:
+direct LAN on Windows and an SSH tunnel elsewhere. Small host wrappers can set
+`VNC_HOST_ALIAS` or override the default with `VNC_HOST_DEFAULT_TRANSPORT`.
+Explicit `--direct` or `--tunnel` arguments always take precedence.
 
 ## Update a VNC network
 

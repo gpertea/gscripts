@@ -378,7 +378,7 @@ start_session() {
     fi
 
     if [[ "$force_restart" != "true" ]]; then
-      die "changing $name :${requested_display} from ${actual_listen} to ${listen_mode} requires a destructive desktop restart; rerun with --force-restart"
+      die "changing $name :${requested_display} from ${actual_listen} to ${listen_mode} requires a destructive desktop restart; rerun the viewer with --tunnel to attach safely, or use --force-restart"
     fi
 
     printf '%s\n' \
