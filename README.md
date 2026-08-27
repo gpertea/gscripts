@@ -199,6 +199,13 @@ window and taskbar titles such as `gglin:1`, `gglin:2`, and `srv16:3`, even
 when the server originally advertised a session name or a fully-qualified
 hostname. Changing the title does not restart the VNC desktop.
 
+The stable title also acts as a Windows-side singleton key. If a matching
+TigerVNC window already exists, `vnc-win-lan` restores and focuses that viewer
+instead of opening a second connection to the same remote display. It warns
+when multiple matching windows already exist but never terminates a viewer
+automatically. This avoids the indefinite multi-client pointer lock present in
+TigerVNC server 1.13.1 when one viewer retains a pressed-button state.
+
 Windows SSH tunnel control checks are bounded, and tunnel master PIDs are
 recorded below the per-user control directory. If a retained master becomes
 unresponsive after sleep or a network change, `vnc-win-lan` replaces only that
@@ -211,6 +218,26 @@ tunnel does not stop the remote VNC desktop or any process running inside it.
 direct LAN on Windows and an SSH tunnel elsewhere. Small host wrappers can set
 `VNC_HOST_ALIAS` or override the default with `VNC_HOST_DEFAULT_TRANSPORT`.
 Explicit `--direct` or `--tunnel` arguments always take precedence.
+
+### Diagnose and recover VNC input
+
+`vnc-fix HOST` is read-only by default and reports the active display, viewer
+connections, TigerVNC input device and master state, JWM state, and only recent
+relevant server-log errors. Use `--full` when the complete input and log detail
+is needed.
+
+```bash
+vnc-fix gglin
+vnc-fix --release-buttons gglin
+vnc-fix --replace-master --force gglin
+vnc-fix --guard-master gglin
+```
+
+The replacement-master action is an explicit fallback when synthetic button
+releases cannot clear a wedged pointer. The guard keeps newly created X clients
+on that replacement master for the lifetime of the current VNC server. Avoid
+`--danger-disable-pointer`: disabling TigerVNC's input device can crash the
+Ubuntu 24.04 TigerVNC 1.13.1 server and terminate X-attached processes.
 
 ## Update a VNC network
 

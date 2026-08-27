@@ -5,6 +5,9 @@ set -euo pipefail
 ## plane is direct on a LAN by default and can be switched to an SSH tunnel.
 readonly VNC_VIEWER="${VNC_VIEWER:-/c/util/vnc/tigervncviewer.exe}"
 readonly VNC_PASSWORD="${VNC_PASSWORD:-C:\util\vnc\vnc-gxlin-passwd}"
+script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+readonly script_path script_dir
 
 usage() {
   printf '%s\n' \
@@ -285,6 +288,24 @@ command -v cygstart >/dev/null 2>&1 || die "cygstart is not available"
 remote_display="$(ensure_remote_target)"
 [[ "$remote_display" =~ ^[1-9][0-9]*$ ]] || die "invalid remote display: $remote_display"
 desktop_title="$(set_remote_desktop_title)"
+
+## Reuse an existing viewer for this exact remote desktop. TigerVNC 1.13.1
+## can indefinitely lock pointer ownership when an old shared viewer remains
+## connected with a button held, so silently opening duplicates is unsafe.
+existing_viewer_helper="${script_dir}/vnc-win-existing.ps1"
+if [[ -f "$existing_viewer_helper" ]]; then
+  existing_viewer_helper_win="$(cygpath -w "$existing_viewer_helper")"
+  set +e
+  powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+    -File "$existing_viewer_helper_win" -Title "${desktop_title} - TigerVNC"
+  existing_viewer_status=$?
+  set -e
+  case "$existing_viewer_status" in
+    0) exit 0 ;;
+    1) ;;
+    *) die "could not inspect existing TigerVNC viewer windows" ;;
+  esac
+fi
 
 readonly control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
 readonly control_path="${control_dir}/ssh-display-${remote_display}-%C"
