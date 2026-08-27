@@ -458,8 +458,24 @@ start_master_guard() {
   if [ -n "$old_guard_pid" ] && kill -0 "$old_guard_pid" 2>/dev/null &&
      tr '\0' ' ' <"/proc/$old_guard_pid/cmdline" 2>/dev/null |
        grep -Fq 'vnc-fix-client-pointer-guard'; then
-    echo "master guard already running: pid $old_guard_pid"
-    return 0
+    old_guard_master="$(tr '\0' '\n' <"/proc/$old_guard_pid/environ" 2>/dev/null |
+      sed -n 's/^VNC_FIX_GUARD_MASTER=//p')"
+    if [ "$old_guard_master" = "$guard_master_id" ]; then
+      echo "master guard already running: pid $old_guard_pid; active master $guard_master_id"
+      return 0
+    fi
+
+    echo "replacing master guard: pid $old_guard_pid; old master ${old_guard_master:-unknown}"
+    kill "$old_guard_pid" 2>/dev/null || true
+    guard_stop_attempt=0
+    while kill -0 "$old_guard_pid" 2>/dev/null && [ "$guard_stop_attempt" -lt 30 ]; do
+      sleep 0.1
+      guard_stop_attempt=$((guard_stop_attempt + 1))
+    done
+    if kill -0 "$old_guard_pid" 2>/dev/null; then
+      echo "old master guard did not stop; refusing to start a competing guard" >&2
+      return 1
+    fi
   fi
 
   nohup env \
