@@ -199,6 +199,17 @@ window and taskbar titles such as `gglin:1`, `gglin:2`, and `srv16:3`, even
 when the server originally advertised a session name or a fully-qualified
 hostname. Changing the title does not restart the VNC desktop.
 
+The title helper probes the running display for compatibility, trying the
+default `vncconfig`/`tigervncconfig` first, then preserved Ubuntu utilities
+(`/usr/bin/tigervncconfig.ubuntu-*` and `/usr/bin/vncconfig.ubuntu-*`). This
+supports older desktops that remain running after a TigerVNC upgrade changes
+the configuration extension from `VNC-EXTENSION` to `TIGERVNC`. Installed
+package versions cannot identify the version of an already-running server.
+An already-correct title is left alone; changes are verified by reading the
+title back because some utility versions return success even on failure.
+If no compatible utility is available, the launcher reports the failed probes
+and stops before opening a viewer with an unverified singleton title.
+
 The stable title also acts as a Windows-side singleton key. If a matching
 TigerVNC window already exists, `vnc-win-lan` restores and focuses that viewer
 instead of opening a second connection to the same remote display. It warns

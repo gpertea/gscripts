@@ -167,9 +167,50 @@ set_remote_desktop_title() {
   [[ "$remote_short" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || \
     die "invalid remote short hostname: $remote_short"
   title="${remote_short}:${remote_display}"
-  ssh -n "$remote_host" vncconfig -display ":${remote_display}" \
-    -set "desktop=${title}" >/dev/null || \
+  ## Probe the live display, not the installed server version: an upgrade can
+  ## leave an older Xvnc running. New vncconfig uses the TIGERVNC extension;
+  ## older servers expose VNC-EXTENSION and need the preserved older utility.
+  ## Both arguments are restricted above to shell-safe hostname/display text.
+  if ! ssh "$remote_host" bash -s -- ":${remote_display}" "$title" <<'REMOTE_VNC_TITLE'
+set -euo pipefail
+display="$1"
+title="$2"
+declare -A tried=()
+diagnostics=""
+shopt -s nullglob
+for candidate in vncconfig tigervncconfig \
+    /usr/bin/tigervncconfig.ubuntu-* /usr/bin/vncconfig.ubuntu-*; do
+  utility="$(command -v -- "$candidate" 2>/dev/null)" || continue
+  [[ -x "$utility" ]] || continue
+  resolved="$(readlink -f -- "$utility")"
+  [[ -z "${tried[$resolved]:-}" ]] || continue
+  tried[$resolved]=1
+
+  ## Some vncconfig versions return success even when -get/-set fails.
+  ## Keep stderr separate from the title and verify the value after setting.
+  if current="$("$utility" -display "$display" -get desktop 2>/dev/null)" &&
+      [[ -n "$current" ]]; then
+    if [[ "$current" == "$title" ]]; then
+      exit 0
+    fi
+    if output="$("$utility" -display "$display" -set "desktop=$title" 2>&1)" &&
+        current="$("$utility" -display "$display" -get desktop 2>/dev/null)" &&
+        [[ "$current" == "$title" ]]; then
+      exit 0
+    fi
+    diagnostics+="$utility: title update failed (${output:-read-back mismatch})"$'\n'
+  else
+    diagnostics+="$utility: cannot read desktop on $display"$'\n'
+  fi
+done
+printf 'No compatible vncconfig could set the desktop title on %s.\n%s' \
+  "$display" "$diagnostics" >&2
+printf '%s\n' 'Keep a matching older vncconfig installed for sessions that survive a server upgrade.' >&2
+exit 1
+REMOTE_VNC_TITLE
+  then
     die "could not set the VNC desktop title to $title"
+  fi
   printf '%s\n' "$title"
 }
 
