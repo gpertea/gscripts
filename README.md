@@ -190,8 +190,17 @@ The legacy `vnc-win-lan HOST [GEOMETRY]` and
 `vnc-win-lan HOST --session NAME [GEOMETRY]` forms remain accepted. Direct
 mode resolves the VNC endpoint from `ssh -G HOST`; `VNC_DIRECT_HOST` and
 `VNC_DIRECT_PORT_BASE` can override forwarded LAN endpoints. Tunnel control
-sockets and local ports are keyed by the resolved remote display, so `:2`,
-`:3`, and named sessions can coexist.
+sockets are keyed by the SSH endpoint and resolved remote display. Windows
+allocates an available loopback port for each new tunnel, so multiple hosts
+using `:1`, additional displays, and named sessions can coexist. A retained
+tunnel reuses the port recorded in its live SSH process arguments. The former
+`16500 + display` default is no longer used.
+
+`VNC_LOCAL_PORT` remains an optional fixed-port request. An occupied explicit
+port fails with a diagnostic; automatic allocation retries up to five times
+if another process claims a selected port before SSH binds it. Authentication
+and network failures are reported without allocation retries. Tunnel setup
+uses `flock` to serialize launches for the same SSH endpoint and display.
 
 Before opening the Windows viewer, `vnc-win-lan` normalizes the server's live
 desktop name to `SHORT_HOST:DISPLAY` with `vncconfig`. This produces stable
@@ -223,6 +232,17 @@ unresponsive after sleep or a network change, `vnc-win-lan` replaces only that
 local forwarding process and its control socket. New masters use SSH server
 keepalives so dead connections are normally removed automatically. Replacing a
 tunnel does not stop the remote VNC desktop or any process running inside it.
+Cleanup removes only the exact control socket expanded by SSH for that
+endpoint and display. It does not remove another host's socket for the same
+display number. The port allocator is `vnc-win-port.ps1`; keep it alongside
+`vnc-win-lan` when updating the Windows client.
+
+Regression checks:
+
+```bash
+bash tests/vnc-win-title.sh
+bash tests/vnc-win-tunnel.sh
+```
 
 `vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin and to
 `vnc-session-view` elsewhere. Its platform default follows that viewer:

@@ -19,7 +19,7 @@ usage() {
     "  $(basename "$0") SSH_HOST --session NAME [GEOMETRY]" \
     "Default transport: --direct; default target: display :1" \
     "Set VNC_DIRECT_HOST or VNC_DIRECT_PORT_BASE for a forwarded LAN endpoint." \
-    "Set VNC_LOCAL_PORT to override the local port used by --tunnel."
+    "Tunnel ports are allocated automatically; VNC_LOCAL_PORT requests a fixed port."
 }
 
 die() {
@@ -297,15 +297,113 @@ stop_recorded_master() {
   rm -f -- "$control_pid_file"
 }
 
-remove_display_control_sockets() {
-  local socket
+init_control_state() {
+  control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
+  control_path="${control_dir}/ssh-display-${remote_display}-%C"
+  remote_key="$(printf '%s' "$remote_host" | tr -c 'A-Za-z0-9_.-' '_')"
+  control_pid_file="${control_dir}/ssh-${remote_key}-display-${remote_display}.pid"
+  mkdir -p "$control_dir"
+  chmod 700 "$control_dir"
+  ## Expand %C through SSH itself, so cleanup and locking use precisely the
+  ## same endpoint identity as the control master. Never glob other hosts.
+  control_socket="$(ssh -G -S "$control_path" "$remote_host" 2>/dev/null |
+    sed -n 's/^controlpath //p')" || die "could not resolve SSH control path"
+  [[ "$control_socket" == "${control_dir}/ssh-display-${remote_display}-"* &&
+     "$control_socket" != *%* ]] || die "invalid resolved SSH control path"
+  command -v flock >/dev/null || die "flock is required for VNC tunnel locking"
+  exec 9>"${control_socket}.lock"
+  flock -w 15 9 || die "another launch is updating this VNC tunnel"
+}
 
-  ## One local port is reserved per display, so at most one of these control
-  ## masters can be usable at a time.
-  for socket in "${control_dir}/ssh-display-${remote_display}-"*; do
-    [[ -S "$socket" ]] || continue
-    rm -f -- "$socket"
+remove_control_socket() {
+  [[ ! -S "$control_socket" ]] || rm -f -- "$control_socket"
+}
+
+read_master_port() {
+  local master_pid arg forwarding="false"
+  [[ -r "$control_pid_file" ]] || return 1
+  master_pid="$(<"$control_pid_file")"
+  is_control_master_pid "$master_pid" || return 1
+  ## The live master's arguments are authoritative, including tunnels created
+  ## by older launchers. Never infer its port from the display or a stale file.
+  while IFS= read -r -d '' arg; do
+    if [[ "$forwarding" == "true" &&
+          "$arg" =~ ^127\.0\.0\.1:([1-9][0-9]*):127\.0\.0\.1:${remote_port}$ ]]; then
+      local_port="${BASH_REMATCH[1]}"
+      (( local_port <= 65535 )) || return 1
+      return 0
+    fi
+    forwarding="false"
+    [[ "$arg" != "-L" ]] || forwarding="true"
+  done < "/proc/${master_pid}/cmdline"
+  return 1
+}
+
+allocate_local_port() {
+  local helper="${script_dir}/vnc-win-port.ps1"
+  [[ -f "$helper" ]] || die "missing port allocator: $helper"
+  local_port="$(powershell.exe -NoLogo -NoProfile -NonInteractive \
+    -ExecutionPolicy Bypass -File "$(cygpath -w "$helper")")" || \
+    die "could not allocate a local VNC port"
+  local_port="${local_port//$'\r'/}"
+  [[ "$local_port" =~ ^[1-9][0-9]*$ ]] && (( local_port <= 65535 )) || \
+    die "invalid allocated VNC port: $local_port"
+}
+
+start_control_master() {
+  local attempt output output_file
+  for ((attempt = 0; attempt < 5; attempt++)); do
+    if [[ -n "${VNC_LOCAL_PORT:-}" ]]; then
+      local_port="$VNC_LOCAL_PORT"
+    else
+      allocate_local_port
+    fi
+    ## Close the lock FD in the daemon. Only this launcher owns the lock.
+    output_file="$(mktemp "${control_dir}/.start.XXXXXX")"
+    if LC_ALL=C ssh -fNT -M -S "$control_path" \
+      -o ExitOnForwardFailure=yes \
+      -o ConnectTimeout=10 \
+      -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=2 \
+      -o TCPKeepAlive=yes \
+      -L "127.0.0.1:${local_port}:127.0.0.1:${remote_port}" \
+      "$remote_host" 9>&- >"$output_file" 2>&1; then
+      output="$(<"$output_file")"
+      rm -f -- "$output_file"
+      [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+      return 0
+    fi
+    output="$(<"$output_file")"
+    rm -f -- "$output_file"
+    ## Retry an allocation race only. Authentication/network failures must
+    ## retain their original diagnostic and must not cause repeated logins.
+    if [[ -n "${VNC_LOCAL_PORT:-}" ]] ||
+       ! grep -Eq '^bind .*: (Address already in use|Permission denied)' <<< "$output"; then
+      printf '%s\n' "$output" >&2
+      die "could not create VNC tunnel on local port $local_port"
+    fi
   done
+  printf '%s\n' "$output" >&2
+  die "could not bind an automatically allocated VNC port after five attempts"
+}
+
+ensure_control_master() {
+  if bounded_control_command check; then
+    remember_control_master
+    read_master_port || die "could not identify the existing VNC tunnel's local port"
+    if [[ -n "${VNC_LOCAL_PORT:-}" && "$local_port" != "$VNC_LOCAL_PORT" ]]; then
+      die "existing tunnel uses port $local_port; unset VNC_LOCAL_PORT to reuse it"
+    fi
+    return
+  fi
+  stop_recorded_master
+  remove_control_socket
+  start_control_master
+  if ! bounded_control_command check; then
+    printf '%s\n' "$control_output" >&2
+    die "new SSH VNC tunnel did not become responsive"
+  fi
+  remember_control_master
 }
 
 if [[ "$action" == "status" ]]; then
@@ -316,8 +414,8 @@ fi
 if [[ "$action" == "stop" ]]; then
   stop_display="$(remote_vnc display "$session")"
   [[ "$stop_display" =~ ^[1-9][0-9]*$ ]] || die "invalid remote display: $stop_display"
-  control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
-  control_path="${control_dir}/ssh-display-${stop_display}-%C"
+  remote_display="$stop_display"
+  init_control_state
   stop_remote_target
   ssh -n -S "$control_path" -O exit "$remote_host" >/dev/null 2>&1 || true
   exit 0
@@ -348,19 +446,13 @@ if [[ -f "$existing_viewer_helper" ]]; then
   esac
 fi
 
-readonly control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
-readonly control_path="${control_dir}/ssh-display-${remote_display}-%C"
-remote_key="$(printf '%s' "$remote_host" | tr -c 'A-Za-z0-9_.-' '_')"
-readonly remote_key
-readonly control_pid_file="${control_dir}/ssh-${remote_key}-display-${remote_display}.pid"
-mkdir -p "$control_dir"
-chmod 700 "$control_dir"
+init_control_state
 if [[ "$transport" == "direct" ]]; then
   if bounded_control_command exit; then
     rm -f -- "$control_pid_file"
   else
     stop_recorded_master
-    remove_display_control_sockets
+    remove_control_socket
   fi
   resolved_host="$(ssh -G "$remote_host" 2>/dev/null | sed -n 's/^hostname //p' | head -n 1)"
   direct_host="${VNC_DIRECT_HOST:-${VNC_HOST:-$resolved_host}}"
@@ -374,34 +466,19 @@ if [[ "$transport" == "direct" ]]; then
     "$direct_host" "$viewer_port" "$desktop_title"
 else
   remote_port=$((5900 + remote_display))
-  local_port="${VNC_LOCAL_PORT:-$((16500 + remote_display))}"
-  [[ "$local_port" =~ ^[1-9][0-9]*$ ]] || die "invalid VNC_LOCAL_PORT: $local_port"
-  (( remote_port <= 65535 && local_port <= 65535 )) || die "VNC port is too large"
-
-  if bounded_control_command check; then
-    remember_control_master
-  else
-    stop_recorded_master
-    remove_display_control_sockets
-    ssh -fNT -M -S "$control_path" \
-      -o ExitOnForwardFailure=yes \
-      -o ConnectTimeout=10 \
-      -o ServerAliveInterval=15 \
-      -o ServerAliveCountMax=2 \
-      -o TCPKeepAlive=yes \
-      -L "127.0.0.1:${local_port}:127.0.0.1:${remote_port}" \
-      "$remote_host"
-    if ! bounded_control_command check; then
-      printf '%s\n' "$control_output" >&2
-      die "new SSH VNC tunnel did not become responsive"
-    fi
-    remember_control_master
+  (( remote_port <= 65535 )) || die "VNC port is too large"
+  if [[ -n "${VNC_LOCAL_PORT:-}" ]]; then
+    [[ "$VNC_LOCAL_PORT" =~ ^[1-9][0-9]*$ ]] && (( VNC_LOCAL_PORT <= 65535 )) || \
+      die "invalid VNC_LOCAL_PORT: $VNC_LOCAL_PORT"
   fi
+  ensure_control_master
   direct_host="localhost"
   viewer_port="$local_port"
   printf 'Opening tunneled VNC %s on localhost:%s\n' \
     "$desktop_title" "$viewer_port"
 fi
 
+flock -u 9
+exec 9>&-
 cygstart "$VNC_VIEWER" -passwd "$VNC_PASSWORD" -NoJpeg \
   -ShortcutModifiers=Ctrl,Alt "${direct_host}:${viewer_port}"
