@@ -170,9 +170,24 @@ again without `--force`.
 Direct mode uses VNC password authentication but does not encrypt screen,
 keyboard, pointer, or clipboard traffic. Use it only on trusted routed LANs.
 
-On macOS, `vnc-lan linwks34 --session browser-a` creates the same tunnel and
+On Linux, `vnc-session-view` allocates an available loopback port for each
+new tunnel. Different hosts using the same remote display can be viewed
+concurrently. Existing tunnels reuse the port from the verified SSH process
+arguments, including tunnels created by older versions of the helper.
+The viewer receives `localhost::PORT`, which specifies a TCP port explicitly.
+
+`VNC_SESSION_LOCAL_DISPLAY` remains an optional fixed local display: `11`
+requests port `5911`. A conflicting override or occupied fixed port produces
+an error without replacing an active tunnel. Automatic allocation retries up
+to five bind races; authentication and network failures are not retried.
+Linux tunnel management requires `perl` (core `IO::Socket::INET`), `flock`,
+`timeout`, and `/proc`. Locks, PID records, and socket cleanup are scoped to
+the SSH endpoint and display. New tunnels use SSH server keepalives.
+
+On macOS, `vnc-lan linwks34 --session browser-a` creates an SSH tunnel and
 opens TurboVNC. Legacy direct-LAN usage remains
 `vnc-lan linwks34 [vnc-host] [geometry]`.
+The macOS tunnel port policy is unchanged by the Linux update.
 
 On Windows/MSYS2, `vnc-win-lan` now accepts the same host/session target form
 as `vnc-session-view` while retaining the established
@@ -242,6 +257,7 @@ Regression checks:
 ```bash
 bash tests/vnc-win-title.sh
 bash tests/vnc-win-tunnel.sh
+bash tests/vnc-session-view-tunnel.sh
 ```
 
 `vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin and to
