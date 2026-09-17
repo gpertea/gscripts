@@ -1,6 +1,7 @@
 # PostgreSQL backup and restore
 
-The authoritative scripts are `pg-backup.sh` and `pg-restore.sh` in this repository.
+Base directory: `~/gscripts/`. Sources: `pg-backup.sh`, `pg-backup-wal.py` and
+`pg-restore.sh`, at the same Git revision as this document.
 They target PostgreSQL 17 on srv16. Backups are logical database dumps, with role,
 database, extension, tablespace and server-configuration metadata.
 
@@ -21,26 +22,49 @@ Change inspection requires this extension in the cluster's `postgres` database:
 CREATE EXTENSION IF NOT EXISTS pg_walinspect WITH SCHEMA public;
 ```
 
-`--if-changed` compares against the latest completed backup of each database:
+`--if-changed` considers each database separately against its latest completed backup:
 
 - Cluster identity, timeline, server start time and database OID must match.
-- Sequence values, effective settings and configuration files must match.
-- WAL since the start of the previous dump must contain only explicitly allowed
-  checkpoint, hint-page, heap-page pruning and running-transaction bookkeeping records.
+- Sequence values, effective settings, configuration files and shared globals must match.
+- WAL block references identify the affected database by its OID. Ordinary writes
+  to another database do not trigger a backup of this one.
+- Parent/child transaction IDs connect commits, including prepared commits, to
+  the databases whose data was written. Shared dependency records follow the
+  database of their transaction, rather than marking every database changed.
+- Known physical-maintenance records are excluded. A commit with no associated
+  writes is ignored only when a saved or in-range XID allocation boundary proves
+  that its writes could not predate the inspected WAL interval.
 - The existing backup must still pass manifest, size and SHA-256 verification.
 
-All other WAL records, including commits, cause a backup. This is deliberately
-cluster-wide: changes to one database can cause backups of the others. It also
-covers transactions whose row changes preceded the previous dump but committed
-later. Ordinary read-only queries do not themselves require a backup.
+For example, inserts into `storage_minder` do not require another `genotypes`,
+`rse` or `sib` dump. Each decision prints its reason. Existing September 13 state
+archives remain usable; a fresh full baseline is not required solely for this
+upgrade. New backups also reserve and save a transaction ID after the WAL marker;
+this allocation boundary includes older active/prepared transactions correctly.
+It does not modify database rows.
 
-Missing/recycled WAL, an unavailable inspection function, a 30-second inspection
-timeout, a restart, identity mismatch or unlogged tables cause a backup. Sequence
-values are checked separately because cached/prelogged sequence changes do not
-always generate new WAL. Statistics counters are not used. Maintenance can cause
-extra backups; uncertainty never permits skipping. No replication slot or extra
-WAL retention is needed. The first run after upgrading old backups takes a new
-backup because old sets have no change-detection state.
+If a transaction wrote before the previous backup's WAL boundary and committed
+later, its database may not be assignable from the available records. That case
+requires a backup, with an explicit uncertainty reason; commits are never blindly
+ignored. Shared role/tablespace or configuration changes can affect multiple
+databases and still require backups. Other shared-catalog changes, unknown WAL
+record formats, missing/recycled WAL, an inspection timeout, a restart, identity
+mismatch or unlogged tables also require a backup. The decoder targets PostgreSQL
+17 and fails conservatively on other major versions.
+
+Sequence values are checked separately because cached/prelogged changes do not
+always generate new WAL. Statistics counters are not used. No replication slot
+or additional WAL retention is needed. Archives without any saved detection state
+require a first full backup.
+
+```bash
+pg-backup.sh --check-changes genotypes rse sib storage_minder
+```
+
+`--check-changes` reports selection decisions without dumping, copying or pruning.
+It reads saved metadata and WAL but does not hash all payload files; actual skip
+operations perform that additional integrity check. It uses the normal backup-root
+lock and removes its temporary state files on exit.
 
 This skips dump creation, but reads existing backup files to verify their hashes.
 It does not compare every table's contents or promise to suppress every redundant
@@ -53,6 +77,9 @@ pg-backup.sh --check genotypes rse sib storage_minder
 pg-backup.sh rse                         ## force a fresh dump
 PG_BACKUP_SECONDARY='' pg-backup.sh rse  ## local backup only
 ```
+
+Keep `pg-backup-wal.py` alongside `pg-backup.sh` when deploying; change-detection
+modes stop if the helper is missing.
 
 Defaults: user `gpertea`, database `rse`, root `/data/backups/postgres`, compression
 `zstd:9`, 20 completed local sets per database, secondary
@@ -112,9 +139,11 @@ effective settings; it is never automatically installed on the target server.
 
 ## Validation
 
+`python3 tests/pg-backup-wal.py` checks WAL attribution and transaction edge cases.
 `bash tests/pg-backup-restore.sh` starts a disposable local PostgreSQL cluster and
 checks restore fidelity, replacement failure/success, manifests, change detection,
-replication recovery, retention and the free-space guard. It does not use the live
+replication recovery, retention, the free-space guard, isolation between databases,
+shared dependencies, subtransactions and commits across the backup boundary. It does not use the live
 server or production backup paths.
 
 References: [PostgreSQL 17 WAL inspection](https://www.postgresql.org/docs/17/pgwalinspect.html)

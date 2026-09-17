@@ -162,4 +162,48 @@ before=$(count)
 if PG_BACKUP_MIN_FREE_GB=99999 backup sample; then fail free_space_guard; fi
 [[ $(count) == "$before" ]] || fail guard_published_partial
 printf 'PASS: free-space guard rejects backup without publishing a partial set\n'
+## independent databases: busy writes must never force a dump of quiet's unchanged contents.
+createdb quiet
+createdb busy
+q -d quiet -c 'CREATE TABLE items(id integer)' >/dev/null
+q -d busy -c 'CREATE TABLE items(id integer)' >/dev/null
+dbcount() { find "$PG_BACKUP_ROOT" -mindepth 2 -maxdepth 2 -path "*/pgbackup_*_${1}_*/COMPLETE" | wc -l; }
+backup quiet busy
+quiet_before=$(dbcount quiet)
+busy_before=$(dbcount busy)
+for change in "INSERT INTO items VALUES (1)" "UPDATE items SET id=2" "DELETE FROM items" \
+  "BEGIN; SAVEPOINT child; INSERT INTO items VALUES (3); COMMIT" \
+  "ALTER TABLE items ADD COLUMN extra text" "TRUNCATE items" \
+  "CREATE TABLE disposable(id integer)" "DROP TABLE disposable"; do
+  q -d busy -c "$change" >/dev/null
+  backup --if-changed quiet busy
+  busy_before=$((busy_before+1))
+  [[ $(dbcount quiet) == "$quiet_before" ]] || { cat "$fixture/backup.log"; fail unrelated_database_dumped; }
+  [[ $(dbcount busy) == "$busy_before" ]] || { cat "$fixture/backup.log"; fail changed_database_skipped; }
+done
+printf 'PASS: writes, subtransactions, DDL and TRUNCATE in busy leave quiet unbacked-up\n'
+q -d postgres -c 'CREATE ROLE shared_state_change' >/dev/null
+"$repo/pg-backup.sh" --check-changes quiet > "$fixture/shared-state.log"
+grep -q 'shared roles or tablespaces changed' "$fixture/shared-state.log" || fail shared_role_change
+printf 'PASS: shared role changes remain protected\n'
+
+## writes before the backup boundary may commit after its snapshot; they must not be missed.
+q -d quiet -c "BEGIN; INSERT INTO items VALUES (10); PREPARE TRANSACTION 'late_commit'" >/dev/null
+backup quiet
+quiet_before=$(dbcount quiet)
+q -d quiet -c "COMMIT PREPARED 'late_commit'" >/dev/null
+backup --if-changed quiet
+[[ $(dbcount quiet) == $((quiet_before+1)) ]] || fail late_commit_skipped
+printf 'PASS: commit of pre-backup writes forces a backup\n'
+
+before=$(count)
+"$repo/pg-backup.sh" --check-changes quiet busy > "$fixture/decisions.log"
+[[ $(count) == "$before" ]] || fail diagnostic_created_backup
+printf 'PASS: --check-changes reports decisions without creating backups\n'
+mkdir "$fixture/missing-helper"
+cp "$repo/pg-backup.sh" "$fixture/missing-helper/pg-backup.sh"
+if "$fixture/missing-helper/pg-backup.sh" --check-changes quiet > "$fixture/missing-helper.log" 2>&1; then fail missing_helper; fi
+grep -q 'missing change-detection helper' "$fixture/missing-helper.log" || fail helper_diagnostic
+[[ $(count) == "$before" ]] || fail missing_helper_created_backup
+printf 'PASS: incomplete script deployment stops instead of creating redundant backups\n'
 printf 'All backup/restore integration checks passed.\n'

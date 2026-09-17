@@ -10,17 +10,18 @@ min_free_gb=${PG_BACKUP_MIN_FREE_GB:-5}
 dump_pid=''
 check_only=0
 if_changed=0
+check_changes=0
 dbs=()
 work=''
 failed=0
 export PGUSER=${PG_BACKUP_USER:-gpertea} PGCONNECT_TIMEOUT=${PGCONNECT_TIMEOUT:-10}
 
 usage() {
-  printf 'usage: %s [--check] [--if-changed] [db ...]\n' "${0##*/}"
+  printf 'usage: %s [--check] [--if-changed|--check-changes] [db ...]\n' "${0##*/}"
   printf '%s\n' 'env: PG_BACKUP_USER, PGHOST, PGPORT, PG_BACKUP_ROOT, PG_BACKUP_DB, PG_BACKUP_KEEP,' \
     '     PG_BACKUP_COMPRESS, PG_BACKUP_MIN_FREE_GB (default 5),' \
     '     PG_BACKUP_SECONDARY (empty disables the secondary copy)' \
-    '--if-changed skips only when WAL, sequence and configuration checks prove no changes.'
+    '--if-changed checks each database separately; --check-changes reports decisions without dumping/copying/pruning.'
 }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -33,6 +34,7 @@ while (($#)); do
   case $1 in
     --check) check_only=1 ;;
     --if-changed) if_changed=1 ;;
+    --check-changes) if_changed=1; check_changes=1 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; dbs+=( "$@" ); break ;;
     -*) die "unknown option: $1" ;;
@@ -47,9 +49,13 @@ min_free=$((min_free_gb * 1024 * 1024 * 1024))
 for db in "${dbs[@]}"; do
   [[ $db =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$ ]] || die "unsupported database name: $db"
 done
-for cmd in psql pg_dump pg_dumpall pg_restore zstd sha256sum stat find sort tail flock mktemp python3 tar cmp sync hostname date cut cat mv rm mkdir df awk sleep readlink dirname; do
+for cmd in psql pg_dump pg_dumpall pg_restore zstd sha256sum stat find sort tail flock mktemp python3 tar cmp sync hostname date cut cat mv rm mkdir df awk sed sleep readlink dirname; do
   command -v "$cmd" >/dev/null || die "missing command: $cmd"
 done
+if ((if_changed)); then
+  wal_checker=$(dirname -- "$(readlink -f -- "$0")")/pg-backup-wal.py
+  [[ -f $wal_checker && -r $wal_checker ]] || die "missing change-detection helper: $wal_checker"
+fi
 
 ## destination syntax is deliberately restricted so remote shell arguments stay literal.
 remote_host=''
@@ -191,6 +197,8 @@ for db in "${dbs[@]}"; do
   lsn=$(psqlq -d postgres -c 'select pg_current_wal_insert_lsn()')
   printf '%s\t%s\n' "$cluster" "$dbinfo" > "$work/identity"
   printf '%s\n' "$lsn" > "$work/lsn"
+  ## reserve an XID after the WAL marker; older active/prepared transactions remain below this boundary.
+  psqlq -d postgres -c 'select pg_current_xact_id()' > "$work/xid_floor"
   psqlq -d "$db" > "$work/sequences" <<'SQL'
 select format('select %L, last_value, is_called from %I.%I;', n.nspname || '.' || c.relname, n.nspname, c.relname)
 from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.relkind='S' order by n.nspname,c.relname
@@ -211,6 +219,11 @@ SQL
   unlogged=$(psqlq -d "$db" -c "select count(*) from pg_class where relpersistence='u' and relkind in ('r','m','S')")
   latest=$(list_sets "$prefix" | sort | tail -n 1)
   unchanged=0
+  reason='backup requested without --if-changed'
+  if ((if_changed)); then
+    reason='no completed backup with change-detection state'
+    if [[ $unlogged != 0 ]]; then reason='database contains unlogged relations'; fi
+  fi
   if ((if_changed)) && [[ -n $latest && $unlogged == 0 ]]; then
     previous=$latest/${latest##*/}.state.tar.zst
     if [[ -f $previous ]]; then
@@ -218,25 +231,47 @@ SQL
       ## only our five fixed state members are read; no archive paths are extracted.
       state_ok=1
       for member in identity lsn sequences settings config; do
-        if ! zstd -dc "$previous" | tar -xOf - "$member" > "$work/previous/$member"; then state_ok=0; break; fi
+        if ! zstd -dc "$previous" | tar -xOf - "$member" > "$work/previous/$member"; then
+          state_ok=0; reason='previous change-detection state is unreadable'; break
+        fi
       done
       for member in identity sequences settings config; do
-        cmp -s "$work/$member" "$work/previous/$member" || state_ok=0
+        if ! cmp -s "$work/$member" "$work/previous/$member"; then
+          state_ok=0; reason="$member changed since this database's backup"
+        fi
       done
+      if ((state_ok)); then
+        ## shared role changes can precede the WAL boundary of a still-open transaction.
+        pg_dumpall -w -g | sed '/^\\restrict /d; /^\\unrestrict /d' > "$work/global-check.sql"
+        if ! zstd -dc "$latest/${latest##*/}.globals.sql.zst" |
+          sed '/^\\restrict /d; /^\\unrestrict /d' > "$work/global-previous.sql"; then
+          state_ok=0; reason='previous globals backup is unreadable'
+        elif ! cmp -s "$work/global-check.sql" "$work/global-previous.sql"; then
+          state_ok=0; reason='shared roles or tablespaces changed'
+        fi
+        rm -f -- "$work/global-check.sql" "$work/global-previous.sql"
+      fi
       if ((state_ok)); then
         old_lsn=$(cat "$work/previous/lsn")
         if [[ $old_lsn == "$lsn" ]]; then
-          unchanged=1
-        elif [[ $old_lsn =~ ^[0-9A-F]+/[0-9A-F]+$ ]] && [[ $(psqlq -d postgres -c "select pg_current_wal_flush_lsn() >= '$lsn'::pg_lsn") == t ]]; then
-          ## ignore only known bookkeeping records; unknown records and missing WAL require a backup.
-          if dirty=$(psqlq -d postgres -c "set statement_timeout='30s'; select exists(select 1 from public.pg_get_wal_records_info('$old_lsn','$lsn') where not ((resource_manager='XLOG' and record_type in ('CHECKPOINT_ONLINE','CHECKPOINT_SHUTDOWN','CHECKPOINT_REDO','FPI_FOR_HINT')) or (resource_manager='Standby' and record_type='RUNNING_XACTS') or (resource_manager='Heap2' and record_type='PRUNE_ON_ACCESS')))" 2>"$work/wal-error"); then
-            [[ $dirty == f ]] && unchanged=1
-          else
-            warn "WAL history unavailable for $db; taking a backup"
+          unchanged=1; reason='unchanged: saved state and WAL position match'
+        else
+          xid_args=()
+          if zstd -dc "$previous" | tar -xOf - xid_floor > "$work/previous/xid_floor" 2>/dev/null; then
+            xid_floor=$(cat "$work/previous/xid_floor")
+            [[ $xid_floor =~ ^[0-9]+$ ]] && xid_args=( --xid-floor "$xid_floor" )
           fi
+          if reason=$(python3 "$wal_checker" "$dbinfo" "$old_lsn" "$lsn" "${xid_args[@]}"); then unchanged=1; fi
         fi
       fi
     fi
+  fi
+  printf 'decision %s: %s\n' "$db" "$reason"
+  if ((check_changes)); then
+    ## this diagnoses change selection only; actual skips also verify every backup payload hash.
+    if ((unchanged)); then printf 'would skip %s\n' "$db"; else printf 'would back up %s\n' "$db"; fi
+    rm -rf -- "$work"; work=''
+    continue
   fi
   if ((unchanged)); then
     verifier=$(dirname -- "$(readlink -f -- "$0")")/pg-restore.sh
@@ -291,11 +326,11 @@ select case when setrole=0 then format('ALTER DATABASE :"restore_db" SET %I TO %
 from pg_db_role_setting cross join lateral unnest(setconfig) v
 where setdatabase=(select oid from pg_database where datname=current_database());
 SQL
-  tar -C "$work" -cf - identity lsn sequences settings config | zstd -q -9 -c > "$work/$base.state.tar.zst"
+  tar -C "$work" -cf - identity lsn xid_floor sequences settings config | zstd -q -9 -c > "$work/$base.state.tar.zst"
   zstd -q -9 -c "$work/config" > "$work/$base.config.tsv.zst"
   zstd -q -9 -c "$work/settings" > "$work/$base.settings.tsv.zst"
   rm -rf -- "$work/previous"
-  rm -f -- "$work/identity" "$work/lsn" "$work/sequences" "$work/settings" "$work/config" "$work/wal-error"
+  rm -f -- "$work/identity" "$work/lsn" "$work/xid_floor" "$work/sequences" "$work/settings" "$work/config" "$work/wal-error"
   {
     printf 'kind\tpath\tsize\tsha256\n'
     printf 'meta\tcreated_at\t\t%s\n' "$(date -Is)"
