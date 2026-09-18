@@ -6,6 +6,16 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) is_windows_msys=true ;;
 esac
 
+# Codex's built-in updater inherits this environment. Its Windows installer
+# passes Windows paths to tar, so prefer native Windows tools in this process
+# and its children. The invoking MSYS2 shell keeps its original environment.
+if $is_windows_msys; then
+  windows_system32="$(cygpath -u "${SystemRoot:-${SYSTEMROOT:-C:\\Windows}}")/System32"
+  export PATH="$windows_system32:$windows_system32/WindowsPowerShell/v1.0:$PATH"
+  # Windows PowerShell must discover its own modules, not PowerShell 7's.
+  unset PSModulePath
+fi
+
 windows_codex_bin() {
   local local_app_data="${LOCALAPPDATA:-}"
 
@@ -67,10 +77,9 @@ if [[ "${1:-}" == "--update" ]]; then
       exit 127
     fi
 
-    # Use the native Windows standalone installer. Prepending System32 keeps
-    # MSYS2 tar.exe from receiving Windows paths from the PowerShell installer.
+    # Use the same Windows environment as Codex's built-in updater.
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \
-      '$ErrorActionPreference = "Stop"; $env:Path = "$env:SystemRoot\System32;$env:Path"; $env:CODEX_NON_INTERACTIVE = "1"; Invoke-RestMethod "https://chatgpt.com/codex/install.ps1" | Invoke-Expression'
+      '$ErrorActionPreference = "Stop"; $env:CODEX_NON_INTERACTIVE = "1"; Invoke-RestMethod "https://chatgpt.com/codex/install.ps1" | Invoke-Expression'
   else
     if ! command -v npm >/dev/null 2>&1; then
       printf 'cody: npm is required to update Codex\n' >&2
