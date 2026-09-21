@@ -4,19 +4,13 @@ This is a mishmash of utility scripts I have been using in my Genomics/Bioinform
 ## Codex sessions by display
 
 On Linux, `cody` recognizes numeric displays such as `:1`, `:2`, and `:2.0`.
-It exports `LIN_BROWSER_USE_AUTH_DISPLAY` for that display, creates one
-persistent Codex app-server per display when needed, and connects the TUI to
-that server. Concurrent VNC desktops therefore keep separate app-server and
-authenticated browser targets.
+It preserves the terminal's existing `TERM`, `COLORTERM`, and color-control
+variables, while exporting the matching `LIN_BROWSER_USE_AUTH_DISPLAY` for
+browser tools. It also supplies missing Xauthority and runtime bus defaults.
 
-Runtime sockets, locks, PIDs, and logs are stored below
-`$XDG_RUNTIME_DIR/cody/display-N/` and disappear when the user runtime is
-cleared. Launches without a numeric `DISPLAY` retain the previous direct Codex
-behavior. Windows behavior is unchanged.
-
-The ChatGPT desktop app's SSH-managed default app-server is separate from these
-`cody` servers because the desktop app currently connects to its default
-`unix://` control socket.
+`cody` starts the normal local Codex CLI. It does not create or connect to a
+custom app-server, so new and resumed sessions have the same behavior as
+starting `codex` directly.
 
 ## Named VNC sessions
 
