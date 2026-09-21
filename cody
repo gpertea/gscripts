@@ -2,8 +2,10 @@
 set -euo pipefail
 
 is_windows_msys=false
+is_linux=false
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) is_windows_msys=true ;;
+  Linux) is_linux=true ;;
 esac
 
 # Codex's built-in updater inherits this environment. Its Windows installer
@@ -43,6 +45,72 @@ resolve_codex_bin() {
   fi
 
   command -v codex
+}
+
+socket_is_listening() {
+  local socket_path="$1"
+
+  ss -xlH | awk -v path="$socket_path" \
+    '$5 == path { found = 1 } END { exit !found }'
+}
+
+ensure_display_app_server() {
+  local display_number="$1" lock_fd server_pid
+  local runtime_root state_dir socket_path lock_path log_path pid_path
+
+  ## preserve the VNC session environment and pin browser MCPs to it
+  export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+  export LIN_BROWSER_USE_AUTH_DISPLAY=":${display_number}"
+
+  command -v flock >/dev/null 2>&1 || {
+    printf 'cody: flock is required for display-specific app-server startup\n' >&2
+    exit 127
+  }
+  command -v ss >/dev/null 2>&1 || {
+    printf 'cody: ss is required for display-specific app-server startup\n' >&2
+    exit 127
+  }
+
+  runtime_root="${XDG_RUNTIME_DIR}/cody"
+  state_dir="${runtime_root}/display-${display_number}"
+  socket_path="${state_dir}/app-server.sock"
+  lock_path="${state_dir}/startup.lock"
+  log_path="${state_dir}/app-server.log"
+  pid_path="${state_dir}/app-server.pid"
+  install -d -m 700 -- "$runtime_root" "$state_dir"
+
+  ## serialize concurrent cody launches on this display
+  exec {lock_fd}>"$lock_path"
+  flock "$lock_fd"
+  if ! socket_is_listening "$socket_path"; then
+    rm -f -- "$socket_path"
+    nohup "$codex_bin" app-server --listen "unix://${socket_path}" \
+      </dev/null >>"$log_path" 2>&1 &
+    server_pid=$!
+    printf '%s\n' "$server_pid" > "$pid_path"
+
+    ## wait briefly for the server to bind or report an early failure
+    for _ in {1..100}; do
+      socket_is_listening "$socket_path" && break
+      if ! kill -0 "$server_pid" 2>/dev/null; then
+        printf 'cody: app-server for DISPLAY=%s exited; see %s\n' \
+          "$DISPLAY" "$log_path" >&2
+        exit 1
+      fi
+      sleep 0.05
+    done
+    if ! socket_is_listening "$socket_path"; then
+      printf 'cody: app-server for DISPLAY=%s did not become ready; see %s\n' \
+        "$DISPLAY" "$log_path" >&2
+      exit 1
+    fi
+  fi
+  flock -u "$lock_fd"
+  exec {lock_fd}>&-
+
+  cody_app_server="unix://${socket_path}"
 }
 
 ## if on JHPCE, load the npm module
@@ -111,6 +179,13 @@ declare -a codex_args=(--yolo)
 if [[ "${1:-}" == "--docs" ]]; then
   codex_args+=(-c 'mcp_servers.openaiDeveloperDocs.enabled=true')
   shift
+fi
+
+## Linux VNC/GUI sessions share one app-server per numeric display.
+cody_app_server=""
+if $is_linux && [[ "${DISPLAY:-}" =~ ^:([0-9]+)(\.[0-9]+)?$ ]]; then
+  ensure_display_app_server "${BASH_REMATCH[1]}"
+  codex_args+=(--remote "$cody_app_server")
 fi
 
 exec "$codex_bin" "${codex_args[@]}" "$@"

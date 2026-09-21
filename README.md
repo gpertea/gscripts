@@ -1,6 +1,23 @@
 # gscripts
 This is a mishmash of utility scripts I have been using in my Genomics/Bioinformatics work.  Many of them may not make much sense outside of my work environment, some of them were project specific and I probably already forgot why I wrote them.. 
 
+## Codex sessions by display
+
+On Linux, `cody` recognizes numeric displays such as `:1`, `:2`, and `:2.0`.
+It exports `LIN_BROWSER_USE_AUTH_DISPLAY` for that display, creates one
+persistent Codex app-server per display when needed, and connects the TUI to
+that server. Concurrent VNC desktops therefore keep separate app-server and
+authenticated browser targets.
+
+Runtime sockets, locks, PIDs, and logs are stored below
+`$XDG_RUNTIME_DIR/cody/display-N/` and disappear when the user runtime is
+cleared. Launches without a numeric `DISPLAY` retain the previous direct Codex
+behavior. Windows behavior is unchanged.
+
+The ChatGPT desktop app's SSH-managed default app-server is separate from these
+`cody` servers because the desktop app currently connects to its default
+`unix://` control socket.
+
 ## Named VNC sessions
 
 This repository owns the generic VNC session layer. Any Linux host can manage
