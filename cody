@@ -47,68 +47,6 @@ resolve_codex_bin() {
   command -v codex
 }
 
-socket_is_listening() {
-  local socket_path="$1"
-
-  ss -xlH | awk -v path="$socket_path" \
-    '$5 == path { found = 1 } END { exit !found }'
-}
-
-start_shared_app_server() {
-  local codex_home state_dir socket_path lock_path log_path pid_path
-  local lock_fd server_pid
-
-  ## prefer Codex's managed daemon when its standalone installation exists
-  if "$codex_bin" app-server daemon start >/dev/null 2>&1; then
-    return 0
-  fi
-
-  command -v flock >/dev/null 2>&1 || {
-    printf 'cody: flock is required for app-server startup\n' >&2
-    exit 127
-  }
-  command -v ss >/dev/null 2>&1 || {
-    printf 'cody: ss is required for app-server startup\n' >&2
-    exit 127
-  }
-
-  codex_home="${CODEX_HOME:-$HOME/.codex}"
-  state_dir="${codex_home}/app-server-control"
-  socket_path="${state_dir}/app-server-control.sock"
-  lock_path="${state_dir}/app-server-startup.lock"
-  log_path="${state_dir}/app-server.log"
-  pid_path="${state_dir}/app-server.pid"
-  install -d -m 700 -- "$state_dir"
-
-  ## serialize fallback startup and replace only a stale socket
-  exec {lock_fd}>"$lock_path"
-  flock "$lock_fd"
-  if ! socket_is_listening "$socket_path"; then
-    rm -f -- "$socket_path"
-    nohup "$codex_bin" -c features.code_mode_host=true \
-      app-server --listen unix:// \
-      </dev/null >>"$log_path" 2>&1 &
-    server_pid=$!
-    printf '%s\n' "$server_pid" > "$pid_path"
-
-    ## wait briefly for the default control socket
-    for _ in {1..100}; do
-      socket_is_listening "$socket_path" && break
-      if ! kill -0 "$server_pid" 2>/dev/null; then
-        printf 'cody: app-server exited; see %s\n' "$log_path" >&2
-        exit 1
-      fi
-      sleep 0.05
-    done
-    if ! socket_is_listening "$socket_path"; then
-      printf 'cody: app-server did not become ready; see %s\n' "$log_path" >&2
-      exit 1
-    fi
-  fi
-  flock -u "$lock_fd"
-  exec {lock_fd}>&-
-}
-
 ## if on JHPCE, load the npm module
 if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
   module load node
@@ -163,77 +101,10 @@ if [[ -z "$codex_bin" ]]; then
 fi
 
 ## opt into the OpenAI documentation MCP for this launch only
-declare -a codex_args=()
+declare -a codex_args=(--yolo)
 if [[ "${1:-}" == "--docs" ]]; then
   codex_args+=(-c 'mcp_servers.openaiDeveloperDocs.enabled=true')
   shift
-fi
-
-toml_string() {
-  local value="$1"
-
-  ## escape the safe environment values passed through per-thread config
-  value="${value//\\/\\\\}"
-  value="${value//\"/\\\"}"
-  value="${value//$'\n'/\\n}"
-  value="${value//$'\r'/\\r}"
-  value="${value//$'\t'/\\t}"
-  printf '"%s"' "$value"
-}
-
-add_thread_env() {
-  local name="$1" value="${!1-}" quoted
-
-  [[ -n "$value" ]] || return 0
-  quoted="$(toml_string "$value")"
-  codex_args+=(-c "shell_environment_policy.set.${name}=${quoted}")
-}
-
-## VNC launches use the shared daemon while retaining selected client context.
-remote_app_server=false
-if $is_linux && [[ "${DISPLAY:-}" =~ ^:([0-9]+)(\.[0-9]+)?$ ]]; then
-  ## app-server MCPs share bru's active browser selection across all threads
-  if command -v bru >/dev/null 2>&1; then
-    bru --select "$LIN_BROWSER_USE_AUTH_DISPLAY" >/dev/null 2>&1 || true
-  fi
-
-  start_shared_app_server
-  codex_args+=(--remote unix://)
-  remote_app_server=true
-
-  ## remote clients otherwise default new threads to the server's directory
-  has_cwd_override=false
-  for arg in "$@"; do
-    case "$arg" in
-      -C|--cd|--cd=*) has_cwd_override=true ;;
-    esac
-  done
-  if ! $has_cwd_override; then
-    codex_args+=(-C "$PWD")
-  fi
-
-  ## propagate non-secret shell and GUI context into this app-server thread
-  for name in \
-    DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS \
-    LIN_BROWSER_USE_AUTH_DISPLAY PATH HOME USER LOGNAME SHELL LANG LC_ALL \
-    LC_CTYPE TERM COLORTERM SSH_AUTH_SOCK RXVT_SOCKET TMPDIR VNCDESKTOP \
-    XDG_SESSION_CLASS XDG_SESSION_ID XDG_SESSION_TYPE; do
-    add_thread_env "$name"
-  done
-
-fi
-
-## Remote resume rejects permission overrides; stored permissions remain active.
-remote_resume=false
-if $remote_app_server; then
-  for arg in "$@"; do
-    case "$arg" in
-      resume|fork) remote_resume=true ;;
-    esac
-  done
-fi
-if ! $remote_resume; then
-  codex_args=(--yolo "${codex_args[@]}")
 fi
 
 exec "$codex_bin" "${codex_args[@]}" "$@"

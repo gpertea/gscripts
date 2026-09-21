@@ -8,25 +8,9 @@ It preserves the terminal's existing `TERM`, `COLORTERM`, and color-control
 variables, while exporting the matching `LIN_BROWSER_USE_AUTH_DISPLAY` for
 browser tools. It also supplies missing Xauthority and runtime bus defaults.
 
-In a VNC terminal, `cody` starts or reuses the standard shared Codex app-server
-and connects the TUI to its default `unix://` socket. The ChatGPT desktop app
-can connect to the same server over SSH, and multiple clients can interact with
-its threads.
-
-The app-server owns the base process environment. `cody` supplies a safe
-per-thread whitelist that preserves the launching terminal's display, D-Bus,
-path, locale, and terminal context without copying secrets into process
-arguments.
-
-Browser MCP processes belong to the shared app-server rather than an individual
-thread. When a matching `bru` instance is running, `cody` selects it through
-`bru --select`. That selection is shared: the most recently selected `bru`
-display is used by browser tools in every app-server thread. Shell commands
-still receive the display of the VNC terminal that launched their own thread.
-
-Remote resume does not accept permission overrides. `cody resume` and `cody
-fork` therefore omit `--yolo`; the stored thread permission policy remains in
-effect. Launches without a numeric `DISPLAY` retain direct local Codex behavior.
+`cody` starts the normal local Codex CLI. It does not create or connect to a
+custom app-server, so new and resumed sessions have the same behavior as
+starting `codex` directly.
 
 ## Named VNC sessions
 
