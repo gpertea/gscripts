@@ -305,10 +305,11 @@ run_xstartup() {
   export XAUTHORITY="$preserved_xauthority"
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export PATH="${HOME}/bin:${PATH}"
+  ## load terminal resources before the daemon opens the display
+  [[ -r "${HOME}/.Xresources" ]] && xrdb -merge "${HOME}/.Xresources"
   start_urxvt_daemon
   write_session_environment "$name"
 
-  [[ -r "${HOME}/.Xresources" ]] && xrdb -merge "${HOME}/.Xresources"
   xsetroot -solid '#202030'
   vncconfig -nowin &
   exec jwm -f "$jwm_config"
