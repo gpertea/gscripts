@@ -12,6 +12,40 @@ browser tools. It also supplies missing Xauthority and runtime bus defaults.
 custom app-server, so new and resumed sessions have the same behavior as
 starting `codex` directly.
 
+### Codex updates
+
+Interactive `cody` launches check for a newer stable release before opening
+the UI and ask before installing it. The check uses npm on Unix and
+PowerShell on Windows, with a five-second request timeout. An unavailable
+check still permits launching the installed CLI. When cody handles the
+check, it disables Codex's duplicate startup update prompt for that launch.
+
+```bash
+cody                       ## check, ask to update if newer, then launch
+cody --noupdate             ## skip both wrapper and Codex startup checks
+cody --update               ## update explicitly, report versions, then exit
+cody --noupdate --docs      ## combine with other leading wrapper options
+```
+
+After a successful update, cody reports the installed CLI version, running
+app-server version/status, daemon package version, and running Linux Codex
+process versions. Executables already running before an installation can
+remain older; their versions are read through `/proc`, not inferred from the
+installed package.
+
+If an app-server is running, cody offers to update its package to the installed
+CLI and restart it. The default answer is no. Accepting stops the server,
+pins the current CLI package with `app-server daemon update --from-cli --yes`,
+and starts the updated server; active server work is interrupted. The version
+report is then repeated. If package replacement fails, cody leaves the server
+stopped and returns the error instead of starting an uncertain version.
+
+An absent server is not started. Interactive CLI sessions are never killed.
+Noninteractive launches do not run the wrapper's automatic check; explicit
+noninteractive `--update` reports versions without restarting a server.
+Remote clients can subsequently start a server again after `killall codex`;
+stopping processes does not disconnect those clients.
+
 ## Named VNC sessions
 
 This repository owns the generic VNC session layer. Any Linux host can manage
