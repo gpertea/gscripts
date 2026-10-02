@@ -5,7 +5,8 @@ script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
 script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
 readonly script_dir
 readonly bin_dir="${HOME}/bin"
-readonly config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/vnc-session"
+## obsolete: VNC desktops now read ~/.jwmrc-vnc directly
+readonly legacy_jwm_copy="${XDG_CONFIG_HOME:-${HOME}/.config}/vnc-session/jwm.xml"
 ## shared with install-vnc-bru.sh, which exports VNC_BRU_BACKUP_DIR per run
 backup_dir="${VNC_BRU_BACKUP_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/vnc-bru-setup/backups/$(date +%Y%m%d-%H%M%S)-$$}"
 readonly backup_dir
@@ -37,21 +38,12 @@ check_link() {
   [[ -L "$target" && "$(readlink -f -- "$target")" == "$source" ]]
 }
 
-preferred_jwm_source() {
-  if [[ -r "${HOME}/.jwmrc-vnc" ]]; then
-    printf '%s\n' "${HOME}/.jwmrc-vnc"
-  elif [[ -r "${HOME}/.jwmrc" ]]; then
-    printf '%s\n' "${HOME}/.jwmrc"
-  else
-    printf '%s\n' "${script_dir}/jwm-vnc-session.xml"
+## a running desktop may still read the old copy on a JWM restart, so it is
+## reported and left in place
+note_legacy_jwm_copy() {
+  if [[ -e "$legacy_jwm_copy" ]]; then
+    printf 'NOTE: %s is no longer used; VNC desktops read ~/.jwmrc-vnc. Remove it after restarting desktops started before this change.\n' "$legacy_jwm_copy"
   fi
-}
-
-check_copy() {
-  local source="$1"
-  local target="$2"
-
-  [[ -f "$target" && ! -L "$target" ]] && cmp -s -- "$source" "$target"
 }
 
 ## move or copy TARGET into the backup tree and record it in MANIFEST
@@ -69,35 +61,6 @@ backup_target() {
   fi
   printf '%s\t%s\n' "$target" "$destination" >> "${backup_dir}/MANIFEST"
   printf '>>> BACKUP: %s saved as %s\n' "$target" "$destination"
-}
-
-install_copy() {
-  local source="$1"
-  local target="$2"
-  local temporary
-
-  [[ -r "$source" ]] || die "configuration source is missing: $source"
-  if check_copy "$source" "$target"; then
-    printf 'Current copy %s <- %s\n' "$target" "$source"
-    return
-  fi
-  if [[ "$dry_run" == true ]]; then
-    if [[ -e "$target" || -L "$target" ]]; then
-      printf 'Would refresh %s from %s (old copy backed up)\n' "$target" "$source"
-    else
-      printf 'Would create %s from %s\n' "$target" "$source"
-    fi
-    return
-  fi
-  if [[ -e "$target" && ! -L "$target" ]]; then
-    backup_target copy "$target"
-  fi
-
-  ## replace a prior symlink atomically without modifying its source
-  temporary="$(mktemp "${config_dir}/.jwm.xml.XXXXXX")"
-  install -m 600 -- "$source" "$temporary"
-  mv -Tf -- "$temporary" "$target"
-  printf '>>> CHANGED: %s <- %s\n' "$target" "$source"
 }
 
 install_link() {
@@ -144,13 +107,12 @@ fi
 case "$action" in
   install)
     if [[ "$dry_run" != true ]]; then
-      install -d -m 700 "$bin_dir" "$config_dir"
+      install -d -m 700 "$bin_dir"
     fi
     for command_name in "${commands[@]}"; do
       install_link "${script_dir}/${command_name}" "${bin_dir}/${command_name}"
     done
-    jwm_source="$(preferred_jwm_source)"
-    install_copy "$jwm_source" "${config_dir}/jwm.xml"
+    note_legacy_jwm_copy
     ## doctor only reads host state
     "${script_dir}/vnc-session" doctor
     ;;
@@ -164,13 +126,8 @@ case "$action" in
         failed=1
       fi
     done
-    source="$(preferred_jwm_source)"
-    target="${config_dir}/jwm.xml"
-    if ! check_copy "$source" "$target"; then
-      printf 'MISMATCH %s (expected a copy of %s)\n' "$target" "$source" >&2
-      failed=1
-    fi
     (( failed == 0 )) || exit 1
+    note_legacy_jwm_copy
     "${bin_dir}/vnc-session" doctor
     printf 'VNC tool links: OK\n'
     ;;

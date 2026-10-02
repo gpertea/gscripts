@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+## Minimal desktop startup for managed VNC sessions on hosts without a user
+## ~/.vnc/xstartup. vnc-session runs it after setting the per-desktop parts:
+## DISPLAY, XAUTHORITY, the private D-Bus, RXVT_SOCKET, and
+## VNC_SESSION_JWM_CONFIG. Keep display and D-Bus setup out of this file.
+
+## login PATH and environment for everything started from the desktop
+[ -r "$HOME/.profile" ] && . "$HOME/.profile"
+## load terminal resources before the daemon opens the display
+[ -r "$HOME/.Xresources" ] && xrdb -merge "$HOME/.Xresources"
+
+xsetroot -solid '#202030'
+## RXVT_SOCKET keeps each display's terminal daemon separate
+urxvtd -q -f -o
+vncconfig -nowin &
+exec jwm -f "${VNC_SESSION_JWM_CONFIG:-$HOME/.jwmrc-vnc}"

@@ -53,7 +53,8 @@ named desktops, view its own desktops, and be viewed from Linux, macOS, or
 Windows. `lin-browser-use` consumes this layer but does not own or install it.
 
 `vnc-get-display`, `vnc-session`, `vnc-self`, `vnc-session-view`, `vnc-lan`,
-`vnc-win-lan`, `vnc-host`, `flameshot-vnc`, and `jwm-vnc-session.xml` are
+`vnc-win-lan`, `vnc-host`, `flameshot-vnc`, `vnc-xstartup`,
+`vnc-secrets-forward`, and `jwm-vnc-session.xml` are
 canonical here. Install the Linux entry points as links; do not maintain copies
 in `~/bin`.
 
@@ -64,19 +65,46 @@ in `~/bin`.
 ```
 
 `install --dry-run` lists every link or copy it would change and changes
-nothing. Installation moves an existing regular managed file (and copies a
-stale `jwm.xml`) into
+nothing. Installation moves an existing regular managed file into
 `${VNC_BRU_BACKUP_DIR:-~/.local/state/vnc-bru-setup/backups/<run>}/<absolute path>`
 before replacing it, prints each `>>> BACKUP:` path, and appends it to the
 `MANIFEST` file there. `lin-config/browser-use/install-vnc-bru.sh` sets
 `VNC_BRU_BACKUP_DIR` so one run keeps all backups together. Replaced symlinks
 are reported with their previous target. It does not alter host-specific
 `vnc-HOST` commands.
-The JWM configuration is a host-specific regular copy, not a repository link.
-Installation refreshes `~/.config/vnc-session/jwm.xml` from `~/.jwmrc-vnc` when
-present, otherwise from `~/.jwmrc`; the minimal repository configuration is
-used only when neither file exists. `install-vnc-tools check` detects a stale
-copy.
+### Desktop startup, JWM, and D-Bus
+
+Every managed desktop starts the same way. `vnc-session` sets only the
+per-display parts, then runs the user's desktop startup:
+
+1. A private D-Bus for the display (`dbus-run-session` with a generated
+   `$XDG_RUNTIME_DIR/vnc-session/dbus-N/bus.conf`). Single-instance
+   applications such as Flameshot therefore stay on their own display.
+2. `DISPLAY`, `XAUTHORITY`, `RXVT_SOCKET` (one urxvtd per display), and
+   `VNC_SESSION_JWM_CONFIG`; the session environment file for `vnc-session run`.
+3. `~/.vnc/xstartup` when executable, otherwise the minimal `vnc-xstartup`.
+   The startup loads `~/.profile` (so menu entries get the login `PATH`),
+   merges `~/.Xresources`, starts `urxvtd` and `vncconfig`, and runs
+   `jwm -f "$VNC_SESSION_JWM_CONFIG"`. It must not set up D-Bus or `DISPLAY`.
+
+`~/.jwmrc-vnc` configures every VNC desktop; `~/.jwmrc` belongs only to a real
+local `:0` desktop. Without `~/.jwmrc-vnc` the minimal `jwm-vnc-session.xml` is
+used. The old `~/.config/vnc-session/jwm.xml` copy is no longer read;
+`install-vnc-tools` reports it so it can be removed once desktops started
+before this change are restarted.
+
+The user's single gnome-keyring lives on the per-user bus
+(`$XDG_RUNTIME_DIR/bus`), which a private bus cannot reach. Each private bus
+therefore activates `vnc-secrets-forward` for `org.freedesktop.secrets` and
+`org.gnome.keyring`. It relays Secret Service calls, replies, and signals to
+the user bus, so Chromium, VS Code, Python `keyring`, and `secret-tool` work
+on every desktop. Before relaying an unlock prompt it points the user bus
+activation `DISPLAY` at its own desktop, so the dialog appears where it was
+requested. It needs `python3-gi`; without it keyring calls fail at once
+instead of waiting for the D-Bus timeout.
+
+Start desktops with `vnc-session start`; a desktop started from a terminal
+in another desktop does not inherit that desktop's bus or terminal socket.
 
 `flameshot-vnc` supports any numeric `DISPLAY`. Flameshot uses both D-Bus and a
 Qt local socket for single-instance routing, neither of which is keyed by

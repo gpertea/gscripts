@@ -9,22 +9,20 @@ script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
 readonly script_dir
 readonly machine_id="${VNC_SESSION_MACHINE:-$(hostname -s | tr -cd 'A-Za-z0-9._-')}"
 readonly state_root="${XDG_STATE_HOME:-${HOME}/.local/state}/vnc-session/${machine_id}"
-readonly config_root="${XDG_CONFIG_HOME:-${HOME}/.config}/vnc-session"
+## ~/.jwmrc-vnc configures every VNC desktop; ~/.jwmrc belongs to a real :0
 jwm_config="${VNC_SESSION_JWM_CONFIG:-}"
 if [[ -z "$jwm_config" ]]; then
-  for candidate in \
-    "${config_root}/jwm.xml" \
-    "${HOME}/.jwmrc-vnc" \
-    "${HOME}/.jwmrc" \
-    "${script_dir}/jwm-vnc-session.xml"; do
-    if [[ -r "$candidate" ]]; then
-      jwm_config="$candidate"
-      break
-    fi
-  done
-  jwm_config="${jwm_config:-${config_root}/jwm.xml}"
+  jwm_config="${HOME}/.jwmrc-vnc"
+  [[ -r "$jwm_config" ]] || jwm_config="${script_dir}/jwm-vnc-session.xml"
 fi
 readonly jwm_config
+## one desktop startup for every VNC display; vnc-session adds only the
+## per-display parts (DISPLAY, private D-Bus, RXVT_SOCKET) before running it
+xstartup="${VNC_SESSION_XSTARTUP:-${HOME}/.vnc/xstartup}"
+[[ -x "$xstartup" ]] || xstartup="${script_dir}/vnc-xstartup"
+readonly xstartup
+readonly secrets_forwarder="${script_dir}/vnc-secrets-forward"
+readonly system_session_bus_config="/usr/share/dbus-1/session.conf"
 readonly password_file="${VNC_SESSION_PASSWORD_FILE:-${HOME}/.vnc/passwd}"
 readonly default_geometry="${VNC_SESSION_GEOMETRY:-1820x960}"
 readonly default_listen="loopback"
@@ -71,6 +69,18 @@ check_host() {
     printf 'MISSING JWM configuration: %s\n' "$jwm_config" >&2
     failed=1
   }
+  [[ -x "$xstartup" ]] || {
+    printf 'MISSING desktop startup: %s\n' "$xstartup" >&2
+    failed=1
+  }
+  [[ -r "$system_session_bus_config" ]] || {
+    printf 'MISSING D-Bus session configuration: %s\n' "$system_session_bus_config" >&2
+    failed=1
+  }
+  ## without the forwarder, keyring calls fail fast instead of reaching gnome-keyring
+  if ! python3 -c 'import gi; gi.require_version("Gio", "2.0")' >/dev/null 2>&1; then
+    printf 'WARNING: python3-gi is missing; VNC desktops will have no keyring access\n' >&2
+  fi
   if [[ ! -r "$password_file" ]]; then
     printf 'MISSING VNC password file: %s\n' "$password_file" >&2
     failed=1
@@ -83,7 +93,7 @@ check_host() {
   fi
 
   (( failed == 0 )) || return 1
-  printf 'VNC session host prerequisites: OK\n'
+  printf 'VNC session host prerequisites: OK (startup %s, JWM %s)\n' "$xstartup" "$jwm_config"
 }
 
 validate_name() {
@@ -254,9 +264,10 @@ write_session_environment() {
   mv -f -- "$temporary" "$file"
 }
 
-start_urxvt_daemon() {
+## the desktop startup runs urxvtd after xrdb; this only picks a per-display
+## socket so terminals in different desktops never share a daemon
+prepare_urxvt_socket() {
   local display_number=""
-  local attempt=0
   local socket_dir=""
 
   [[ "$DISPLAY" =~ ^:([0-9]+)(\.[0-9]+)?$ ]] || \
@@ -265,54 +276,72 @@ start_urxvt_daemon() {
   socket_dir="${XDG_RUNTIME_DIR}/vnc-session"
   install -d -m 700 "$socket_dir"
 
-  ## isolate daemon lifetime and clients by VNC display
   export RXVT_SOCKET="${socket_dir}/urxvtd-${display_number}"
   if ss -xlH | awk -v socket="$RXVT_SOCKET" '$5 == socket { found=1 } END { exit !found }'; then
+    ## a daemon left from an earlier desktop on this display keeps serving it
     return
   fi
   if [[ -e "$RXVT_SOCKET" || -S "$RXVT_SOCKET" ]]; then
     ## a stopped display can leave a dead socket during the same boot
     unlink -- "$RXVT_SOCKET"
   fi
-  urxvtd -q -f -o
+}
 
-  for ((attempt = 0; attempt < 20; attempt++)); do
-    if ss -xlH | awk -v socket="$RXVT_SOCKET" '$5 == socket { found=1 } END { exit !found }'; then
-      return
-    fi
-    sleep 0.05
+## each desktop gets a private bus so single-instance applications stay on
+## their own display; the keyring names start the forwarder to the user bus
+write_bus_config() {
+  local display_number="$1"
+  local bus_dir="${XDG_RUNTIME_DIR}/vnc-session/dbus-${display_number}"
+  local name=""
+
+  install -d -m 700 "$bus_dir" "${bus_dir}/services"
+  for name in org.freedesktop.secrets org.gnome.keyring; do
+    printf '[D-BUS Service]\nName=%s\nExec=%s --display :%s\n' \
+      "$name" "$secrets_forwarder" "$display_number" > "${bus_dir}/services/${name}.service"
   done
-  die "urxvtd did not listen on $RXVT_SOCKET"
+  ## services listed first take precedence over the system keyring entries
+  cat > "${bus_dir}/bus.conf" <<EOF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <servicedir>${bus_dir}/services</servicedir>
+  <include>${system_session_bus_config}</include>
+</busconfig>
+EOF
+  printf '%s\n' "${bus_dir}/bus.conf"
 }
 
 run_xstartup() {
   local name="$1"
   local preserved_display="${DISPLAY:?DISPLAY is required}"
   local preserved_xauthority="${XAUTHORITY:-${HOME}/.Xauthority}"
+  local bus_config=""
 
-  if [[ "${VNC_SESSION_PRIVATE_DBUS:-}" != "1" ]]; then
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  ## the marker names its display, so an inherited marker cannot skip the bus
+  if [[ "${VNC_SESSION_PRIVATE_DBUS:-}" != "$preserved_display" ]]; then
     require_command dbus-run-session
+    [[ "$preserved_display" =~ ^:([0-9]+)(\.[0-9]+)?$ ]] || \
+      die "DISPLAY must look like :1 or :2"
+    bus_config="$(write_bus_config "$((10#${BASH_REMATCH[1]}))")"
     exec env \
       -u DBUS_SESSION_BUS_ADDRESS \
       -u DBUS_SESSION_BUS_PID \
       -u DBUS_SESSION_BUS_WINDOWID \
-      VNC_SESSION_PRIVATE_DBUS=1 \
+      VNC_SESSION_PRIVATE_DBUS="$preserved_display" \
       VNC_SESSION_NAME="$name" \
-      dbus-run-session -- "$script_path" __xstartup "$name"
+      dbus-run-session --config-file="$bus_config" \
+      -- "$script_path" __xstartup "$name"
   fi
 
   export DISPLAY="$preserved_display"
   export XAUTHORITY="$preserved_xauthority"
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  export PATH="${HOME}/bin:${PATH}"
-  ## load terminal resources before the daemon opens the display
-  [[ -r "${HOME}/.Xresources" ]] && xrdb -merge "${HOME}/.Xresources"
-  start_urxvt_daemon
+  prepare_urxvt_socket
   write_session_environment "$name"
 
-  xsetroot -solid '#202030'
-  vncconfig -nowin &
-  exec jwm -f "$jwm_config"
+  export VNC_SESSION_NAME="$name"
+  export VNC_SESSION_JWM_CONFIG="$jwm_config"
+  exec "$xstartup"
 }
 
 start_session() {
@@ -405,7 +434,16 @@ start_session() {
     listen_args=(-interface=0.0.0.0 -localhost=no)
   fi
 
-  VNC_SESSION_NAME="$name" vncserver ":${requested_display}" \
+  ## a desktop started from a terminal in another desktop must not inherit
+  ## that desktop's bus, terminal socket, or startup markers
+  env \
+    -u DBUS_SESSION_BUS_ADDRESS \
+    -u DBUS_SESSION_BUS_PID \
+    -u DBUS_SESSION_BUS_WINDOWID \
+    -u VNC_SESSION_PRIVATE_DBUS \
+    -u VNC_SESSION_JWM_CONFIG \
+    -u RXVT_SOCKET \
+    VNC_SESSION_NAME="$name" vncserver ":${requested_display}" \
     "${listen_args[@]}" \
     -geometry "$geometry" \
     -depth 24 \
