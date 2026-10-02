@@ -58,12 +58,20 @@ canonical here. Install the Linux entry points as links; do not maintain copies
 in `~/bin`.
 
 ```bash
+~/gscripts/install-vnc-tools install --dry-run
 ~/gscripts/install-vnc-tools install
 ~/gscripts/install-vnc-tools check
 ```
 
-Installation backs up an existing regular managed file before replacing it
-with a canonical link. It does not alter host-specific `vnc-HOST` commands.
+`install --dry-run` lists every link or copy it would change and changes
+nothing. Installation moves an existing regular managed file (and copies a
+stale `jwm.xml`) into
+`${VNC_BRU_BACKUP_DIR:-~/.local/state/vnc-bru-setup/backups/<run>}/<absolute path>`
+before replacing it, prints each `>>> BACKUP:` path, and appends it to the
+`MANIFEST` file there. `lin-config/browser-use/install-vnc-bru.sh` sets
+`VNC_BRU_BACKUP_DIR` so one run keeps all backups together. Replaced symlinks
+are reported with their previous target. It does not alter host-specific
+`vnc-HOST` commands.
 The JWM configuration is a host-specific regular copy, not a repository link.
 Installation refreshes `~/.config/vnc-session/jwm.xml` from `~/.jwmrc-vnc` when
 present, otherwise from `~/.jwmrc`; the minimal repository configuration is

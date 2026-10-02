@@ -6,16 +6,23 @@ script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
 readonly script_dir
 readonly bin_dir="${HOME}/bin"
 readonly config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/vnc-session"
-backup_tag="pre-gscripts-vnc-$(date +%Y%m%d-%H%M%S)"
-readonly backup_tag
+## shared with install-vnc-bru.sh, which exports VNC_BRU_BACKUP_DIR per run
+backup_dir="${VNC_BRU_BACKUP_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/vnc-bru-setup/backups/$(date +%Y%m%d-%H%M%S)-$$}"
+readonly backup_dir
 readonly -a commands=(
   vnc-get-display vnc-session vnc-self vnc-session-view vnc-host flameshot-vnc
 )
+dry_run=false
 
 usage() {
   printf '%s\n' \
-    "Usage: install-vnc-tools [install|check]" \
-    "Default action: install"
+    "Usage: install-vnc-tools [install [--dry-run]|check]" \
+    "Default action: install" \
+    "" \
+    "install --dry-run  list what would change; change nothing" \
+    "Replaced files are first moved or copied to" \
+    "  \${VNC_BRU_BACKUP_DIR:-~/.local/state/vnc-bru-setup/backups/<run>}/<absolute path>" \
+    "and listed in the MANIFEST file there."
 }
 
 die() {
@@ -47,55 +54,105 @@ check_copy() {
   [[ -f "$target" && ! -L "$target" ]] && cmp -s -- "$source" "$target"
 }
 
+## move or copy TARGET into the backup tree and record it in MANIFEST
+backup_target() {
+  local mode="$1"
+  local target="$2"
+  local destination="${backup_dir}${target}"
+
+  install -d -m 700 "$(dirname -- "$destination")"
+  [[ ! -e "$destination" ]] || destination="${destination}.$(date +%s%N)"
+  if [[ "$mode" == move ]]; then
+    mv -- "$target" "$destination"
+  else
+    cp -a -- "$target" "$destination"
+  fi
+  printf '%s\t%s\n' "$target" "$destination" >> "${backup_dir}/MANIFEST"
+  printf '>>> BACKUP: %s saved as %s\n' "$target" "$destination"
+}
+
 install_copy() {
   local source="$1"
   local target="$2"
-  local backup temporary
+  local temporary
 
   [[ -r "$source" ]] || die "configuration source is missing: $source"
   if check_copy "$source" "$target"; then
     printf 'Current copy %s <- %s\n' "$target" "$source"
     return
   fi
+  if [[ "$dry_run" == true ]]; then
+    if [[ -e "$target" || -L "$target" ]]; then
+      printf 'Would refresh %s from %s (old copy backed up)\n' "$target" "$source"
+    else
+      printf 'Would create %s from %s\n' "$target" "$source"
+    fi
+    return
+  fi
   if [[ -e "$target" && ! -L "$target" ]]; then
-    backup="${target}.${backup_tag}"
-    mv -- "$target" "$backup"
-    printf 'Backed up %s to %s\n' "$target" "$backup"
+    backup_target copy "$target"
   fi
 
   ## replace a prior symlink atomically without modifying its source
   temporary="$(mktemp "${config_dir}/.jwm.xml.XXXXXX")"
   install -m 600 -- "$source" "$temporary"
   mv -Tf -- "$temporary" "$target"
-  printf 'Copied %s <- %s\n' "$target" "$source"
+  printf '>>> CHANGED: %s <- %s\n' "$target" "$source"
 }
 
 install_link() {
   local source="$1"
   local target="$2"
-  local backup
+  local previous=""
 
   [[ -e "$source" ]] || die "canonical source is missing: $source"
+  if check_link "$source" "$target"; then
+    printf 'Current link %s -> %s\n' "$target" "$source"
+    return
+  fi
+  if [[ -L "$target" ]]; then
+    previous="$(readlink -- "$target")"
+  fi
+  if [[ "$dry_run" == true ]]; then
+    if [[ -n "$previous" ]]; then
+      printf 'Would relink %s -> %s (now -> %s)\n' "$target" "$source" "$previous"
+    elif [[ -e "$target" ]]; then
+      printf 'Would replace %s with a link to %s (file backed up)\n' "$target" "$source"
+    else
+      printf 'Would link %s -> %s\n' "$target" "$source"
+    fi
+    return
+  fi
   if [[ -e "$target" && ! -L "$target" ]]; then
-    backup="${target}.${backup_tag}"
-    mv -- "$target" "$backup"
-    printf 'Backed up %s to %s\n' "$target" "$backup"
+    backup_target move "$target"
   fi
   ln -sfn -- "$source" "$target"
-  printf 'Linked %s -> %s\n' "$target" "$source"
+  if [[ -n "$previous" ]]; then
+    printf '>>> CHANGED: relinked %s -> %s (was -> %s)\n' "$target" "$source" "$previous"
+  else
+    printf '>>> CHANGED: linked %s -> %s\n' "$target" "$source"
+  fi
 }
 
 action="${1:-install}"
-[[ $# -le 1 ]] || { usage >&2; exit 1; }
+if [[ $# -eq 2 && "$action" == install && "$2" == --dry-run ]]; then
+  dry_run=true
+elif [[ $# -gt 1 ]]; then
+  usage >&2
+  exit 1
+fi
 case "$action" in
   install)
-    install -d -m 700 "$bin_dir" "$config_dir"
+    if [[ "$dry_run" != true ]]; then
+      install -d -m 700 "$bin_dir" "$config_dir"
+    fi
     for command_name in "${commands[@]}"; do
       install_link "${script_dir}/${command_name}" "${bin_dir}/${command_name}"
     done
     jwm_source="$(preferred_jwm_source)"
     install_copy "$jwm_source" "${config_dir}/jwm.xml"
-    "${bin_dir}/vnc-session" doctor
+    ## doctor only reads host state
+    "${script_dir}/vnc-session" doctor
     ;;
   check)
     failed=0
