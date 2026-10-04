@@ -12,6 +12,7 @@ backup_dir="${VNC_BRU_BACKUP_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/vnc-br
 readonly backup_dir
 readonly -a commands=(
   vnc-get-display vnc-session vnc-self vnc-session-view vnc-host flameshot-vnc
+  vnc-keyring-test
 )
 dry_run=false
 

@@ -54,7 +54,7 @@ Windows. `lin-browser-use` consumes this layer but does not own or install it.
 
 `vnc-get-display`, `vnc-session`, `vnc-self`, `vnc-session-view`, `vnc-lan`,
 `vnc-win-lan`, `vnc-host`, `flameshot-vnc`, `vnc-xstartup`,
-`vnc-secrets-forward`, and `jwm-vnc-session.xml` are
+`vnc-secrets-forward`, `vnc-keyring-test`, and `jwm-vnc-session.xml` are
 canonical here. Install the Linux entry points as links; do not maintain copies
 in `~/bin`.
 
@@ -102,6 +102,21 @@ on every desktop. Before relaying an unlock prompt it points the user bus
 activation `DISPLAY` at its own desktop, so the dialog appears where it was
 requested. It needs `python3-gi`; without it keyring calls fail at once
 instead of waiting for the D-Bus timeout.
+
+Check a desktop's keyring access from any terminal:
+
+```bash
+vnc-keyring-test                 # the desktop this terminal runs in
+vnc-keyring-test :1              # or a running desktop by display or name
+vnc-keyring-test --quick test    # no test item; nothing written to the keyring
+vnc-keyring-test --unlock        # lock, then unlock through the dialog
+```
+
+It checks that a managed desktop has its own bus, that the keyring answers
+within 2 s, and that a forwarder serves the display; by default it also stores,
+reads, and deletes a test item while the keyring is unlocked. `--unlock`
+verifies that the unlock dialog appears on the tested display. A desktop
+started before this design fails with "keyring unreachable"; restart it.
 
 Start desktops with `vnc-session start`; a desktop started from a terminal
 in another desktop does not inherit that desktop's bus or terminal socket.

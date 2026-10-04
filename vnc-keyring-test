@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+## Check that a desktop reaches the user's gnome-keyring through its own bus.
+## Managed VNC desktops have a private D-Bus whose keyring names start
+## vnc-secrets-forward; see the gscripts README, "Desktop startup, JWM, and D-Bus".
+set -euo pipefail
+
+readonly user_bus="unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus"
+readonly secrets=org.freedesktop.secrets
+readonly secrets_path=/org/freedesktop/secrets
+## a healthy forwarded call takes milliseconds; without a forwarder it waits
+## for the 25 s D-Bus activation timeout, so stop waiting after 5 s
+readonly max_ping_ms=2000
+
+mode=default
+target=""
+failed=false
+
+usage() {
+  printf '%s\n' \
+    "Usage: vnc-keyring-test [--quick|--unlock] [NAME|:DISPLAY]" \
+    "" \
+    "Checks the current desktop, or the running desktop NAME or :DISPLAY:" \
+    "  - managed VNC desktops use their own D-Bus, not the user bus" \
+    "  - the keyring answers within ${max_ping_ms} ms, and a forwarder serves the display" \
+    "  - store, read, and delete a test item (skipped while the keyring is locked)" \
+    "" \
+    "--quick   skip the test item; nothing is written to the keyring" \
+    "--unlock  also lock the keyring and unlock it again; the unlock dialog" \
+    "          must appear on the tested display (needs the keyring password)"
+}
+
+pass() { printf 'OK    %s\n' "$*"; }
+fail() { printf 'FAIL  %s\n' "$*"; failed=true; }
+note() { printf '      %s\n' "$*"; }
+die() { printf 'error: %s\n' "$*" >&2; exit 2; }
+
+now_ms() { printf '%s\n' "$(( $(date +%s%N) / 1000000 ))"; }
+
+## run gdbus against the tested desktop's bus
+desktop_gdbus() {
+  DBUS_SESSION_BUS_ADDRESS="$bus" gdbus "$@"
+}
+
+desktop_secret_tool() {
+  DBUS_SESSION_BUS_ADDRESS="$bus" DISPLAY="$display" secret-tool "$@"
+}
+
+## the bus and session of a running desktop come from its window manager
+load_desktop() {
+  local number="$1"
+  local pid="" environment=""
+
+  for pid in $(pgrep -u "$(id -u)" -x jwm || true); do
+    environment="$(tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null || true)"
+    if grep -qx "DISPLAY=:${number}" <<<"$environment"; then
+      bus="$(sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p' <<<"$environment")"
+      session="$(sed -n 's/^VNC_SESSION_NAME=//p' <<<"$environment")"
+      display=":${number}"
+      return 0
+    fi
+  done
+  die "no running JWM desktop on :${number}"
+}
+
+for argument in "$@"; do
+  case "$argument" in
+    --quick) mode=quick ;;
+    --unlock) mode=unlock ;;
+    -h|--help) usage; exit 0 ;;
+    -*) usage >&2; exit 2 ;;
+    *) [[ -z "$target" ]] || die "only one desktop can be tested at a time"; target="$argument" ;;
+  esac
+done
+command -v gdbus >/dev/null || die "gdbus is required (libglib2.0-bin)"
+
+bus=""
+session=""
+display=""
+if [[ -n "$target" ]]; then
+  if [[ "$target" =~ ^:?([0-9]+)$ ]]; then
+    load_desktop "$((10#${BASH_REMATCH[1]}))"
+  else
+    command -v vnc-session >/dev/null || die "vnc-session is required to resolve $target"
+    load_desktop "$(vnc-session display "$target")"
+  fi
+else
+  bus="${DBUS_SESSION_BUS_ADDRESS:-}"
+  session="${VNC_SESSION_NAME:-}"
+  display="${DISPLAY:-}"
+  [[ "$display" =~ ^:[0-9]+ ]] || die "DISPLAY is not set; name a desktop to test"
+fi
+[[ -n "$bus" ]] || die "desktop $display has no D-Bus session"
+printf 'Keyring test for %s%s\n' "$display" "${session:+ (VNC session $session)}"
+
+## 1. a managed desktop must not share the user bus with other desktops
+if [[ -n "$session" ]]; then
+  if [[ "${bus%%,*}" == "${user_bus%%,*}" ]]; then
+    fail "private D-Bus: $display uses the user bus; restart it with vnc-session"
+  else
+    pass "private D-Bus: ${bus%%,*}"
+  fi
+else
+  note "not a managed VNC desktop; keyring is reached on ${bus%%,*}"
+fi
+
+## 2. the keyring must answer fast; a 25 s wait means no forwarder on this bus
+start="$(now_ms)"
+if desktop_gdbus call --session --timeout 5 --dest "$secrets" --object-path "$secrets_path" \
+    --method org.freedesktop.DBus.Peer.Ping >/dev/null 2>&1; then
+  elapsed=$(( $(now_ms) - start ))
+  if (( elapsed <= max_ping_ms )); then
+    pass "keyring answers in ${elapsed} ms"
+  else
+    fail "keyring answered after ${elapsed} ms (limit ${max_ping_ms} ms); restart $display with vnc-session"
+  fi
+else
+  fail "keyring unreachable after $(( $(now_ms) - start )) ms; restart $display with vnc-session"
+fi
+
+if [[ -n "$session" ]]; then
+  if pgrep -u "$(id -u)" -f "vnc-secrets-forward --display ${display}\$" >/dev/null; then
+    pass "forwarder serves $display"
+  else
+    fail "no vnc-secrets-forward for $display"
+  fi
+fi
+
+if [[ "$mode" == quick || "$failed" == true ]]; then
+  [[ "$failed" == false ]] || exit 1
+  exit 0
+fi
+
+command -v secret-tool >/dev/null || die "secret-tool is required (libsecret-tools)"
+## Properties.Get returns (<value>,); keep only the value
+default_collection="$(desktop_gdbus call --session --timeout 10 --dest "$secrets" \
+  --object-path "$secrets_path" --method org.freedesktop.Secret.Service.ReadAlias default \
+  | sed -n "s/^(objectpath '\(.*\)',)$/\1/p")"
+[[ -n "$default_collection" && "$default_collection" != / ]] || die "the keyring has no default collection"
+locked="$(desktop_gdbus call --session --timeout 10 --dest "$secrets" \
+  --object-path "$default_collection" --method org.freedesktop.DBus.Properties.Get \
+  org.freedesktop.Secret.Collection Locked)"
+test_key="vnc-keyring-test"
+test_value="ok-${display}-$$"
+
+## 3. a full store, read, delete through the forwarder
+if [[ "$locked" == "(<true>,)" && "$mode" != unlock ]]; then
+  note "keyring is locked; skipped the test item (use --unlock to unlock it)"
+else
+  [[ "$locked" != "(<true>,)" ]] || note "keyring is locked; storing the test item asks for its password on $display"
+  start="$(now_ms)"
+  if ! printf '%s' "$test_value" | \
+      desktop_secret_tool store --label="vnc-keyring-test $display" "$test_key" "${display#:}"; then
+    fail "could not store the test item"
+  elif [[ "$(desktop_secret_tool lookup "$test_key" "${display#:}" || true)" == "$test_value" ]]; then
+    pass "test item stored and read back in $(( $(now_ms) - start )) ms"
+  else
+    fail "test item read back a different value"
+  fi
+  if [[ "$mode" != unlock ]]; then
+    desktop_secret_tool clear "$test_key" "${display#:}"
+  fi
+fi
+
+## 4. the unlock dialog must appear on the tested display
+if [[ "$mode" == unlock && "$failed" == false ]]; then
+  desktop_gdbus call --session --timeout 10 --dest "$secrets" --object-path "$secrets_path" \
+    --method org.freedesktop.Secret.Service.Lock "['$default_collection']" >/dev/null
+  note "keyring locked; the unlock dialog should appear on $display within a second"
+  start="$(now_ms)"
+  value="$(desktop_secret_tool lookup "$test_key" "${display#:}" || true)"
+  if [[ "$value" == "$test_value" ]]; then
+    pass "unlocked through the dialog ($(( $(now_ms) - start )) ms including typing)"
+  else
+    fail "unlock did not complete (dialog dismissed, or it appeared on another display)"
+  fi
+  desktop_secret_tool clear "$test_key" "${display#:}" || true
+fi
+
+[[ "$failed" == false ]] || exit 1
