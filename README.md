@@ -20,6 +20,26 @@ PowerShell on Windows, with a five-second request timeout. An unavailable
 check still permits launching the installed CLI. When cody handles the
 check, it disables Codex's duplicate startup update prompt for that launch.
 
+On Windows/MSYS2, `cody` prefers the standalone CLI at
+`%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe` and updates it with
+OpenAI's Windows installer. The npm executable on PATH is only a fallback;
+its version can differ from the CLI that `cody` launches. A successful check
+is silent when the selected CLI is current. `--help` and `--version` skip
+the automatic check, as do launches without terminal stdin and stdout.
+
+Windows CLI launches enable unified execution for direct MSYS2 Bash selection,
+disable login-shell execution, select inline mode for terminal scrollback,
+and bind F10 to return from async questions. Interactive mintty launches set
+`FORCE_COLOR=3` when neither `NO_COLOR` nor `FORCE_COLOR` is explicitly set.
+The native CLI is executed directly, including in mintty, without winpty.
+The Codex keymap includes `ctrl-enter` as a newline alias because Windows
+ConPTY represents LF input as Ctrl+Enter in console records. The configuration
+and input-path evidence are documented in `win-config/codex-cli/README.md`.
+These overrides are passed to the CLI, rather than written to desktop settings.
+The CLI inherits the MSYS2 tool PATH. Only the Windows installer receives a
+Windows-first PATH for native `tar`; native PowerShell calls clear inherited
+`PSModulePath` for their own process.
+
 ```bash
 cody                       ## check, ask to update if newer, then launch
 cody --noupdate             ## skip both wrapper and Codex startup checks

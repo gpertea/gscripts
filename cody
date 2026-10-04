@@ -8,21 +8,18 @@ case "$(uname -s)" in
   Linux) is_linux=true ;;
 esac
 
-# Codex's built-in updater inherits this environment. Its Windows installer
-# passes Windows paths to tar, so prefer native Windows tools in this process
-# and its children. The invoking MSYS2 shell keeps its original environment.
+# Resolve native PowerShell without putting Windows tools ahead of MSYS2 tools
+# in agent command shells. The installer receives its own Windows-first PATH.
 if $is_windows_msys; then
   windows_system32="$(cygpath -u "${SystemRoot:-${SYSTEMROOT:-C:\\Windows}}")/System32"
-  export PATH="$windows_system32:$windows_system32/WindowsPowerShell/v1.0:$PATH"
-  # Windows PowerShell must discover its own modules, not PowerShell 7's.
-  unset PSModulePath
+  windows_powershell="$windows_system32/WindowsPowerShell/v1.0/powershell.exe"
 fi
 
 windows_codex_bin() {
   local local_app_data="${LOCALAPPDATA:-}"
 
-  if [[ -z "$local_app_data" ]] && command -v powershell.exe >/dev/null 2>&1; then
-    local_app_data="$(powershell.exe -NoLogo -NoProfile -Command \
+  if [[ -z "$local_app_data" && -x "$windows_powershell" ]]; then
+    local_app_data="$(env -u PSModulePath "$windows_powershell" -NoLogo -NoProfile -Command \
       '[Environment]::GetFolderPath("LocalApplicationData")' | tr -d '\r')"
   fi
   if [[ -n "$local_app_data" ]] && command -v cygpath >/dev/null 2>&1; then
@@ -113,13 +110,14 @@ print("Daemon package:", info.get("managedCodexVersion") or "not installed/unkno
 update_codex() {
   printf 'Updating Codex CLI...\n'
   if $is_windows_msys; then
-    if ! command -v powershell.exe >/dev/null 2>&1; then
+    if [[ ! -x "$windows_powershell" ]]; then
       printf 'cody: powershell.exe is required to update Codex on Windows\n' >&2
       exit 127
     fi
 
-    ## use the same Windows environment as Codex's built-in updater
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \
+    ## The Windows installer requires native tar and PowerShell 5.1 modules.
+    env -u PSModulePath PATH="$windows_system32:$windows_system32/WindowsPowerShell/v1.0:$PATH" \
+      "$windows_powershell" -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \
       '$ErrorActionPreference = "Stop"; $env:CODEX_NON_INTERACTIVE = "1"; Invoke-RestMethod "https://chatgpt.com/codex/install.ps1" | Invoke-Expression' || return "$?"
   else
     if ! command -v npm >/dev/null 2>&1; then
@@ -197,9 +195,9 @@ fi
 checked_updates=false
 if ! $skip_update && [[ -t 0 && -t 1 && "${1:-}" != --help && "${1:-}" != --version ]]; then
   latest_version=''
-  if $is_windows_msys && command -v powershell.exe >/dev/null 2>&1; then
+  if $is_windows_msys && [[ -x "$windows_powershell" ]]; then
     checked_updates=true
-    latest_version="$(powershell.exe -NoLogo -NoProfile -Command \
+    latest_version="$(env -u PSModulePath "$windows_powershell" -NoLogo -NoProfile -Command \
       '$ErrorActionPreference = "Stop"; (Invoke-RestMethod -TimeoutSec 5 "https://registry.npmjs.org/@openai%2fcodex/latest").version' 2>/dev/null | tr -d '\r')" || true
   elif command -v npm >/dev/null 2>&1; then
     checked_updates=true
@@ -221,6 +219,16 @@ fi
 
 ## opt into the OpenAI documentation MCP for this launch only
 declare -a codex_args=(--yolo)
+if $is_windows_msys; then
+  ## Expose direct MSYS2 Bash selection without changing desktop settings.
+  codex_args+=(--no-alt-screen -c 'features.unified_exec=true' -c 'allow_login_shell=false'
+    -c 'tui.keymap.chat.prompt_stack_back=["f10","alt-down"]')
+  ## Mintty supports truecolor; avoid a native Windows TTY detection downgrade.
+  ## Preserve explicit color settings and leave redirected output alone.
+  if [[ ${TERM_PROGRAM:-} == mintty && -t 1 && -z ${NO_COLOR+x} && -z ${FORCE_COLOR+x} ]]; then
+    export FORCE_COLOR=3
+  fi
+fi
 if $skip_update || $checked_updates; then
   ## cody owns this launch's update prompt; --noupdate disables both checks
   codex_args+=(-c 'check_for_update_on_startup=false')
