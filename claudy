@@ -1,0 +1,92 @@
+#!/bin/bash
+set -euo pipefail
+
+## Launch Claude Code from the native per-user install (~/.local/bin/claude),
+## installing or updating it first; never use a site-wide (e.g. Lmod) claude.
+claude_bin="$HOME/.local/bin/claude"
+release_url="https://downloads.claude.ai/claude-code-releases"
+
+## on JHPCE, keep npm/npx available for MCP servers, but the node module also
+## ships an old, non-upgradable claude, so the user bin dir must come first
+if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
+  module load node
+fi
+export PATH="$HOME/.local/bin:$PATH"
+
+## pass the local X display to browser tooling; no display server is involved
+if [[ "$(uname -s)" == Linux && "${DISPLAY:-}" =~ ^:([0-9]+)(\.[0-9]+)?$ ]]; then
+  export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+  export LIN_BROWSER_USE_AUTH_DISPLAY=":${BASH_REMATCH[1]}"
+fi
+
+claude_version() {
+  "$claude_bin" --version 2>/dev/null | awk '{print $1}' || true
+}
+
+latest_version() {
+  ## bound offline delays; failure leaves the installed CLI available
+  curl -fsS --max-time 5 "$release_url/latest" 2>/dev/null | tr -d '[:space:]'
+}
+
+newer_version() {
+  local -a latest_parts installed_parts
+  local index
+  ## compare stable release numbers without downgrading a newer local CLI
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$2" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  IFS=. read -r -a latest_parts <<< "$1"
+  IFS=. read -r -a installed_parts <<< "$2"
+  for index in 0 1 2; do
+    ((10#${latest_parts[index]} <= 10#${installed_parts[index]})) || return 0
+    ((10#${latest_parts[index]} >= 10#${installed_parts[index]})) || return 1
+  done
+  return 1
+}
+
+install_claude() {
+  printf 'Installing Claude Code into %s ...\n' "$HOME/.local"
+  command -v curl >/dev/null 2>&1 || { printf 'claudy: curl is required to install Claude Code\n' >&2; exit 127; }
+  curl -fsSL https://claude.ai/install.sh | bash
+  [[ -x "$claude_bin" ]] || { printf 'claudy: install did not create %s\n' "$claude_bin" >&2; exit 127; }
+}
+
+update_claude() {
+  local before after
+  before="$(claude_version)"
+  printf 'Updating Claude Code %s ...\n' "$before"
+  "$claude_bin" update || return "$?"
+  after="$(claude_version)"
+  printf 'Claude Code: %s -> %s\n' "$before" "$after"
+}
+
+skip_update=false
+update_only=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --noupdate) skip_update=true ;;
+    --update) update_only=true ;;
+    *) break ;;
+  esac
+  shift
+done
+if $skip_update && $update_only; then
+  printf 'claudy: --noupdate and --update cannot be combined\n' >&2
+  exit 2
+fi
+
+if [[ ! -x "$claude_bin" ]]; then
+  install_claude
+elif $update_only; then
+  update_claude
+elif ! $skip_update && [[ "${1:-}" != --help && "${1:-}" != --version ]]; then
+  installed="$(claude_version)"
+  latest="$(latest_version)" || true
+  if [[ -z "$latest" ]]; then
+    printf 'claudy: update check unavailable; launching installed CLI %s\n' "$installed" >&2
+  elif newer_version "$latest" "$installed"; then
+    ## running sessions keep their own version; a failed update is not fatal
+    update_claude || printf 'claudy: update failed; launching installed CLI %s\n' "$installed" >&2
+  fi
+fi
+$update_only && exit 0
+
+exec "$claude_bin" --dangerously-skip-permissions "$@"

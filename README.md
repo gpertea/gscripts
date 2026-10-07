@@ -433,3 +433,25 @@ On macOS, update the `gscripts` checkout and continue using `vnc-lan`. On
 Windows/MSYS2, update the checkout and continue using `vnc-win-lan`. Existing
 SSH aliases, proxy jumps, VNC password files, and host routing remain external
 configuration.
+
+## Claude Code sessions
+
+`claudy` launches Claude Code with `--dangerously-skip-permissions` on every
+host. It always runs the native per-user install at `~/.local/bin/claude`,
+installing it with `https://claude.ai/install.sh` when missing. On JHPCE
+compute and transfer nodes it loads the node module (for npm/npx MCP servers)
+and then puts `~/.local/bin` first on PATH, because that module ships an old
+claude that cannot be upgraded in place. There is no display server; with a
+local numeric `DISPLAY` it only exports `LIN_BROWSER_USE_AUTH_DISPLAY`.
+
+Launches compare the installed version with the `latest` release channel
+(five-second timeout) and run `claude update` without asking when it is
+newer. A failed or unavailable check still launches the installed CLI.
+`--help` and `--version` skip the check. Windows/MSYS2 is not supported.
+
+```bash
+claudy                     ## install if missing, update if newer, then launch
+claudy --noupdate          ## skip the wrapper update check
+claudy --update            ## update explicitly, report versions, then exit
+claudy -c                  ## other arguments pass through to claude
+```
