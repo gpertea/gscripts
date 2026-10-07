@@ -58,6 +58,19 @@ grep -Fxq 'FORCE_COLOR=' "$fixture/calls.log"
 grep -Fxq 'CLICOLOR_FORCE=' "$fixture/calls.log"
 printf '%s\n' 'PASS: display pin and terminal colors are preserved'
 
+## startup resume filtering must not change plain launches or explicit choices
+DISPLAY=:42 "$fixture/cody" resume
+grep -Fxq "manager=<local><--><--yolo><--cd><$PWD><resume>" "$fixture/manager.log"
+DISPLAY=:42 "$fixture/cody" --attach :42 resume
+grep -Fxq "manager=<attach><--display><:42><--><--yolo><--cd><$PWD><resume>" "$fixture/manager.log"
+for override in '--all' '--cd=/tmp/another-project' '-C/tmp/another-project'; do
+  DISPLAY=:42 "$fixture/cody" resume "$override"
+  grep -Fxq "args=<--yolo><resume><$override>" "$fixture/calls.log"
+done
+DISPLAY=:42 "$fixture/cody" resume --cd /tmp/another-project
+grep -Fxq 'args=<--yolo><resume><--cd></tmp/another-project>' "$fixture/calls.log"
+printf '%s\n' 'PASS: resume scope defaults to cwd and preserves explicit overrides'
+
 ## the terminal-only wrapper must work even with no display manager installed
 rm "$fixture/cody-display" "$fixture/manager.log"
 for display_state in unset empty; do

@@ -288,6 +288,19 @@ if $use_docs; then
 fi
 
 if $use_display_server; then
+  ## remote startup pickers need an explicit cwd to filter by project
+  if [[ "${1:-}" == resume ]]; then
+    resume_here=true
+    for arg in "$@"; do
+      [[ "$arg" != -- ]] || break
+      case "$arg" in
+        -C*|--cd|--cd=*|--all) resume_here=false; break ;;
+      esac
+    done
+    if $resume_here; then
+      codex_args+=(--cd "$PWD")
+    fi
+  fi
   ## keep the manager beside cody so the gscripts checkout remains portable
   display_manager="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cody-display"
   [[ -x "$display_manager" ]] || { printf 'cody: missing display manager: %s\n' "$display_manager" >&2; exit 127; }
