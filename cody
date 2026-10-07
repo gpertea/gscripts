@@ -268,7 +268,26 @@ if $is_linux; then
 fi
 
 ## configuration overrides apply to the shared server on its first launch
-declare -a codex_args=(--yolo)
+codex_command=''
+if $use_display_server; then
+  ## find the subcommand without mistaking an option value for a command
+  skip_value=false
+  for arg in "$@"; do
+    if $skip_value; then skip_value=false; continue; fi
+    case "$arg" in
+      --) break ;;
+      -c|--config|--enable|--disable|-m|--model|-i|--image|-C|--cd|-p|--profile|-s|--sandbox|-a|--ask-for-approval|--add-dir|--local-provider|--remote|--remote-auth-token-env)
+        skip_value=true ;;
+      -*) ;;
+      *) codex_command="$arg"; break ;;
+    esac
+  done
+fi
+declare -a codex_args=()
+## remote resumes and forks must inherit saved permissions instead of --yolo
+if ! $use_display_server || [[ "$codex_command" != resume && "$codex_command" != fork ]]; then
+  codex_args+=(--yolo)
+fi
 if $is_windows_msys; then
   ## Expose direct MSYS2 Bash selection without changing desktop settings.
   codex_args+=(--no-alt-screen -c 'features.unified_exec=true' -c 'allow_login_shell=false'
@@ -289,7 +308,7 @@ fi
 
 if $use_display_server; then
   ## remote startup pickers need an explicit cwd to filter by project
-  if [[ "${1:-}" == resume ]]; then
+  if [[ "$codex_command" == resume ]]; then
     resume_here=true
     for arg in "$@"; do
       [[ "$arg" != -- ]] || break
