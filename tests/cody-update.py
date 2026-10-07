@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import shutil
 import subprocess
 import tempfile
 import time
@@ -22,6 +23,10 @@ class CodyUpdateTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
+        ## keep the display manager absent to verify the standalone wrapper path
+        self.cody = self.root / "cody"
+        self.cody.write_bytes((REPO / "cody").read_bytes())
+        self.cody.chmod(0o755)
         self.log = self.root / "calls"
         self.version = self.root / "version"
         self.version.write_text("0.159.2")
@@ -35,6 +40,8 @@ class CodyUpdateTests(unittest.TestCase):
             CODY_TEST_LATEST="0.159.3",
         )
         self.environment.pop("DISPLAY", None)
+        self.environment["HOSTNAME"] = "cody-test"
+        self.write_executable("module", '#!/bin/bash\nprintf "module %s\\n" "$*" >> "$CODY_TEST_ROOT/calls"\n')
         self.write_executable("pgrep", "#!/bin/bash\nexit 1\n")
         self.write_executable("codex", r'''#!/bin/bash
 set -eu
@@ -42,6 +49,7 @@ printf 'codex %s\n' "$*" >> "$CODY_TEST_ROOT/calls"
 if [[ "${1:-}" == --version ]]; then
   printf 'codex-cli %s\n' "$(cat "$CODY_TEST_ROOT/version")"
 elif [[ "$*" == 'app-server daemon version' ]]; then
+  if [[ "${CODY_TEST_NO_DAEMON:-0}" == 1 ]]; then exit 1; fi
   printf '{"status":"%s","appServerVersion":"%s","managedCodexVersion":"%s"}\n' \
     "$(cat "$CODY_TEST_ROOT/server-status")" \
     "$(cat "$CODY_TEST_ROOT/server-version")" \
@@ -80,7 +88,7 @@ esac
     def run_cody(self, arguments=(), answers=b"", interactive=True):
         if not interactive:
             result = subprocess.run(
-                [str(REPO / "cody"), *arguments], env=self.environment,
+                [str(self.cody), *arguments], env=self.environment,
                 input=answers, capture_output=True, timeout=10,
             )
             return result.returncode, (result.stdout + result.stderr).decode()
@@ -88,7 +96,7 @@ esac
         ## give Bash a real terminal without invoking installed Codex or npm
         master, slave = pty.openpty()
         process = subprocess.Popen(
-            [str(REPO / "cody"), *arguments], env=self.environment,
+            [str(self.cody), *arguments], env=self.environment,
             stdin=slave, stdout=slave, stderr=slave,
         )
         os.close(slave)
@@ -137,6 +145,8 @@ esac
         self.assertIn("Installed CLI: 0.159.3", output)
         self.assertIn("Running app-server: 0.155.1", output)
         self.assertIn("Running app-server: 0.159.3", output)
+        self.assertNotIn("Display servers", output)
+        self.assertNotIn("--remote", calls)
 
     def test_restart_declined(self):
         code, output = self.run_cody(answers=b"y\nn\n")
@@ -166,8 +176,77 @@ esac
         (self.root / "server-status").write_text("stopped")
         code, output = self.run_cody(answers=b"y\n")
         self.assertEqual(code, 0, output)
-        self.assertIn("No running app-server to restart", output)
+        self.assertIn("No running default app-server to restart", output)
         self.assertNotIn("codex app-server daemon start", self.calls())
+
+    def test_unreachable_daemon_still_launches_after_update(self):
+        self.environment["CODY_TEST_NO_DAEMON"] = "1"
+        code, output = self.run_cody(answers=b"y\n")
+        self.assertEqual(code, 0, output)
+        self.assertIn("no reachable default daemon", output)
+        self.assertIn("LAUNCH --yolo", output)
+        self.assertNotIn("codex app-server daemon start", self.calls())
+        self.assertNotIn("Display servers", output)
+
+    def test_jhpce_displayless_update_and_launch(self):
+        for hostname, display in (("transfer-01.cm.cluster", None), ("compute-001", "")):
+            with self.subTest(hostname=hostname, display=display):
+                self.log.unlink(missing_ok=True)
+                self.version.write_text("0.159.2")
+                (self.root / "server-status").write_text("stopped")
+                self.environment["HOSTNAME"] = hostname
+                if display is None:
+                    self.environment.pop("DISPLAY", None)
+                else:
+                    self.environment["DISPLAY"] = display
+                ## verify the user CLI wins over the module's CLI on JHPCE
+                user_bin = self.root / ".local" / "bin"
+                user_bin.mkdir(parents=True, exist_ok=True)
+                (user_bin / "codex").unlink(missing_ok=True)
+                (user_bin / "codex").symlink_to(self.bin / "codex")
+                code, output = self.run_cody(("resume",), answers=b"y\n")
+                self.assertEqual(code, 0, output)
+                calls = self.calls()
+                self.assertLess(calls.index("module load node"), calls.index("npm view"))
+                self.assertLess(calls.index("npm install"), calls.index("codex --yolo"))
+                self.assertIn(f"({user_bin}/codex)", output)
+                self.assertIn("LAUNCH --yolo -c check_for_update_on_startup=false resume", output)
+                self.assertNotIn("--remote", calls)
+                self.assertNotIn("codex app-server daemon start", calls)
+                self.assertNotIn("Display servers", output)
+
+    def test_jhpce_recreates_node_local_helpers(self):
+        local_helpers = Path(tempfile.mkdtemp(prefix="cody-codex-arg0-"))
+        self.addCleanup(shutil.rmtree, local_helpers, ignore_errors=True)
+        local_helpers.rmdir()
+        ## supply a unique test UID so the real user's /tmp directory is untouched
+        test_uid = local_helpers.name.removeprefix("cody-codex-arg0-")
+        self.write_executable("id", f"#!/bin/bash\nprintf '%s\\n' '{test_uid}'\n")
+        home_tmp = self.root / ".codex" / "tmp"
+        home_tmp.mkdir(parents=True)
+        (home_tmp / "arg0").symlink_to(local_helpers)
+        self.environment["HOSTNAME"] = "transfer-01.cm.cluster"
+        code, output = self.run_cody(("--noupdate",))
+        self.assertEqual(code, 0, output)
+        self.assertTrue(local_helpers.is_dir())
+        self.assertEqual(local_helpers.stat().st_mode & 0o777, 0o700)
+        self.assertIn("LAUNCH --yolo", output)
+
+    def test_jhpce_rejects_symlinked_local_helpers(self):
+        local_helpers = Path(tempfile.mkdtemp(prefix="cody-codex-arg0-"))
+        local_helpers.rmdir()
+        local_helpers.symlink_to(self.root, target_is_directory=True)
+        self.addCleanup(local_helpers.unlink)
+        test_uid = local_helpers.name.removeprefix("cody-codex-arg0-")
+        self.write_executable("id", f"#!/bin/bash\nprintf '%s\\n' '{test_uid}'\n")
+        home_tmp = self.root / ".codex" / "tmp"
+        home_tmp.mkdir(parents=True)
+        (home_tmp / "arg0").symlink_to(local_helpers)
+        self.environment["HOSTNAME"] = "compute-001"
+        code, output = self.run_cody(("--noupdate",))
+        self.assertEqual(code, 1, output)
+        self.assertIn("expected a private helper directory", output)
+        self.assertNotIn("LAUNCH", output)
 
     def test_failed_cli_update_leaves_server_alone(self):
         self.environment["CODY_TEST_UPDATE_FAIL"] = "1"

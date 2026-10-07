@@ -6,6 +6,18 @@ fixture="$(mktemp -d)"
 trap 'rm -rf -- "$fixture"' EXIT
 
 mkdir -p "$fixture/bin" "$fixture/home" "$fixture/runtime"
+## isolate routing checks from real X sessions and app-servers
+cp "$repo/cody" "$fixture/cody"
+cat > "$fixture/cody-display" <<'SH'
+#!/usr/bin/env bash
+printf 'manager=' > "$CODY_TEST_MANAGER_LOG"
+printf '<%s>' "$@" >> "$CODY_TEST_MANAGER_LOG"
+printf '\n' >> "$CODY_TEST_MANAGER_LOG"
+while [[ "$1" != -- ]]; do shift; done
+shift
+exec codex "$@"
+SH
+chmod +x "$fixture/cody-display"
 cat > "$fixture/bin/codex" <<'SH'
 #!/usr/bin/env bash
 {
@@ -15,6 +27,8 @@ cat > "$fixture/bin/codex" <<'SH'
   printf 'DISPLAY=%s\n' "${DISPLAY-}"
   printf 'XAUTHORITY=%s\n' "${XAUTHORITY-}"
   printf 'PIN=%s\n' "${LIN_BROWSER_USE_AUTH_DISPLAY-}"
+  printf 'XDG_RUNTIME_DIR=%s\n' "${XDG_RUNTIME_DIR-}"
+  printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "${DBUS_SESSION_BUS_ADDRESS-}"
   printf 'TERM=%s\n' "${TERM-}"
   printf 'COLORTERM=%s\n' "${COLORTERM-}"
   printf 'NO_COLOR=%s\n' "${NO_COLOR-}"
@@ -28,9 +42,11 @@ export PATH="$fixture/bin:$PATH"
 export HOME="$fixture/home"
 export XDG_RUNTIME_DIR="$fixture/runtime"
 export CODY_TEST_LOG="$fixture/calls.log"
+export CODY_TEST_MANAGER_LOG="$fixture/manager.log"
 
 DISPLAY=:42.0 TERM=xterm-256color COLORTERM=rxvt-xpm NO_COLOR=1 \
-  env -u XAUTHORITY -u FORCE_COLOR -u CLICOLOR_FORCE "$repo/cody" first
+  env -u XAUTHORITY -u FORCE_COLOR -u CLICOLOR_FORCE "$fixture/cody" first
+grep -Fxq 'manager=<local><--><--yolo><first>' "$fixture/manager.log"
 grep -Fxq 'args=<--yolo><first>' "$fixture/calls.log"
 grep -Fxq 'DISPLAY=:42.0' "$fixture/calls.log"
 grep -Fxq "XAUTHORITY=$fixture/home/.Xauthority" "$fixture/calls.log"
@@ -42,7 +58,17 @@ grep -Fxq 'FORCE_COLOR=' "$fixture/calls.log"
 grep -Fxq 'CLICOLOR_FORCE=' "$fixture/calls.log"
 printf '%s\n' 'PASS: display pin and terminal colors are preserved'
 
-env -u DISPLAY -u LIN_BROWSER_USE_AUTH_DISPLAY "$repo/cody" terminal-only
-grep -Fxq 'args=<--yolo><terminal-only>' "$fixture/calls.log"
-grep -Fxq 'PIN=' "$fixture/calls.log"
-printf '%s\n' 'PASS: display-less launches remain local and unpinned'
+## the terminal-only wrapper must work even with no display manager installed
+rm "$fixture/cody-display" "$fixture/manager.log"
+for display_state in unset empty; do
+  display_env=(-u DISPLAY)
+  [[ "$display_state" != empty ]] || display_env=(DISPLAY=)
+  env -u LIN_BROWSER_USE_AUTH_DISPLAY -u XAUTHORITY -u XDG_RUNTIME_DIR \
+    -u DBUS_SESSION_BUS_ADDRESS "${display_env[@]}" "$fixture/cody" terminal-only
+  grep -Fxq 'args=<--yolo><terminal-only>' "$fixture/calls.log"
+  for key in DISPLAY PIN XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS; do
+    grep -Fxq "$key=" "$fixture/calls.log"
+  done
+done
+[[ ! -e "$fixture/manager.log" ]]
+printf '%s\n' 'PASS: unset and empty DISPLAY launch directly without desktop setup or manager'

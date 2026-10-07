@@ -48,10 +48,26 @@ resolve_codex_bin() {
 if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
   module load node
   export PATH=$HOME/.local/bin:$PATH
+
+  ## recreate the node-local helper directory when home has the NFS workaround
+  codex_arg0_root="${CODEX_HOME:-$HOME/.codex}/tmp/arg0"
+  codex_arg0_local="/tmp/cody-codex-arg0-$(id -u)"
+  if [[ -L "$codex_arg0_root" && "$(readlink "$codex_arg0_root")" == "$codex_arg0_local" ]]; then
+    if [[ ! -e "$codex_arg0_local" && ! -L "$codex_arg0_local" ]]; then
+      (umask 077; mkdir -- "$codex_arg0_local")
+    fi
+    [[ -d "$codex_arg0_local" && ! -L "$codex_arg0_local" && -O "$codex_arg0_local" ]] || {
+      printf 'cody: expected a private helper directory owned by this user: %s\n' "$codex_arg0_local" >&2
+      exit 1
+    }
+    chmod 700 -- "$codex_arg0_local"
+  fi
 fi
 
-## Pin browser tools while preserving the terminal's native color settings.
+## without a local display, keep the regular CLI and default daemon behavior
+has_local_display=false
 if $is_linux && [[ "${DISPLAY:-}" =~ ^:([0-9]+)(\.[0-9]+)?$ ]]; then
+  has_local_display=true
   display_number="${BASH_REMATCH[1]}"
   export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -89,7 +105,7 @@ print("Daemon package:", info.get("managedCodexVersion") or "not installed/unkno
       daemon_running=true
     fi
   else
-    printf 'App-server status: unavailable (daemon commands may be unsupported)\n'
+    printf 'App-server status: unavailable (no reachable default daemon)\n'
   fi
 
   if $is_linux && command -v pgrep >/dev/null 2>&1; then
@@ -148,7 +164,7 @@ update_codex() {
   else
     printf 'No running default app-server to restart; no server was started.\n'
   fi
-  if $is_linux; then
+  if $has_local_display; then
     printf 'Display servers retain their running version; use cody --server-stop when ready to replace one.\n'
   fi
 }
@@ -240,7 +256,7 @@ fi
 ## display clients share one backend; administrative CLI commands pass through
 use_display_server=false
 if $is_linux; then
-  if [[ "$display_action" != local || "${DISPLAY:-}" =~ ^:[0-9]+(\.[0-9]+)?$ ]]; then
+  if [[ "$display_action" != local ]] || $has_local_display; then
     use_display_server=true
     if [[ "$display_action" == local ]]; then
       case "${1:-}" in

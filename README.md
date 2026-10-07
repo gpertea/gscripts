@@ -8,9 +8,21 @@ It preserves the terminal's existing `TERM`, `COLORTERM`, and color-control
 variables, while exporting the matching `LIN_BROWSER_USE_AUTH_DISPLAY` for
 browser tools. It also supplies missing Xauthority and runtime bus defaults.
 
-`cody` starts the normal local Codex CLI. It does not create or connect to a
-custom app-server, so new and resumed sessions have the same behavior as
-starting `codex` directly.
+With a local numeric display, `cody` starts or reuses one app-server per live
+X/VNC session. `cody --attach :2` attaches to an existing display server;
+`--server-status`, `--server-endpoint`, and `--server-stop` manage it.
+
+With `DISPLAY` unset or empty, `cody` starts the regular Codex CLI after its
+usual update check. This path uses normal default app-server behavior and
+requires no display manager, VNC, Xauthority, or desktop runtime setup. On
+JHPCE compute and transfer nodes, it still loads the node module and puts
+`~/.local/bin` first on PATH. Display-server reminders are omitted.
+
+JHPCE's NFS home can prevent Codex from removing temporary helpers while
+their lock files are open. For the installed workaround,
+`~/.codex/tmp/arg0` links to `/tmp/cody-codex-arg0-UID` (the numeric user ID).
+`cody` recreates this private directory on each node when that link is present.
+`CODEX_HOME`, settings, authentication, and session history stay in home.
 
 ### Codex updates
 
