@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+program="$(basename -- "$0")"
+case "${OSTYPE:-$(uname -s)}" in
+  msys*|cygwin*|MINGW*|MSYS*|CYGWIN*) default_transport="--direct" ;;
+  *) default_transport="--tunnel" ;;
+esac
+transport="${VNC_HOST_DEFAULT_TRANSPORT:-$default_transport}"
+force_restart=""
+force_stop=""
+action=""
+
+usage() {
+  printf '%s\n' \
+    "Usage:" \
+    "  vnc-host [--direct|--tunnel] [--force-restart] HOST[:DISPLAY|:NAME]" \
+    "  vnc-HOST [--direct|--tunnel] [--force-restart] [DISPLAY|NAME]" \
+    "  vnc-HOST --status [DISPLAY|NAME]" \
+    "  vnc-HOST --stop [--force] [DISPLAY|NAME]" \
+    "Default transport: ${default_transport} (overridable by VNC_HOST_DEFAULT_TRANSPORT); default display: :1"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --direct|--tunnel) transport="$1" ;;
+    --force-restart) force_restart="$1" ;;
+    --force) force_stop="$1" ;;
+    --status|--stop) action="$1" ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
+
+if [[ -n "${VNC_HOST_ALIAS:-}" ]]; then
+  host="$VNC_HOST_ALIAS"
+  [[ $# -le 1 ]] || { usage >&2; exit 1; }
+  suffix="${1:-1}"
+  suffix="${suffix#:}"
+  target="${host}:${suffix}"
+elif [[ "$program" == "vnc-host" ]]; then
+  [[ $# -eq 1 ]] || { usage >&2; exit 1; }
+  target="$1"
+else
+  host="${program#vnc-}"
+  [[ -n "$host" && "$host" != "$program" ]] || die "cannot derive host from $program"
+  [[ $# -le 1 ]] || { usage >&2; exit 1; }
+  suffix="${1:-1}"
+  suffix="${suffix#:}"
+  target="${host}:${suffix}"
+fi
+
+case "$transport" in
+  --direct|--tunnel) ;;
+  *) die "invalid VNC_HOST_DEFAULT_TRANSPORT: $transport" ;;
+esac
+
+script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+case "${OSTYPE:-$(uname -s)}" in
+  msys*|cygwin*|MINGW*|MSYS*|CYGWIN*) viewer_helper="${script_dir}/vnc-win-lan" ;;
+  *) viewer_helper="${script_dir}/vnc-session-view" ;;
+esac
+[[ -x "$viewer_helper" ]] || die "viewer helper is missing or not executable: $viewer_helper"
+
+if [[ -n "$action" ]]; then
+  [[ -z "$force_restart" ]] || die "--force-restart is not valid with $action"
+  [[ "$action" == "--stop" || -z "$force_stop" ]] || die "--force is only valid with --stop"
+  args=("$action")
+  [[ -z "$force_stop" ]] || args+=("$force_stop")
+  exec "$viewer_helper" "${args[@]}" "$target"
+fi
+
+[[ -z "$force_stop" ]] || die "--force is only valid with --stop"
+
+args=("$transport")
+[[ -z "$force_restart" ]] || args+=("$force_restart")
+
+exec "$viewer_helper" "${args[@]}" "$target"

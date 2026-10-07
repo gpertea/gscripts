@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<JWM>
+  <StartupCommand>urxvt -geometry 100x30+40+40</StartupCommand>
+  <RootMenu onroot="1">
+    <Program label="Terminal">urxvt</Program>
+    <Restart label="Restart"/>
+    <Exit label="Exit" confirm="true"/>
+  </RootMenu>
+  <Tray x="0" y="-1" height="26">
+    <TrayButton label=" Menu ">root:1</TrayButton>
+    <Pager/>
+    <TaskList/>
+    <Spacer width="6"/>
+    <Clock format="%H:%M"/>
+  </Tray>
+  <Desktops width="2" height="1">
+    <Background type="solid">#202030</Background>
+  </Desktops>
+  <FocusModel>click</FocusModel>
+  <Key mask="A" key="Tab">nextstacked</Key>
+  <Key mask="A" key="F4">close</Key>
+  <Key mask="CA" key="T">exec:urxvt</Key>
+  <Key mask="4" key="T">exec:urxvt</Key>
+</JWM>

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly flameshot_bin="${FLAMESHOT_BIN:-/usr/bin/flameshot}"
+readonly runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "${DISPLAY:-}" =~ ^:([0-9]+)(\.[0-9]+)?$ ]] || \
+  die "DISPLAY must look like :1 or :2"
+display_number="$((10#${BASH_REMATCH[1]}))"
+[[ -x "$flameshot_bin" ]] || die "Flameshot is unavailable: $flameshot_bin"
+
+## retain the legacy :1 paths so its running daemon remains reachable
+path_suffix="-${display_number}"
+if (( display_number == 1 )); then
+  path_suffix=""
+fi
+private_bus="${runtime_dir}/flameshot-vnc${path_suffix}-bus"
+export TMPDIR="${runtime_dir}/flameshot-vnc${path_suffix}-tmp"
+install -d -m 700 "$TMPDIR"
+
+## managed VNC desktops already have a private bus; legacy desktops do not
+main_user_bus="unix:path=${runtime_dir}/bus"
+current_bus="${DBUS_SESSION_BUS_ADDRESS:-}"
+if [[ -z "$current_bus" || "$current_bus" == "$main_user_bus" || "$current_bus" == "${main_user_bus},"* ]]; then
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=${private_bus}"
+  exec 9>"${private_bus}.lock"
+  flock 9
+  if ! dbus-send --session --dest=org.freedesktop.DBus --print-reply \
+      / org.freedesktop.DBus.ListNames >/dev/null 2>&1; then
+    ## clear only this display's stale private socket before recreating it
+    if [[ -e "$private_bus" || -S "$private_bus" ]]; then
+      unlink -- "$private_bus"
+    fi
+    dbus-daemon --session --address="unix:path=${private_bus}" --fork
+  fi
+  flock -u 9
+  exec 9>&-
+fi
+
+exec "$flameshot_bin" "$@"

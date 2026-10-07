@@ -1,0 +1,754 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+umask 077
+
+script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+readonly script_path
+script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+readonly script_dir
+readonly machine_id="${VNC_SESSION_MACHINE:-$(hostname -s | tr -cd 'A-Za-z0-9._-')}"
+readonly state_root="${XDG_STATE_HOME:-${HOME}/.local/state}/vnc-session/${machine_id}"
+## ~/.jwmrc-vnc configures every VNC desktop; ~/.jwmrc belongs to a real :0
+jwm_config="${VNC_SESSION_JWM_CONFIG:-}"
+if [[ -z "$jwm_config" ]]; then
+  jwm_config="${HOME}/.jwmrc-vnc"
+  [[ -r "$jwm_config" ]] || jwm_config="${script_dir}/jwm-vnc-session.xml"
+fi
+readonly jwm_config
+## one desktop startup for every VNC display; vnc-session adds only the
+## per-display parts (DISPLAY, private D-Bus, RXVT_SOCKET) before running it
+xstartup="${VNC_SESSION_XSTARTUP:-${HOME}/.vnc/xstartup}"
+[[ -x "$xstartup" ]] || xstartup="${script_dir}/vnc-xstartup"
+readonly xstartup
+readonly secrets_forwarder="${script_dir}/vnc-secrets-forward"
+readonly system_session_bus_config="/usr/share/dbus-1/session.conf"
+readonly password_file="${VNC_SESSION_PASSWORD_FILE:-${HOME}/.vnc/passwd}"
+readonly default_geometry="${VNC_SESSION_GEOMETRY:-1820x960}"
+readonly default_listen="loopback"
+readonly -a required_host_commands=(
+  vncserver Xtigervnc dbus-run-session jwm ss pgrep setsid flock
+  xrdb xsetroot vncconfig urxvtd urxvtc
+)
+
+usage() {
+  printf '%s\n' \
+    "Usage:" \
+    "  vnc-session start [--direct|--tunnel] [--force-restart] NAME [DISPLAY] [GEOMETRY]" \
+    "  vnc-session ensure [--direct|--tunnel] [--force-restart] NAME|:DISPLAY [GEOMETRY]" \
+    "  vnc-session list" \
+    "  vnc-session status NAME|:DISPLAY" \
+    "  vnc-session display NAME|:DISPLAY" \
+    "  vnc-session run NAME|:DISPLAY COMMAND [ARG ...]" \
+    "  vnc-session stop [--force] NAME|:DISPLAY" \
+    "  vnc-session doctor"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+check_host() {
+  local command_name mode
+  local failed=0
+
+  ## check every non-core command used by managed desktop lifecycle
+  for command_name in "${required_host_commands[@]}"; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      printf 'MISSING command: %s\n' "$command_name" >&2
+      failed=1
+    fi
+  done
+
+  [[ -r "$jwm_config" ]] || {
+    printf 'MISSING JWM configuration: %s\n' "$jwm_config" >&2
+    failed=1
+  }
+  [[ -x "$xstartup" ]] || {
+    printf 'MISSING desktop startup: %s\n' "$xstartup" >&2
+    failed=1
+  }
+  [[ -r "$system_session_bus_config" ]] || {
+    printf 'MISSING D-Bus session configuration: %s\n' "$system_session_bus_config" >&2
+    failed=1
+  }
+  ## without the forwarder, keyring calls fail fast instead of reaching gnome-keyring
+  if ! python3 -c 'import gi; gi.require_version("Gio", "2.0")' >/dev/null 2>&1; then
+    printf 'WARNING: python3-gi is missing; VNC desktops will have no keyring access\n' >&2
+  fi
+  if [[ ! -r "$password_file" ]]; then
+    printf 'MISSING VNC password file: %s\n' "$password_file" >&2
+    failed=1
+  else
+    mode="$(stat -c '%a' "$password_file")"
+    if (( (8#$mode & 077) != 0 )); then
+      printf 'INSECURE VNC password mode %s: %s\n' "$mode" "$password_file" >&2
+      failed=1
+    fi
+  fi
+
+  (( failed == 0 )) || return 1
+  printf 'VNC session host prerequisites: OK (startup %s, JWM %s)\n' "$xstartup" "$jwm_config"
+}
+
+validate_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || \
+    die "session name must contain only letters, numbers, dot, underscore, or hyphen"
+}
+
+normalize_display() {
+  local value="${1#:}"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "display must look like :2 or 2"
+  (( 5900 + 10#$value <= 65535 )) || die "display is too large: $1"
+  printf '%s\n' "$((10#$value))"
+}
+
+validate_geometry() {
+  [[ "$1" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || \
+    die "geometry must look like 1820x960"
+}
+
+validate_listen() {
+  [[ "$1" == "loopback" || "$1" == "lan" ]] || die "listen mode must be loopback or lan"
+}
+
+session_file() {
+  printf '%s/%s.conf\n' "$state_root" "$1"
+}
+
+env_file() {
+  printf '%s/%s.env\n' "$state_root" "$1"
+}
+
+load_session() {
+  local file
+  file="$(session_file "$1")"
+  [[ -r "$file" ]] || die "unknown managed VNC session: $1"
+
+  session_display=""
+  session_geometry=""
+  session_listen="$default_listen"
+  while IFS='=' read -r key value; do
+    case "$key" in
+      display) session_display="$value" ;;
+      geometry) session_geometry="$value" ;;
+      listen) session_listen="$value" ;;
+    esac
+  done < "$file"
+  session_display="$(normalize_display "$session_display")"
+  validate_geometry "$session_geometry"
+  validate_listen "$session_listen"
+}
+
+save_session() {
+  local file temporary
+  file="$(session_file "$1")"
+  temporary="$(mktemp "${state_root}/.session.XXXXXX")"
+  printf 'display=%s\ngeometry=%s\nlisten=%s\n' "$2" "$3" "$4" > "$temporary"
+  mv -f -- "$temporary" "$file"
+}
+
+vnc_is_running() {
+  local display="$1"
+  [[ -S "/tmp/.X11-unix/X${display}" ]] &&
+    pgrep -u "$(id -u)" -f "(^|/)Xtigervnc :${display}( |$)" >/dev/null
+}
+
+listener_matches_mode() {
+  local display="$1"
+  local listen_mode="$2"
+  local port=$((5900 + display))
+  local local_addresses
+
+  local_addresses="$(ss -H -ltn4 "sport = :${port}" | awk '{print $4}')"
+  if [[ "$listen_mode" == "lan" ]]; then
+    grep -q '^0.0.0.0:' <<< "$local_addresses"
+  else
+    grep -q '^127.0.0.1:' <<< "$local_addresses" && ! grep -q '^0.0.0.0:' <<< "$local_addresses"
+  fi
+}
+
+listener_mode() {
+  local display="$1"
+
+  if listener_matches_mode "$display" "lan"; then
+    printf 'lan\n'
+  elif listener_matches_mode "$display" "loopback"; then
+    printf 'loopback\n'
+  else
+    printf 'unknown\n'
+  fi
+}
+
+display_is_free() {
+  local display="$1"
+  local port=$((5900 + display))
+  ! [[ -e "/tmp/.X11-unix/X${display}" || -e "/tmp/.X${display}-lock" ]] &&
+    ! pgrep -u "$(id -u)" -f "(^|/)Xtigervnc :${display}( |$)" >/dev/null &&
+    ! ss -H -ltn "sport = :${port}" | grep -q .
+}
+
+display_is_reserved() {
+  local display="$1"
+  local file
+  for file in "$state_root"/*.conf; do
+    [[ -e "$file" ]] || continue
+    grep -qx "display=${display}" "$file" && return 0
+  done
+  return 1
+}
+
+managed_name_for_display() {
+  local target_display="$1"
+  local file
+
+  for file in "$state_root"/*.conf; do
+    [[ -e "$file" ]] || continue
+    if grep -qx "display=${target_display}" "$file"; then
+      basename "$file" .conf
+      return
+    fi
+  done
+  return 1
+}
+
+allocate_display() {
+  local display
+  for ((display = 2; display <= 99; display++)); do
+    if display_is_free "$display" && ! display_is_reserved "$display"; then
+      printf '%s\n' "$display"
+      return
+    fi
+  done
+  die "no free VNC display was found from :2 through :99"
+}
+
+resolve_spec() {
+  local spec="$1"
+  if [[ "$spec" == :* || "$spec" =~ ^[1-9][0-9]*$ ]]; then
+    resolved_display="$(normalize_display "$spec")"
+    resolved_name="$(managed_name_for_display "$resolved_display" || true)"
+    if [[ -n "$resolved_name" ]]; then
+      load_session "$resolved_name"
+      resolved_display="$session_display"
+      resolved_geometry="$session_geometry"
+    else
+      resolved_geometry="unknown"
+    fi
+  else
+    validate_name "$spec"
+    load_session "$spec"
+    resolved_name="$spec"
+    resolved_display="$session_display"
+    resolved_geometry="$session_geometry"
+  fi
+}
+
+write_session_environment() {
+  local name="$1"
+  local file temporary
+  file="$(env_file "$name")"
+  temporary="$(mktemp "${state_root}/.environment.XXXXXX")"
+  {
+    printf 'DISPLAY=%s\n' "$DISPLAY"
+    printf 'XAUTHORITY=%s\n' "${XAUTHORITY:-${HOME}/.Xauthority}"
+    printf 'XDG_RUNTIME_DIR=%s\n' "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "$DBUS_SESSION_BUS_ADDRESS"
+    printf 'RXVT_SOCKET=%s\n' "$RXVT_SOCKET"
+  } > "$temporary"
+  mv -f -- "$temporary" "$file"
+}
+
+## the desktop startup runs urxvtd after xrdb; this only picks a per-display
+## socket so terminals in different desktops never share a daemon
+prepare_urxvt_socket() {
+  local display_number=""
+  local socket_dir=""
+
+  [[ "$DISPLAY" =~ ^:([0-9]+)(\.[0-9]+)?$ ]] || \
+    die "DISPLAY must look like :1 or :2"
+  display_number="$((10#${BASH_REMATCH[1]}))"
+  socket_dir="${XDG_RUNTIME_DIR}/vnc-session"
+  install -d -m 700 "$socket_dir"
+
+  export RXVT_SOCKET="${socket_dir}/urxvtd-${display_number}"
+  if ss -xlH | awk -v socket="$RXVT_SOCKET" '$5 == socket { found=1 } END { exit !found }'; then
+    ## a daemon left from an earlier desktop on this display keeps serving it
+    return
+  fi
+  if [[ -e "$RXVT_SOCKET" || -S "$RXVT_SOCKET" ]]; then
+    ## a stopped display can leave a dead socket during the same boot
+    unlink -- "$RXVT_SOCKET"
+  fi
+}
+
+## each desktop gets a private bus so single-instance applications stay on
+## their own display; the keyring names start the forwarder to the user bus
+write_bus_config() {
+  local display_number="$1"
+  local bus_dir="${XDG_RUNTIME_DIR}/vnc-session/dbus-${display_number}"
+  local name=""
+
+  install -d -m 700 "$bus_dir" "${bus_dir}/services"
+  for name in org.freedesktop.secrets org.gnome.keyring; do
+    printf '[D-BUS Service]\nName=%s\nExec=%s --display :%s\n' \
+      "$name" "$secrets_forwarder" "$display_number" > "${bus_dir}/services/${name}.service"
+  done
+  ## services listed first take precedence over the system keyring entries
+  cat > "${bus_dir}/bus.conf" <<EOF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <servicedir>${bus_dir}/services</servicedir>
+  <include>${system_session_bus_config}</include>
+</busconfig>
+EOF
+  printf '%s\n' "${bus_dir}/bus.conf"
+}
+
+run_xstartup() {
+  local name="$1"
+  local preserved_display="${DISPLAY:?DISPLAY is required}"
+  local preserved_xauthority="${XAUTHORITY:-${HOME}/.Xauthority}"
+  local bus_config=""
+
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  ## the marker names its display, so an inherited marker cannot skip the bus
+  if [[ "${VNC_SESSION_PRIVATE_DBUS:-}" != "$preserved_display" ]]; then
+    require_command dbus-run-session
+    [[ "$preserved_display" =~ ^:([0-9]+)(\.[0-9]+)?$ ]] || \
+      die "DISPLAY must look like :1 or :2"
+    bus_config="$(write_bus_config "$((10#${BASH_REMATCH[1]}))")"
+    exec env \
+      -u DBUS_SESSION_BUS_ADDRESS \
+      -u DBUS_SESSION_BUS_PID \
+      -u DBUS_SESSION_BUS_WINDOWID \
+      VNC_SESSION_PRIVATE_DBUS="$preserved_display" \
+      VNC_SESSION_NAME="$name" \
+      dbus-run-session --config-file="$bus_config" \
+      -- "$script_path" __xstartup "$name"
+  fi
+
+  export DISPLAY="$preserved_display"
+  export XAUTHORITY="$preserved_xauthority"
+  prepare_urxvt_socket
+  write_session_environment "$name"
+
+  export VNC_SESSION_NAME="$name"
+  export VNC_SESSION_JWM_CONFIG="$jwm_config"
+  exec "$xstartup"
+}
+
+start_session() {
+  local name="$1"
+  local requested_display="${2:-}"
+  local geometry="${3:-$default_geometry}"
+  local requested_listen="${4:-}"
+  local force_restart="${5:-false}"
+  local listen_mode="$default_listen"
+  local mode attempt command_name actual_listen
+  local -a listen_args=(-localhost=yes)
+
+  validate_name "$name"
+  validate_geometry "$geometry"
+  [[ -z "$requested_listen" ]] || validate_listen "$requested_listen"
+  [[ "$force_restart" == "true" || "$force_restart" == "false" ]] || die "invalid force-restart value"
+  ## fail before launch if any desktop lifecycle dependency is absent
+  for command_name in "${required_host_commands[@]}"; do
+    require_command "$command_name"
+  done
+  [[ -r "$jwm_config" ]] || die "JWM configuration is missing: $jwm_config"
+  [[ -r "$password_file" ]] || die "VNC password file is missing: $password_file"
+  mode="$(stat -c '%a' "$password_file")"
+  (( (8#$mode & 077) == 0 )) || die "VNC password file must be private: $password_file"
+
+  install -d -m 700 "$state_root"
+  exec 9>"${state_root}/manager.lock"
+  flock 9
+
+  if [[ -r "$(session_file "$name")" ]]; then
+    load_session "$name"
+    if [[ -n "$requested_display" && "$(normalize_display "$requested_display")" != "$session_display" ]]; then
+      die "$name is already assigned to :${session_display}"
+    fi
+    requested_display="$session_display"
+    geometry="$session_geometry"
+    listen_mode="${requested_listen:-$session_listen}"
+  elif [[ -n "$requested_display" ]]; then
+    requested_display="$(normalize_display "$requested_display")"
+    display_is_reserved "$requested_display" && \
+      die "display :${requested_display} is assigned to another managed session"
+    listen_mode="${requested_listen:-$default_listen}"
+  else
+    requested_display="$(allocate_display)"
+    listen_mode="${requested_listen:-$default_listen}"
+  fi
+
+  if vnc_is_running "$requested_display"; then
+    actual_listen="$(listener_mode "$requested_display")"
+    if [[ -z "$requested_listen" ]]; then
+      ## never alter a running desktop for an implicit listener policy
+      if [[ "$actual_listen" != "unknown" && "$actual_listen" != "$session_listen" ]]; then
+        save_session "$name" "$requested_display" "$geometry" "$actual_listen"
+      fi
+      printf 'VNC session %s is already running on :%s\n' "$name" "$requested_display"
+      return
+    fi
+    if [[ "$actual_listen" == "$listen_mode" ]]; then
+      if [[ "$listen_mode" != "$session_listen" ]]; then
+        save_session "$name" "$requested_display" "$geometry" "$listen_mode"
+      fi
+      printf 'VNC session %s is already running on :%s\n' "$name" "$requested_display"
+      return
+    fi
+
+    if [[ "$force_restart" != "true" ]]; then
+      die "changing $name :${requested_display} from ${actual_listen} to ${listen_mode} requires a destructive desktop restart; rerun the viewer with --tunnel to attach safely, or use --force-restart"
+    fi
+
+    printf '%s\n' \
+      'WARNING: DESTRUCTIVE VNC DESKTOP RESTART REQUESTED' \
+      "WARNING: host=$(hostname -s) session=${name} display=:${requested_display}" \
+      "WARNING: listener change: ${actual_listen} -> ${listen_mode}" \
+      'WARNING: all GUI processes in this VNC desktop, including bru, will be terminated.' >&2
+    vncserver -kill ":${requested_display}"
+    rm -f -- "$(env_file "$name")"
+    for ((attempt = 0; attempt < 50; attempt++)); do
+      vnc_is_running "$requested_display" || break
+      sleep 0.1
+    done
+    vnc_is_running "$requested_display" && die "VNC display :${requested_display} did not stop"
+  fi
+  display_is_free "$requested_display" || die "display :${requested_display} is already in use or stale"
+  save_session "$name" "$requested_display" "$geometry" "$listen_mode"
+  flock -u 9
+  exec 9>&-
+
+  if [[ "$listen_mode" == "lan" ]]; then
+    ## TigerVNC's interface parser clears localhost, so set localhost last
+    listen_args=(-interface=0.0.0.0 -localhost=no)
+  fi
+
+  ## a desktop started from a terminal in another desktop must not inherit
+  ## that desktop's bus, terminal socket, or startup markers
+  env \
+    -u DBUS_SESSION_BUS_ADDRESS \
+    -u DBUS_SESSION_BUS_PID \
+    -u DBUS_SESSION_BUS_WINDOWID \
+    -u VNC_SESSION_PRIVATE_DBUS \
+    -u VNC_SESSION_JWM_CONFIG \
+    -u RXVT_SOCKET \
+    VNC_SESSION_NAME="$name" vncserver ":${requested_display}" \
+    "${listen_args[@]}" \
+    -geometry "$geometry" \
+    -depth 24 \
+    -SecurityTypes VncAuth \
+    -PasswordFile "$password_file" \
+    -autokill yes \
+    -desktop "vnc-${name}" \
+    -xstartup "$script_path"
+
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    if vnc_is_running "$requested_display" && [[ -r "$(env_file "$name")" ]]; then
+      printf 'VNC session %s started on :%s, %s port %s\n' \
+        "$name" "$requested_display" "$listen_mode" "$((5900 + requested_display))"
+      return
+    fi
+    sleep 0.1
+  done
+  die "VNC session started but its desktop environment did not become ready"
+}
+
+ensure_session() {
+  local spec="$1"
+  local geometry="${2:-$default_geometry}"
+  local requested_listen="${3:-}"
+  local force_restart="${4:-false}"
+  local display name=""
+
+  validate_geometry "$geometry"
+  [[ -z "$requested_listen" ]] || validate_listen "$requested_listen"
+  if [[ "$spec" == :* ]]; then
+    display="$(normalize_display "$spec")"
+    name="$(managed_name_for_display "$display" || true)"
+    if [[ -n "$name" ]]; then
+      start_session "$name" "$display" "$geometry" "$requested_listen" "$force_restart" >&2
+      printf '%s\n' "$display"
+      return
+    fi
+    if vnc_is_running "$display"; then
+      [[ "$requested_listen" != "lan" ]] || listener_matches_mode "$display" "lan" || \
+        die "unmanaged display :${display} is not listening on the LAN"
+      printf '%s\n' "$display"
+      return
+    fi
+
+    ## restart a retained mapping or reserve the requested display by name
+    name="display-${display}"
+    start_session "$name" "$display" "$geometry" "$requested_listen" "$force_restart" >&2
+    printf '%s\n' "$display"
+    return
+  fi
+
+  validate_name "$spec"
+  start_session "$spec" "" "$geometry" "$requested_listen" "$force_restart" >&2
+  load_session "$spec"
+  printf '%s\n' "$session_display"
+}
+
+import_environment_from_desktop() {
+  local display="$1"
+  local pid entry found_display bus="" xauthority="" runtime="" rxvt_socket=""
+  local -a entries=()
+
+  for pid in $(pgrep -u "$(id -u)" -x jwm || true); do
+    entries=()
+    mapfile -d '' -t entries < "/proc/${pid}/environ" || continue
+    found_display=""
+    for entry in "${entries[@]}"; do
+      case "$entry" in
+        DISPLAY=*) found_display="${entry#DISPLAY=}" ;;
+        DBUS_SESSION_BUS_ADDRESS=*) bus="${entry#DBUS_SESSION_BUS_ADDRESS=}" ;;
+        XAUTHORITY=*) xauthority="${entry#XAUTHORITY=}" ;;
+        XDG_RUNTIME_DIR=*) runtime="${entry#XDG_RUNTIME_DIR=}" ;;
+        RXVT_SOCKET=*) rxvt_socket="${entry#RXVT_SOCKET=}" ;;
+      esac
+    done
+    if [[ "$found_display" == ":${display}" ]]; then
+      export DISPLAY="$found_display"
+      export XAUTHORITY="${xauthority:-${HOME}/.Xauthority}"
+      export XDG_RUNTIME_DIR="${runtime:-/run/user/$(id -u)}"
+      [[ -n "$bus" ]] && export DBUS_SESSION_BUS_ADDRESS="$bus"
+      [[ -n "$rxvt_socket" ]] && export RXVT_SOCKET="$rxvt_socket"
+      return
+    fi
+  done
+  die "could not discover the desktop environment for :${display}"
+}
+
+load_run_environment() {
+  local name="$1"
+  local display="$2"
+  local file=""
+  local key value
+
+  ## never carry a client socket from the caller into another display
+  unset RXVT_SOCKET
+
+  if [[ -n "$name" ]]; then
+    file="$(env_file "$name")"
+  fi
+  if [[ -n "$file" && -r "$file" ]]; then
+    while IFS='=' read -r key value; do
+      case "$key" in
+        DISPLAY) DISPLAY="$value" ;;
+        XAUTHORITY) XAUTHORITY="$value" ;;
+        XDG_RUNTIME_DIR) XDG_RUNTIME_DIR="$value" ;;
+        DBUS_SESSION_BUS_ADDRESS) DBUS_SESSION_BUS_ADDRESS="$value" ;;
+        RXVT_SOCKET) RXVT_SOCKET="$value" ;;
+      esac
+    done < "$file"
+    export DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS RXVT_SOCKET
+  else
+    import_environment_from_desktop "$display"
+  fi
+  export PATH="${HOME}/bin:${PATH}"
+}
+
+run_command() {
+  local spec="$1"
+  shift
+  [[ $# -gt 0 ]] || die "run requires a command"
+  resolve_spec "$spec"
+  vnc_is_running "$resolved_display" || die "VNC display :${resolved_display} is not running"
+  load_run_environment "$resolved_name" "$resolved_display"
+
+  local log_name="${resolved_name:-display-${resolved_display}}"
+  local log_file="${state_root}/${log_name}.commands.log"
+  setsid -f "$@" >> "$log_file" 2>&1 < /dev/null
+  printf 'Started %s on :%s; log: %s\n' "$1" "$resolved_display" "$log_file"
+}
+
+show_status() {
+  resolve_spec "$1"
+  printf 'Session: %s\n' "${resolved_name:-(unmanaged)}"
+  printf 'Display: :%s\n' "$resolved_display"
+  printf 'Geometry: %s\n' "$resolved_geometry"
+  if [[ -n "$resolved_name" ]]; then
+    printf 'Listen: %s\n' "$session_listen"
+  else
+    printf 'Listen: unknown\n'
+  fi
+  printf 'VNC port: %s\n' "$((5900 + resolved_display))"
+  if vnc_is_running "$resolved_display"; then
+    printf 'State: running\n'
+  else
+    printf 'State: stopped\n'
+    return 1
+  fi
+}
+
+list_sessions() {
+  local display file name state
+  local -A mapped_displays=()
+  printf 'NAME\tDISPLAY\tSTATE\tLISTEN\n'
+
+  for file in "$state_root"/*.conf; do
+    [[ -e "$file" ]] || continue
+    name="$(basename "$file" .conf)"
+    load_session "$name"
+    mapped_displays["$session_display"]=1
+    state="stopped"
+    vnc_is_running "$session_display" && state="running"
+    printf '%s\t:%s\t%s\t%s\n' "$name" "$session_display" "$state" "$session_listen"
+  done
+
+  for ((display = 1; display <= 99; display++)); do
+    if vnc_is_running "$display" && [[ -z "${mapped_displays[$display]:-}" ]]; then
+      printf '%s\t:%s\trunning\tunknown\n' "-" "$display"
+    fi
+  done
+}
+
+stop_session() {
+  local spec="$1"
+  local force_stop="${2:-false}"
+  local name="$spec"
+  local managed="true"
+
+  [[ "$force_stop" == "true" || "$force_stop" == "false" ]] || die "invalid force-stop value"
+
+  if [[ "$spec" == :* ]]; then
+    resolve_spec "$spec"
+    if [[ -n "$resolved_name" ]]; then
+      name="$resolved_name"
+    else
+      managed="false"
+      name="(unmanaged)"
+      session_display="$resolved_display"
+    fi
+  else
+    validate_name "$name"
+    load_session "$name"
+  fi
+  if ! vnc_is_running "$session_display"; then
+    if [[ "$managed" == "true" ]]; then
+      rm -f -- "$(env_file "$name")"
+      printf 'VNC session %s is already stopped\n' "$name"
+    else
+      printf 'Unmanaged VNC display :%s is already stopped\n' "$session_display"
+    fi
+    return
+  fi
+
+  if [[ "$force_stop" != "true" ]]; then
+    printf '%s\n' \
+      'WARNING: stopping a running VNC desktop is destructive.' \
+      "WARNING: host=$(hostname -s) session=${name} display=:${session_display}" \
+      'WARNING: all GUI processes in this desktop, including bru, will be terminated.' \
+      "WARNING: to proceed, rerun: vnc-session stop --force :${session_display}" >&2
+    die "refusing to stop running VNC desktop :${session_display} without --force"
+  fi
+
+  printf '%s\n' \
+    'WARNING: DESTRUCTIVE VNC DESKTOP STOP REQUESTED' \
+    "WARNING: host=$(hostname -s) session=${name} display=:${session_display}" \
+    'WARNING: all GUI processes in this desktop, including bru, will be terminated.' >&2
+  vncserver -kill ":${session_display}"
+  if [[ "$managed" == "true" ]]; then
+    rm -f -- "$(env_file "$name")"
+    printf 'VNC session %s stopped\n' "$name"
+  else
+    printf 'Unmanaged VNC display :%s stopped\n' "$session_display"
+  fi
+}
+
+if [[ $# -eq 0 && -n "${VNC_SESSION_NAME:-}" && -n "${DISPLAY:-}" ]]; then
+  set -- __xstartup "$VNC_SESSION_NAME"
+fi
+
+install -d -m 700 "$state_root"
+
+case "${1:-}" in
+  start)
+    shift
+    listen=""
+    force_restart="false"
+    while [[ "${1:-}" == --* ]]; do
+      case "$1" in
+        --direct) listen="lan" ;;
+        --tunnel) listen="loopback" ;;
+        --force-restart) force_restart="true" ;;
+        *) die "unknown start option: $1" ;;
+      esac
+      shift
+    done
+    [[ $# -ge 1 && $# -le 3 ]] || die "start requires [--direct|--tunnel] [--force-restart] NAME [DISPLAY] [GEOMETRY]"
+    start_session "$1" "${2:-}" "${3:-}" "$listen" "$force_restart"
+    ;;
+  ensure)
+    shift
+    listen=""
+    force_restart="false"
+    while [[ "${1:-}" == --* ]]; do
+      case "$1" in
+        --direct) listen="lan" ;;
+        --tunnel) listen="loopback" ;;
+        --force-restart) force_restart="true" ;;
+        *) die "unknown ensure option: $1" ;;
+      esac
+      shift
+    done
+    [[ $# -ge 1 && $# -le 2 ]] || die "ensure requires [--direct|--tunnel] [--force-restart] NAME|:DISPLAY [GEOMETRY]"
+    ensure_session "$1" "${2:-}" "$listen" "$force_restart"
+    ;;
+  list)
+    [[ $# -eq 1 ]] || die "list accepts no arguments"
+    list_sessions
+    ;;
+  status)
+    [[ $# -eq 2 ]] || die "status requires NAME or :DISPLAY"
+    show_status "$2"
+    ;;
+  display)
+    [[ $# -eq 2 ]] || die "display requires NAME or :DISPLAY"
+    resolve_spec "$2"
+    printf '%s\n' "$resolved_display"
+    ;;
+  run)
+    [[ $# -ge 3 ]] || die "run requires NAME|:DISPLAY COMMAND [ARG ...]"
+    spec="$2"
+    shift 2
+    run_command "$spec" "$@"
+    ;;
+  stop)
+    shift
+    force_stop="false"
+    if [[ "${1:-}" == "--force" ]]; then
+      force_stop="true"
+      shift
+    fi
+    [[ $# -eq 1 ]] || die "stop requires [--force] NAME|:DISPLAY"
+    stop_session "$1" "$force_stop"
+    ;;
+  doctor)
+    [[ $# -eq 1 ]] || die "doctor accepts no arguments"
+    check_host
+    ;;
+  __xstartup)
+    [[ $# -eq 2 ]] || exit 1
+    run_xstartup "$2"
+    ;;
+  --help|-h)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

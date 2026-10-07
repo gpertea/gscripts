@@ -1,40 +1,290 @@
 #!/bin/bash
 set -euo pipefail
+
+is_windows_msys=false
+is_linux=false
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) is_windows_msys=true ;;
+  Linux) is_linux=true ;;
+esac
+
+# Resolve native PowerShell without putting Windows tools ahead of MSYS2 tools
+# in agent command shells. The installer receives its own Windows-first PATH.
+if $is_windows_msys; then
+  windows_system32="$(cygpath -u "${SystemRoot:-${SYSTEMROOT:-C:\\Windows}}")/System32"
+  windows_powershell="$windows_system32/WindowsPowerShell/v1.0/powershell.exe"
+fi
+
+windows_codex_bin() {
+  local local_app_data="${LOCALAPPDATA:-}"
+
+  if [[ -z "$local_app_data" && -x "$windows_powershell" ]]; then
+    local_app_data="$(env -u PSModulePath "$windows_powershell" -NoLogo -NoProfile -Command \
+      '[Environment]::GetFolderPath("LocalApplicationData")' | tr -d '\r')"
+  fi
+  if [[ -n "$local_app_data" ]] && command -v cygpath >/dev/null 2>&1; then
+    local_app_data="$(cygpath -u "$local_app_data")"
+  fi
+
+  [[ -n "$local_app_data" ]] || return 1
+  printf '%s/Programs/OpenAI/Codex/bin/codex.exe\n' "$local_app_data"
+}
+
+resolve_codex_bin() {
+  local candidate
+
+  if $is_windows_msys; then
+    candidate="$(windows_codex_bin || true)"
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+
+  command -v codex
+}
+
 ## if on JHPCE, load the npm module
 if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
-  echo "Using JHPCE 'node' module with separate codex installation"
   module load node
-  export NPM_CONFIG_PREFIX="$HOME/.local"
   export PATH=$HOME/.local/bin:$PATH
+fi
+
+## Pin browser tools while preserving the terminal's native color settings.
+if $is_linux && [[ "${DISPLAY:-}" =~ ^:([0-9]+)(\.[0-9]+)?$ ]]; then
+  display_number="${BASH_REMATCH[1]}"
+  export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+  export LIN_BROWSER_USE_AUTH_DISPLAY=":${display_number}"
+fi
+
+confirm() {
+  local answer
+  read -r -p "$1 [y/N] " answer || return 1
+  [[ "$answer" == [yY] || "$answer" == [yY][eE][sS] ]]
+}
+
+codex_version() {
+  "$codex_bin" --version | awk '{print $NF}'
+}
+
+report_versions() {
+  local installed_version daemon_info pid process_args process_version
+  installed_version="$(codex_version)"
+  printf 'Installed CLI: %s (%s)\n' "$installed_version" "$codex_bin"
+  daemon_running=false
+  if daemon_info="$("$codex_bin" app-server daemon version 2>/dev/null)"; then
+    ## use the server's control socket, not the executable currently on disk
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -c 'import json, sys
+info = json.loads(sys.argv[1])
+print("App-server status:", info.get("status", "unknown"))
+print("Running app-server:", info.get("appServerVersion") or "none")
+print("Daemon package:", info.get("managedCodexVersion") or "not installed/unknown")' "$daemon_info" || printf '%s\n' "$daemon_info"
+    else
+      printf 'App-server: %s\n' "$daemon_info"
+    fi
+    if grep -Eq '"status"[[:space:]]*:[[:space:]]*"running"' <<< "$daemon_info"; then
+      daemon_running=true
+    fi
+  else
+    printf 'App-server status: unavailable (daemon commands may be unsupported)\n'
+  fi
+
+  if $is_linux && command -v pgrep >/dev/null 2>&1; then
+    printf 'Running Codex processes:\n'
+    ## /proc retains the actual executable even after npm replaces its file
+    for pid in $(pgrep -u "$(id -u)" -x codex || true); do
+      process_version="$("/proc/$pid/exe" --version 2>/dev/null | awk '{print $NF}')" || continue
+      process_args="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" || continue
+      local kind=CLI note=''
+      [[ "$process_args" != *'app-server'* ]] || kind=app-server
+      [[ "$process_args" != *'app-server proxy'* ]] || kind=proxy
+      [[ "$process_version" == "$installed_version" ]] || note=' (different version)'
+      printf '  PID %-8s %-10s %s%s\n' "$pid" "$kind" "$process_version" "$note"
+    done
+  fi
+}
+
+update_codex() {
+  printf 'Updating Codex CLI...\n'
+  if $is_windows_msys; then
+    if [[ ! -x "$windows_powershell" ]]; then
+      printf 'cody: powershell.exe is required to update Codex on Windows\n' >&2
+      exit 127
+    fi
+
+    ## The Windows installer requires native tar and PowerShell 5.1 modules.
+    env -u PSModulePath PATH="$windows_system32:$windows_system32/WindowsPowerShell/v1.0:$PATH" \
+      "$windows_powershell" -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \
+      '$ErrorActionPreference = "Stop"; $env:CODEX_NON_INTERACTIVE = "1"; Invoke-RestMethod "https://chatgpt.com/codex/install.ps1" | Invoke-Expression' || return "$?"
+  else
+    if ! command -v npm >/dev/null 2>&1; then
+      printf 'cody: npm is required to update Codex\n' >&2
+      exit 127
+    fi
+    npm install --global @openai/codex@latest || return "$?"
+  fi
   hash -r
-  wcodex=$(which codex)
-  echo "codex is run from: $wcodex"
+
+  codex_bin="$(resolve_codex_bin || true)"
+  if [[ -z "$codex_bin" ]]; then
+    printf 'cody: Codex was updated but is not available on PATH\n' >&2
+    exit 127
+  fi
+
+  report_versions
+  if $daemon_running; then
+    if [[ -t 0 && -t 1 ]] && confirm 'Update the app-server package to this CLI and restart it? This interrupts its active work.'; then
+      ## stop first so package replacement cannot restart the old server twice
+      "$codex_bin" app-server daemon stop || return "$?"
+      "$codex_bin" app-server daemon update --from-cli --yes || return "$?"
+      "$codex_bin" app-server daemon start || return "$?"
+      report_versions
+    else
+      printf 'App-server left running at its reported version.\n'
+    fi
+  else
+    printf 'No running default app-server to restart; no server was started.\n'
+  fi
+  if $is_linux; then
+    printf 'Display servers retain their running version; use cody --server-stop when ready to replace one.\n'
+  fi
+}
+
+newer_version() {
+  local -a latest_parts installed_parts
+  local index
+  ## compare stable release numbers without downgrading a newer local CLI
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$2" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  IFS=. read -r -a latest_parts <<< "$1"
+  IFS=. read -r -a installed_parts <<< "$2"
+  for index in 0 1 2; do
+    ((10#${latest_parts[index]} <= 10#${installed_parts[index]})) || return 0
+    ((10#${latest_parts[index]} >= 10#${installed_parts[index]})) || return 1
+  done
+  return 1
+}
+
+skip_update=false
+update_only=false
+use_docs=false
+display_action=local
+attach_display=
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --noupdate) skip_update=true ;;
+    --update) update_only=true ;;
+    --docs) use_docs=true ;;
+    --attach)
+      [[ "$display_action" == local ]] || { printf 'cody: choose one display-server action\n' >&2; exit 2; }
+      [[ $# -ge 2 ]] || { printf 'cody: --attach requires a DISPLAY such as :3\n' >&2; exit 2; }
+      display_action=attach
+      attach_display="$2"
+      skip_update=true
+      shift ;;
+    --server-status|--server-stop|--server-endpoint)
+      [[ "$display_action" == local ]] || { printf 'cody: choose one display-server action\n' >&2; exit 2; }
+      display_action="${1#--server-}"
+      skip_update=true
+      if [[ "${2:-}" =~ ^:[0-9]+(\.[0-9]+)?$ ]]; then
+        attach_display="$2"
+        shift
+      fi ;;
+    *) break ;;
+  esac
+  shift
+done
+if $skip_update && $update_only; then
+  printf 'cody: --noupdate and --update cannot be combined\n' >&2
+  exit 2
 fi
 
-# Keep colors enabled for Codex UI, even if parent env exports NO_COLOR.
-unset NO_COLOR
-export FORCE_COLOR=1
-export CLICOLOR_FORCE=1
-
-# Prefer 256-color TERM values when available.
-if [[ -n "${TMUX:-}" ]]; then
-  if infocmp tmux-256color >/dev/null 2>&1; then
-    export TERM=tmux-256color
-  fi
-elif [[ "${TERM:-}" == "rxvt-unicode" ]]; then
-  if infocmp rxvt-unicode-256color >/dev/null 2>&1; then
-    export TERM=rxvt-unicode-256color
-  fi
+## resolve the CLI again after any update, then exec for signal handling
+codex_bin="$(resolve_codex_bin || true)"
+if $update_only; then
+  update_codex
+  exit 0
 fi
-export COLORTERM=truecolor
-# Keep automatic updates, but don't block startup on transient npm/network issues.
-if command -v npm >/dev/null 2>&1; then
-  codex_pkg_parent="$HOME/.local/lib/node_modules/@openai"
-  ## remove npm staging leftovers for codex only
-  if [[ -d "$codex_pkg_parent" ]]; then
-    find "$codex_pkg_parent" -maxdepth 1 -type d -name '.codex-*' -exec rm -rf {} +
-  fi
-  npm i -g --prefix "$HOME/.local" @openai/codex >/dev/null 2>&1 || true
+if [[ -z "$codex_bin" ]]; then
+  printf 'cody: codex is not available on PATH\n' >&2
+  exit 127
 fi
 
-exec "$HOME/.local/bin/codex" --yolo "$@"
+checked_updates=false
+if ! $skip_update && [[ -t 0 && -t 1 && "${1:-}" != --help && "${1:-}" != --version ]]; then
+  latest_version=''
+  if $is_windows_msys && [[ -x "$windows_powershell" ]]; then
+    checked_updates=true
+    latest_version="$(env -u PSModulePath "$windows_powershell" -NoLogo -NoProfile -Command \
+      '$ErrorActionPreference = "Stop"; (Invoke-RestMethod -TimeoutSec 5 "https://registry.npmjs.org/@openai%2fcodex/latest").version' 2>/dev/null | tr -d '\r')" || true
+  elif command -v npm >/dev/null 2>&1; then
+    checked_updates=true
+    ## bound offline delays; failure leaves the installed CLI available
+    latest_version="$(npm view @openai/codex version --fetch-retries=0 --fetch-timeout=5000 2>/dev/null)" || true
+  fi
+  if $checked_updates; then
+    installed_version="$(codex_version)"
+    if [[ -z "$latest_version" ]]; then
+      printf 'cody: update check unavailable; launching installed CLI %s\n' "$installed_version" >&2
+    elif newer_version "$latest_version" "$installed_version"; then
+      printf 'Codex update available: %s -> %s\n' "$installed_version" "$latest_version"
+      if confirm 'Update before opening Codex?'; then
+        update_codex
+      fi
+    fi
+  fi
+fi
+
+## display clients share one backend; administrative CLI commands pass through
+use_display_server=false
+if $is_linux; then
+  if [[ "$display_action" != local || "${DISPLAY:-}" =~ ^:[0-9]+(\.[0-9]+)?$ ]]; then
+    use_display_server=true
+    if [[ "$display_action" == local ]]; then
+      case "${1:-}" in
+        --help|-h|--version|-V|exec|e|review|login|logout|mcp|plugin|app-server|remote-control|completion|update|doctor|sandbox|debug|apply|cloud|exec-server|features|help)
+          use_display_server=false ;;
+      esac
+    fi
+  fi
+fi
+
+## configuration overrides apply to the shared server on its first launch
+declare -a codex_args=(--yolo)
+if $is_windows_msys; then
+  ## Expose direct MSYS2 Bash selection without changing desktop settings.
+  codex_args+=(--no-alt-screen -c 'features.unified_exec=true' -c 'allow_login_shell=false'
+    -c 'tui.keymap.chat.prompt_stack_back=["f10","alt-down"]')
+  ## Mintty supports truecolor; avoid a native Windows TTY detection downgrade.
+  ## Preserve explicit color settings and leave redirected output alone.
+  if [[ ${TERM_PROGRAM:-} == mintty && -t 1 && -z ${NO_COLOR+x} && -z ${FORCE_COLOR+x} ]]; then
+    export FORCE_COLOR=3
+  fi
+fi
+if [[ "$display_action" == local ]] && { $skip_update || $checked_updates; }; then
+  ## cody owns this launch's update prompt; --noupdate disables both checks
+  codex_args+=(-c 'check_for_update_on_startup=false')
+fi
+if $use_docs; then
+  codex_args+=(-c 'mcp_servers.openaiDeveloperDocs.enabled=true')
+fi
+
+if $use_display_server; then
+  ## keep the manager beside cody so the gscripts checkout remains portable
+  display_manager="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cody-display"
+  [[ -x "$display_manager" ]] || { printf 'cody: missing display manager: %s\n' "$display_manager" >&2; exit 127; }
+  if [[ "$display_action" == attach ]]; then
+    exec "$display_manager" attach --display "$attach_display" -- "${codex_args[@]}" "$@"
+  elif [[ "$display_action" != local ]]; then
+    [[ $# -eq 0 ]] || { printf 'cody: unexpected arguments to display-server management\n' >&2; exit 2; }
+    exec "$display_manager" "$display_action" --display "${attach_display:-${DISPLAY:-}}"
+  fi
+  exec "$display_manager" local -- "${codex_args[@]}" "$@"
+fi
+if [[ "$display_action" != local ]]; then
+  printf 'cody: display server management requires Linux\n' >&2
+  exit 2
+fi
+exec "$codex_bin" "${codex_args[@]}" "$@"

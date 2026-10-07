@@ -1,0 +1,663 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  cat <<'EOF'
+Usage:
+  vnc-fix [options] host
+
+Default mode is read-only diagnosis.
+
+Options:
+  -d, --display N|:N        VNC/X display to inspect (default: auto-detect)
+      --diagnose           Diagnose only (default)
+      --full               Include full xinput output and recent VNC log tail
+      --release-buttons    Send synthetic ButtonRelease events for buttons 1..10
+      --replace-master     Move TigerVNC input to a clean replacement master and
+                           assign existing X clients to it. Requires --force.
+      --guard-master       Keep new X clients on TigerVNC's active master
+      --vncconfig-events   Set vncconfig AcceptPointerEvents/AcceptKeyboardEvents=1
+      --jwm-restart        Ask JWM to restart itself
+      --danger-disable-pointer
+                            Disable/enable the TigerVNC pointer device.
+                            This can crash Xtigervnc on Ubuntu 24.04/TigerVNC 1.13.1.
+                            Requires --force.
+      --force              Required for dangerous actions
+  -v, --verbose            Print the remote script commands as they run
+  -h, --help               Show this help
+
+Examples:
+  vnc-fix gglin
+  vnc-fix --release-buttons gglin
+  vnc-fix --replace-master --force gglin
+  vnc-fix --guard-master gglin
+  vnc-fix --display :1 --vncconfig-events gvlin
+EOF
+}
+
+display=""
+action="diagnose"
+force=0
+verbose=0
+full=0
+host=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d|--display)
+      [ "$#" -ge 2 ] || { echo "missing value for $1" >&2; exit 2; }
+      display="$2"
+      shift 2
+      ;;
+    --diagnose)
+      action="diagnose"
+      shift
+      ;;
+    --full)
+      full=1
+      shift
+      ;;
+    --release-buttons)
+      action="release-buttons"
+      shift
+      ;;
+    --replace-master)
+      action="replace-master"
+      shift
+      ;;
+    --guard-master)
+      action="guard-master"
+      shift
+      ;;
+    --vncconfig-events)
+      action="vncconfig-events"
+      shift
+      ;;
+    --jwm-restart)
+      action="jwm-restart"
+      shift
+      ;;
+    --danger-disable-pointer)
+      action="danger-disable-pointer"
+      shift
+      ;;
+    --force)
+      force=1
+      shift
+      ;;
+    -v|--verbose)
+      verbose=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      if [ -n "$host" ]; then
+        echo "unexpected extra argument: $1" >&2
+        usage >&2
+        exit 2
+      fi
+      host="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$host" ]; then
+  usage >&2
+  exit 2
+fi
+
+case "$display" in
+  "") ;;
+  :*) ;;
+  *) display=":$display" ;;
+esac
+
+if { [ "$action" = "danger-disable-pointer" ] || [ "$action" = "replace-master" ]; } &&
+   [ "$force" -ne 1 ]; then
+  cat >&2 <<'EOF'
+Refusing this action without --force.
+
+Start with:
+  vnc-fix --release-buttons HOST
+
+--replace-master changes the XInput master used by existing clients.
+--danger-disable-pointer can crash Xtigervnc and kill X-attached processes.
+EOF
+  exit 3
+fi
+
+ssh "$host" \
+  "VNC_FIX_DISPLAY='$display' VNC_FIX_ACTION='$action' VNC_FIX_FORCE='$force' VNC_FIX_VERBOSE='$verbose' VNC_FIX_FULL='$full' bash -s" <<'REMOTE'
+set -u
+[ "${VNC_FIX_VERBOSE:-0}" = 1 ] && set -x
+
+say() {
+  printf '\n== %s ==\n' "$*"
+}
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+detect_display() {
+  if [ -n "${VNC_FIX_DISPLAY:-}" ]; then
+    printf '%s\n' "$VNC_FIX_DISPLAY"
+    return
+  fi
+
+  ps -u "$USER" -o args= |
+    awk '
+      /[X]tigervnc|[X]vnc/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^:[0-9]+$/) {
+            print $i
+            exit
+          }
+        }
+      }
+    '
+}
+
+display="$(detect_display)"
+if [ -z "$display" ]; then
+  echo "No Xtigervnc/Xvnc display found for user $USER" >&2
+  exit 1
+fi
+
+export DISPLAY="$display"
+export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+
+say "Target"
+echo "host: $(hostname)"
+echo "date: $(date)"
+echo "display: $DISPLAY"
+echo "xauthority: $XAUTHORITY"
+echo "action: ${VNC_FIX_ACTION:-diagnose}"
+
+say "VNC/JWM Processes"
+if [ "${VNC_FIX_FULL:-0}" = 1 ]; then
+  ps -u "$USER" -o pid,ppid,stat,etime,cmd |
+    awk '/[X]tigervnc|[X]vnc|[v]ncserver|[j]wm|[v]ncconfig/ { print }' || true
+else
+  ps -u "$USER" -o pid=,stat=,etime=,comm= |
+    awk '$4 == "Xtigervnc" || $4 == "Xvnc" || $4 == "jwm" || $4 == "vncconfig" || $4 == "vncserver" { print }' || true
+fi
+xvnc_pid="$(ps -u "$USER" -o pid=,args= | awk '/[X]tigervnc|[X]vnc/ { print $1; exit }')"
+
+say "VNC Connections"
+vnc_port=$((5900 + ${DISPLAY#:}))
+vnc_peers="$(ss -tn 2>/dev/null |
+  awk -v port=":$vnc_port" '$1 == "ESTAB" && index($4, port) { print $5 }')"
+vnc_connection_count="$(printf '%s\n' "$vnc_peers" | awk 'NF { count++ } END { print count + 0 }')"
+echo "established clients: $vnc_connection_count"
+if [ "$vnc_connection_count" -gt 0 ]; then
+  printf '%s\n' "$vnc_peers" | awk 'NF { print "peer: " $0 }'
+fi
+if [ "$vnc_connection_count" -gt 1 ]; then
+  echo "WARNING: multiple viewers can indefinitely lock pointer input on TigerVNC 1.13.1."
+fi
+
+say "Versions"
+printf 'os: '
+(lsb_release -ds 2>/dev/null || sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null || true)
+printf 'kernel: '
+uname -r
+if have dpkg; then
+  dpkg-query -W -f='${Package}: ${Version}\n' \
+    tigervnc-standalone-server tigervnc-tools xserver-xorg-core xinput 2>/dev/null
+fi
+
+say "X Connection"
+if ! xset q >/tmp/vnc-fix-xset.$$ 2>&1; then
+  cat /tmp/vnc-fix-xset.$$
+  rm -f /tmp/vnc-fix-xset.$$
+  exit 1
+fi
+awk '
+  /auto repeat:/ { print "keyboard: " $0 }
+  /Mouse Keys:/ { print "mouse-keys: " $0 }
+  /Pointer Control:/ { getline; print "pointer-control: " $0 }
+' /tmp/vnc-fix-xset.$$
+rm -f /tmp/vnc-fix-xset.$$
+
+say "Pointer State Summary"
+if have xinput; then
+  xinput_file="/tmp/vnc-fix-xinput.$$"
+  xinput_error_file="/tmp/vnc-fix-xinput.err.$$"
+  xinput list --long >"$xinput_file" 2>"$xinput_error_file"
+
+  device_state() {
+    awk -v id="$1" '
+      $0 ~ "id=" id "([[:space:]]|$)" { found=1; next }
+      found && /Button state:/ {
+        sub(/^[[:space:]]*Button state:[[:space:]]*/, "")
+        print
+        exit
+      }
+      found && /id=/ { exit }
+    ' "$xinput_file"
+  }
+
+  device_name() {
+    awk -v id="$1" '
+      $0 ~ "id=" id "([[:space:]]|$)" {
+        line=$0
+        sub(/^[^[:alnum:]]*/, "", line)
+        sub(/[[:space:]]+id=.*/, "", line)
+        print line
+        exit
+      }
+    ' "$xinput_file"
+  }
+
+  tiger_line="$(grep -m1 'TigerVNC pointer.*\[slave[[:space:]]\+pointer' "$xinput_file" || true)"
+  tiger_pointer_id="$(printf '%s\n' "$tiger_line" | sed -nE 's/.*id=([0-9]+).*/\1/p')"
+  active_master_id="$(printf '%s\n' "$tiger_line" |
+    sed -nE 's/.*\[slave[[:space:]]+pointer[[:space:]]+\(([0-9]+)\)\].*/\1/p')"
+
+  if [ -n "$tiger_pointer_id" ] && [ -n "$active_master_id" ]; then
+    tiger_state="$(device_state "$tiger_pointer_id")"
+    active_master_name="$(device_name "$active_master_id")"
+    active_master_state="$(device_state "$active_master_id")"
+    echo "TigerVNC pointer id $tiger_pointer_id: Button state: $tiger_state"
+    echo "active master: $active_master_name (id $active_master_id)"
+    echo "active master state: $active_master_state"
+
+    if [ "$active_master_id" != 2 ]; then
+      builtin_master_state="$(device_state 2)"
+      echo "built-in master state: $builtin_master_state"
+    fi
+
+    if [ -n "$active_master_state" ]; then
+      echo "STUCK-BUTTON-SUSPECTED: active master reports button(s) down: $active_master_state"
+      echo "First recovery action: vnc-fix --release-buttons HOST"
+      echo "If that fails: vnc-fix --replace-master --force HOST"
+    else
+      echo "status: active TigerVNC master has no stuck buttons"
+    fi
+  else
+    echo "Unable to identify the TigerVNC pointer or its active master."
+  fi
+  if [ -s "$xinput_error_file" ]; then
+    cat "$xinput_error_file"
+  fi
+  if [ "${VNC_FIX_FULL:-0}" = 1 ]; then
+    say "Full XInput"
+    cat "$xinput_file"
+  fi
+  rm -f "$xinput_file" "$xinput_error_file"
+else
+  echo "xinput not found"
+fi
+
+say "Window Manager State"
+if [ "${VNC_FIX_FULL:-0}" = 1 ]; then
+  xprop -root _NET_ACTIVE_WINDOW _NET_CLIENT_LIST 2>&1 || true
+else
+  active_window="$(xprop -root _NET_ACTIVE_WINDOW 2>/dev/null |
+    sed -nE 's/.*# (0x[0-9a-fA-F]+).*/\1/p')"
+  client_count="$(xprop -root _NET_CLIENT_LIST 2>/dev/null |
+    grep -oE '0x[0-9a-fA-F]+' | wc -l)"
+  echo "active window: ${active_window:-unknown}; managed windows: $client_count"
+fi
+
+say "VNC Log"
+log="$HOME/.vnc/$(hostname)${DISPLAY}.log"
+if [ -r "$log" ]; then
+  log_pattern='Segmentation fault|Fatal server error|Caught signal|Xtigervnc server died|VNCSConnST:.*(timed out|reset by peer)|Server shutdown|X connection'
+  echo "log: $log"
+  echo "inspect: ssh $(hostname) 'tail -120 $log'"
+  echo "errors:  ssh $(hostname) \"egrep -n '$log_pattern' $log | tail -80\""
+  if [ "${VNC_FIX_FULL:-0}" = 1 ]; then
+    say "Recent VNC Log Tail"
+    tail -80 "$log"
+  else
+    start_line=""
+    if [ -n "${xvnc_pid:-}" ]; then
+      start_line="$(grep -n "New Xtigervnc server .*${DISPLAY}" "$log" 2>/dev/null | tail -1 | cut -d: -f1)"
+    fi
+    if [ -n "$start_line" ]; then
+      recent="$(tail -n +"$start_line" "$log" 2>/dev/null |
+        egrep -n "$log_pattern" |
+        tail -5 || true)"
+      if [ -n "$recent" ]; then
+        recent="$(printf '%s\n' "$recent" |
+          awk -F: -v off="$((start_line - 1))" '{
+            line=$1
+            $1=""
+            sub(/^:/, "")
+            print line + off ":" $0
+          }')"
+      fi
+    else
+      recent="$(egrep -n "$log_pattern" "$log" 2>/dev/null | tail -5 || true)"
+    fi
+    if [ -n "$recent" ]; then
+      echo "recent relevant log lines:"
+      printf '%s\n' "$recent"
+    else
+      echo "recent relevant log lines: none"
+    fi
+  fi
+else
+  echo "log not readable: $log"
+fi
+
+show_active_pointer_state() {
+  state_file="/tmp/vnc-fix-pointer-state.$$"
+  xinput list --long >"$state_file" 2>/dev/null || {
+    rm -f "$state_file"
+    return 2
+  }
+  state_tiger_line="$(grep -m1 'TigerVNC pointer.*\[slave[[:space:]]\+pointer' "$state_file" || true)"
+  state_tiger_id="$(printf '%s\n' "$state_tiger_line" | sed -nE 's/.*id=([0-9]+).*/\1/p')"
+  state_master_id="$(printf '%s\n' "$state_tiger_line" |
+    sed -nE 's/.*\[slave[[:space:]]+pointer[[:space:]]+\(([0-9]+)\)\].*/\1/p')"
+  if [ -z "$state_tiger_id" ] || [ -z "$state_master_id" ]; then
+    rm -f "$state_file"
+    echo "unable to identify active TigerVNC master"
+    return 2
+  fi
+  state_master_name="$(awk -v id="$state_master_id" '
+    $0 ~ "id=" id "([[:space:]]|$)" {
+      line=$0
+      sub(/^[^[:alnum:]]*/, "", line)
+      sub(/[[:space:]]+id=.*/, "", line)
+      print line
+      exit
+    }
+  ' "$state_file")"
+  state_buttons="$(awk -v id="$state_master_id" '
+    $0 ~ "id=" id "([[:space:]]|$)" { found=1; next }
+    found && /Button state:/ {
+      sub(/^[[:space:]]*Button state:[[:space:]]*/, "")
+      print
+      exit
+    }
+    found && /id=/ { exit }
+  ' "$state_file")"
+  rm -f "$state_file"
+  echo "active master: $state_master_name (id $state_master_id)"
+  echo "active master button state: $state_buttons"
+  [ -z "$state_buttons" ]
+}
+
+release_buttons() {
+  say "Action: Release Pointer Buttons"
+  if ! have python3; then
+    echo "python3 not found; cannot use XTEST release action" >&2
+    return 1
+  fi
+  python3 - <<'PY'
+import ctypes
+import ctypes.util
+import os
+import sys
+import time
+
+display_name = os.environ.get("DISPLAY", "").encode()
+libx11_name = ctypes.util.find_library("X11")
+libxtst_name = ctypes.util.find_library("Xtst")
+if not libx11_name or not libxtst_name:
+    print("Missing libX11 or libXtst", file=sys.stderr)
+    sys.exit(1)
+
+x11 = ctypes.CDLL(libx11_name)
+xtst = ctypes.CDLL(libxtst_name)
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+x11.XFlush.argtypes = [ctypes.c_void_p]
+xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+
+dpy = x11.XOpenDisplay(display_name)
+if not dpy:
+    print(f"Unable to open DISPLAY={os.environ.get('DISPLAY')}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    for button in range(1, 11):
+        xtst.XTestFakeButtonEvent(dpy, button, 0, 0)
+    x11.XFlush(dpy)
+    time.sleep(0.05)
+finally:
+    x11.XCloseDisplay(dpy)
+
+print("sent ButtonRelease events for buttons 1..10")
+PY
+}
+
+active_tiger_master_id() {
+  xinput list 2>/dev/null |
+    grep -m1 'TigerVNC pointer.*\[slave[[:space:]]\+pointer' |
+    sed -nE 's/.*\[slave[[:space:]]+pointer[[:space:]]+\(([0-9]+)\)\].*/\1/p'
+}
+
+start_master_guard() {
+  guard_master_id="$1"
+  guard_display_key="${DISPLAY#:}"
+  guard_pid_file="$HOME/.vnc/vnc-fix-display-${guard_display_key}-master-guard.pid"
+  guard_log="$HOME/.vnc/vnc-fix-display-${guard_display_key}-master-guard.log"
+  old_guard_pid=""
+  if [ -r "$guard_pid_file" ]; then
+    old_guard_pid="$(cat "$guard_pid_file" 2>/dev/null || true)"
+  fi
+  if [ -n "$old_guard_pid" ] && kill -0 "$old_guard_pid" 2>/dev/null &&
+     tr '\0' ' ' <"/proc/$old_guard_pid/cmdline" 2>/dev/null |
+       grep -Fq 'vnc-fix-client-pointer-guard'; then
+    old_guard_master="$(tr '\0' '\n' <"/proc/$old_guard_pid/environ" 2>/dev/null |
+      sed -n 's/^VNC_FIX_GUARD_MASTER=//p')"
+    if [ "$old_guard_master" = "$guard_master_id" ]; then
+      echo "master guard already running: pid $old_guard_pid; active master $guard_master_id"
+      return 0
+    fi
+
+    echo "replacing master guard: pid $old_guard_pid; old master ${old_guard_master:-unknown}"
+    kill "$old_guard_pid" 2>/dev/null || true
+    guard_stop_attempt=0
+    while kill -0 "$old_guard_pid" 2>/dev/null && [ "$guard_stop_attempt" -lt 30 ]; do
+      sleep 0.1
+      guard_stop_attempt=$((guard_stop_attempt + 1))
+    done
+    if kill -0 "$old_guard_pid" 2>/dev/null; then
+      echo "old master guard did not stop; refusing to start a competing guard" >&2
+      return 1
+    fi
+  fi
+
+  nohup env \
+    DISPLAY="$DISPLAY" \
+    XAUTHORITY="$XAUTHORITY" \
+    VNC_FIX_GUARD_MASTER="$guard_master_id" \
+    VNC_FIX_GUARD_XVNC_PID="$xvnc_pid" \
+    bash -c '
+      while kill -0 "$VNC_FIX_GUARD_XVNC_PID" 2>/dev/null &&
+            xinput list "$VNC_FIX_GUARD_MASTER" >/dev/null 2>&1; do
+        windows="$({
+          xprop -root _NET_CLIENT_LIST 2>/dev/null
+          xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null
+          xprop -root _NET_ACTIVE_WINDOW 2>/dev/null
+        } | grep -oE "0x[0-9a-fA-F]+" | sort -u)"
+        for window_id in $windows; do
+          xinput set-cp "$window_id" "$VNC_FIX_GUARD_MASTER" >/dev/null 2>&1 || true
+        done
+        sleep 2
+      done
+    ' vnc-fix-client-pointer-guard >"$guard_log" 2>&1 < /dev/null &
+  guard_pid=$!
+  printf '%s\n' "$guard_pid" >"$guard_pid_file"
+  sleep 0.1
+  if ! kill -0 "$guard_pid" 2>/dev/null; then
+    echo "master guard failed to start; inspect: $guard_log" >&2
+    return 1
+  fi
+  echo "master guard started: pid $guard_pid; active master $guard_master_id"
+  echo "guard log: $guard_log"
+}
+
+guard_master() {
+  say "Action: Guard Active TigerVNC Master"
+  guard_active_master="$(active_tiger_master_id)"
+  if [ -z "$guard_active_master" ]; then
+    echo "unable to identify TigerVNC's active master" >&2
+    return 1
+  fi
+  if [ "$guard_active_master" = 2 ]; then
+    echo "TigerVNC uses built-in master 2; no guard is needed."
+    return 0
+  fi
+  start_master_guard "$guard_active_master"
+}
+
+replace_master() {
+  say "Action: Replace Stuck XInput Master"
+  topology_file="/tmp/vnc-fix-topology.$$"
+  xinput list >"$topology_file" 2>/dev/null || {
+    rm -f "$topology_file"
+    echo "unable to read XInput topology" >&2
+    return 1
+  }
+
+  pointer_line="$(grep -m1 'TigerVNC pointer.*\[slave[[:space:]]\+pointer' "$topology_file" || true)"
+  keyboard_line="$(grep -m1 'TigerVNC keyboard.*\[slave[[:space:]]\+keyboard' "$topology_file" || true)"
+  pointer_id="$(printf '%s\n' "$pointer_line" | sed -nE 's/.*id=([0-9]+).*/\1/p')"
+  keyboard_id="$(printf '%s\n' "$keyboard_line" | sed -nE 's/.*id=([0-9]+).*/\1/p')"
+  old_pointer_master="$(printf '%s\n' "$pointer_line" |
+    sed -nE 's/.*\[slave[[:space:]]+pointer[[:space:]]+\(([0-9]+)\)\].*/\1/p')"
+  old_keyboard_master="$(printf '%s\n' "$keyboard_line" |
+    sed -nE 's/.*\[slave[[:space:]]+keyboard[[:space:]]+\(([0-9]+)\)\].*/\1/p')"
+  rm -f "$topology_file"
+
+  if [ -z "$pointer_id" ] || [ -z "$keyboard_id" ] ||
+     [ -z "$old_pointer_master" ] || [ -z "$old_keyboard_master" ]; then
+    echo "unable to identify TigerVNC input devices and their masters" >&2
+    return 1
+  fi
+
+  replacement_name="VncRepair-$$"
+  echo "TigerVNC pointer: $pointer_id (master $old_pointer_master)"
+  echo "TigerVNC keyboard: $keyboard_id (master $old_keyboard_master)"
+  echo "creating replacement master: $replacement_name"
+  xinput create-master "$replacement_name" || return 1
+  new_pointer_master="$(xinput list --id-only "$replacement_name pointer" 2>/dev/null || true)"
+  new_keyboard_master="$(xinput list --id-only "$replacement_name keyboard" 2>/dev/null || true)"
+
+  if [ -z "$new_pointer_master" ] || [ -z "$new_keyboard_master" ]; then
+    echo "replacement master creation failed" >&2
+    return 1
+  fi
+
+  if ! xinput reattach "$pointer_id" "$new_pointer_master" ||
+     ! xinput reattach "$keyboard_id" "$new_keyboard_master"; then
+    echo "reattach failed; attempting to restore the original masters" >&2
+    xinput reattach "$pointer_id" "$old_pointer_master" 2>/dev/null || true
+    xinput reattach "$keyboard_id" "$old_keyboard_master" 2>/dev/null || true
+    xinput remove-master "$new_pointer_master" AttachToMaster \
+      "$old_pointer_master" "$old_keyboard_master" 2>/dev/null || true
+    return 1
+  fi
+
+  client_windows="$({
+    xprop -root _NET_CLIENT_LIST 2>/dev/null
+    xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null
+    xprop -root _NET_ACTIVE_WINDOW 2>/dev/null
+  } | grep -oE '0x[0-9a-fA-F]+' | sort -u)"
+  assigned=0
+  assignment_failures=0
+  for window_id in $client_windows; do
+    if xinput set-cp "$window_id" "$new_pointer_master" >/dev/null 2>&1; then
+      assigned=$((assigned + 1))
+    else
+      assignment_failures=$((assignment_failures + 1))
+    fi
+  done
+
+  echo "replacement pointer master: $new_pointer_master"
+  echo "replacement keyboard master: $new_keyboard_master"
+  echo "clients assigned: $assigned; stale/failed windows: $assignment_failures"
+  echo "The original master is intentionally left in place; X may refuse to remove its built-in master."
+  show_active_pointer_state || return 1
+  start_master_guard "$new_pointer_master"
+}
+
+vncconfig_events() {
+  say "Action: vncconfig Accept*Events"
+  if ! have vncconfig; then
+    echo "vncconfig not found" >&2
+    return 1
+  fi
+  vncconfig -set AcceptPointerEvents=1 2>&1 || true
+  vncconfig -set AcceptKeyboardEvents=1 2>&1 || true
+}
+
+jwm_restart() {
+  say "Action: JWM Restart"
+  if ! have jwm; then
+    echo "jwm not found" >&2
+    return 1
+  fi
+  jwm -restart 2>&1
+}
+
+danger_disable_pointer() {
+  say "Action: DANGEROUS TigerVNC Pointer Disable/Enable"
+  echo "WARNING: this can crash Xtigervnc and kill X-attached terminal processes."
+  ptr_id="$(xinput list --id-only 'TigerVNC pointer' 2>/dev/null || true)"
+  if [ -z "$ptr_id" ]; then
+    echo "TigerVNC pointer not found" >&2
+    return 1
+  fi
+  echo "TigerVNC pointer id: $ptr_id"
+  xinput disable "$ptr_id"
+  sleep 0.3
+  xinput enable "$ptr_id" || xinput enable 'TigerVNC pointer'
+}
+
+case "${VNC_FIX_ACTION:-diagnose}" in
+  diagnose)
+    ;;
+  release-buttons)
+    release_buttons
+    say "Post-Action Pointer State"
+    if show_active_pointer_state; then
+      echo "result: active master reports no buttons held"
+    else
+      echo "result: button release did not clear the active master"
+      echo "next action: vnc-fix --replace-master --force HOST"
+      exit 4
+    fi
+    ;;
+  replace-master)
+    replace_master
+    ;;
+  guard-master)
+    guard_master
+    ;;
+  vncconfig-events)
+    vncconfig_events
+    ;;
+  jwm-restart)
+    jwm_restart
+    ;;
+  danger-disable-pointer)
+    danger_disable_pointer
+    ;;
+  *)
+    echo "unknown remote action: ${VNC_FIX_ACTION:-}" >&2
+    exit 2
+    ;;
+esac
+REMOTE
