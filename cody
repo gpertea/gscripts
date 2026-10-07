@@ -146,7 +146,10 @@ update_codex() {
       printf 'App-server left running at its reported version.\n'
     fi
   else
-    printf 'No running app-server to restart; no server was started.\n'
+    printf 'No running default app-server to restart; no server was started.\n'
+  fi
+  if $is_linux; then
+    printf 'Display servers retain their running version; use cody --server-stop when ready to replace one.\n'
   fi
 }
 
@@ -167,11 +170,28 @@ newer_version() {
 skip_update=false
 update_only=false
 use_docs=false
+display_action=local
+attach_display=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --noupdate) skip_update=true ;;
     --update) update_only=true ;;
     --docs) use_docs=true ;;
+    --attach)
+      [[ "$display_action" == local ]] || { printf 'cody: choose one display-server action\n' >&2; exit 2; }
+      [[ $# -ge 2 ]] || { printf 'cody: --attach requires a DISPLAY such as :3\n' >&2; exit 2; }
+      display_action=attach
+      attach_display="$2"
+      skip_update=true
+      shift ;;
+    --server-status|--server-stop|--server-endpoint)
+      [[ "$display_action" == local ]] || { printf 'cody: choose one display-server action\n' >&2; exit 2; }
+      display_action="${1#--server-}"
+      skip_update=true
+      if [[ "${2:-}" =~ ^:[0-9]+(\.[0-9]+)?$ ]]; then
+        attach_display="$2"
+        shift
+      fi ;;
     *) break ;;
   esac
   shift
@@ -217,7 +237,21 @@ if ! $skip_update && [[ -t 0 && -t 1 && "${1:-}" != --help && "${1:-}" != --vers
   fi
 fi
 
-## opt into the OpenAI documentation MCP for this launch only
+## display clients share one backend; administrative CLI commands pass through
+use_display_server=false
+if $is_linux; then
+  if [[ "$display_action" != local || "${DISPLAY:-}" =~ ^:[0-9]+(\.[0-9]+)?$ ]]; then
+    use_display_server=true
+    if [[ "$display_action" == local ]]; then
+      case "${1:-}" in
+        --help|-h|--version|-V|exec|e|review|login|logout|mcp|plugin|app-server|remote-control|completion|update|doctor|sandbox|debug|apply|cloud|exec-server|features|help)
+          use_display_server=false ;;
+      esac
+    fi
+  fi
+fi
+
+## configuration overrides apply to the shared server on its first launch
 declare -a codex_args=(--yolo)
 if $is_windows_msys; then
   ## Expose direct MSYS2 Bash selection without changing desktop settings.
@@ -229,7 +263,7 @@ if $is_windows_msys; then
     export FORCE_COLOR=3
   fi
 fi
-if $skip_update || $checked_updates; then
+if [[ "$display_action" == local ]] && { $skip_update || $checked_updates; }; then
   ## cody owns this launch's update prompt; --noupdate disables both checks
   codex_args+=(-c 'check_for_update_on_startup=false')
 fi
@@ -237,4 +271,20 @@ if $use_docs; then
   codex_args+=(-c 'mcp_servers.openaiDeveloperDocs.enabled=true')
 fi
 
+if $use_display_server; then
+  ## keep the manager beside cody so the gscripts checkout remains portable
+  display_manager="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cody-display"
+  [[ -x "$display_manager" ]] || { printf 'cody: missing display manager: %s\n' "$display_manager" >&2; exit 127; }
+  if [[ "$display_action" == attach ]]; then
+    exec "$display_manager" attach --display "$attach_display" -- "${codex_args[@]}" "$@"
+  elif [[ "$display_action" != local ]]; then
+    [[ $# -eq 0 ]] || { printf 'cody: unexpected arguments to display-server management\n' >&2; exit 2; }
+    exec "$display_manager" "$display_action" --display "${attach_display:-${DISPLAY:-}}"
+  fi
+  exec "$display_manager" local -- "${codex_args[@]}" "$@"
+fi
+if [[ "$display_action" != local ]]; then
+  printf 'cody: display server management requires Linux\n' >&2
+  exit 2
+fi
 exec "$codex_bin" "${codex_args[@]}" "$@"

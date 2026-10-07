@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""One locally started Codex app-server per live X session (Linux)."""
+import argparse
+import base64
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+
+def process_id(pid):
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        return None if fields[0] == 'Z' else fields[19]
+    except (OSError, IndexError):
+        return None
+
+
+def ssh_ancestor():
+    # VNC desktops can inherit stale SSH variables; inspect live ancestry instead
+    pid = os.getppid()
+    while pid > 1:
+        try:
+            base = Path(f'/proc/{pid}')
+            name = (base / 'comm').read_text().strip()
+            if name == 'sshd' or name.startswith('sshd-'):
+                return True
+            pid = int((base / 'stat').read_text().rsplit(')', 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            raise RuntimeError('cannot establish launch ancestry; use attach')
+    return False
+
+
+def x_session(display):
+    match = re.fullmatch(r':(\d+)(?:\.\d+)?', display)
+    if not match:
+        raise RuntimeError('a local DISPLAY such as :2 is required')
+    number = int(match[1])
+    path = Path(f'/tmp/.X11-unix/X{number}')
+    with socket.socket(socket.AF_UNIX) as conn:
+        conn.settimeout(2)
+        conn.connect(str(path))
+        pid, _, _ = struct.unpack('3i', conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+    start = process_id(pid)
+    if start is None:
+        raise RuntimeError('X server exited during discovery')
+    stat = path.stat()
+    identity = [pid, start, stat.st_dev, stat.st_ino]
+    return number, identity
+
+
+def session_alive(number, identity):
+    try:
+        stat = Path(f'/tmp/.X11-unix/X{number}').stat()
+        return (process_id(identity[0]) == identity[1]
+                and [stat.st_dev, stat.st_ino] == identity[2:])
+    except OSError:
+        return False
+
+
+def root_dir():
+    # do not let a caller's environment select a second singleton namespace
+    base = Path(f'/run/user/{os.getuid()}')
+    if not base.is_dir() or base.stat().st_uid != os.getuid():
+        base = Path('/tmp')
+    root = base / f'cody-display-{os.getuid()}'
+    root.mkdir(mode=0o700, exist_ok=True)
+    stat = root.lstat()
+    if root.is_symlink() or stat.st_uid != os.getuid() or stat.st_mode & 0o077:
+        raise RuntimeError(f'expected a private directory owned by this user: {root}')
+    return root
+
+
+def session_dir(display):
+    number, identity = x_session(display)
+    token = hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:12]
+    path = root_dir() / f'{number}-{token}'
+    path.mkdir(mode=0o700, exist_ok=True)
+    if len(os.fsencode(path / 'server.sock')) >= 108:
+        raise RuntimeError('runtime directory is too long for a Unix socket')
+    return number, identity, path
+
+
+def ready(path):
+    # require an actual WebSocket listener, not merely a leftover socket file
+    try:
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(.5)
+            conn.connect(str(path / 'server.sock'))
+            key = base64.b64encode(os.urandom(16)).decode()
+            conn.sendall(('GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n'
+                          f'Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n'
+                          'Sec-WebSocket-Version: 13\r\n\r\n').encode())
+            return conn.recv(4096).startswith(b'HTTP/1.1 101 ')
+    except OSError:
+        return False
+
+
+def read_state(path):
+    try:
+        return json.loads((path / 'state.json').read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def write_state(path, state):
+    temporary = path / 'state.tmp'
+    temporary.write_text(json.dumps(state, indent=2) + '\n')
+    temporary.replace(path / 'state.json')
+
+
+def environment():
+    # compare routing context only; never write the full environment or secrets
+    return {key: os.environ.get(key) for key in (
+        'DISPLAY', 'XAUTHORITY', 'LIN_BROWSER_USE_AUTH_DISPLAY',
+        'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR')}
+
+
+def codex_home():
+    return str(Path(os.environ.get('CODEX_HOME', '~/.codex')).expanduser().resolve())
+
+
+def supervise(number, identity, path, lock_fd, codex, overrides):
+    stopping = False
+
+    def stop(_signum, _frame):
+        nonlocal stopping
+        stopping = True
+
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(signum, stop)
+    child = None
+    try:
+        if not session_alive(number, identity):
+            return
+        (path / 'server.sock').unlink(missing_ok=True)
+        # the child also retains the lock if its supervisor is killed abruptly
+        child = subprocess.Popen(
+            [codex, *[part for key, value in overrides.items() for part in ('-c', key + '=' + value)],
+             'app-server', '--listen', f'unix://{path}/server.sock'],
+            stdin=subprocess.DEVNULL, start_new_session=True, pass_fds=(lock_fd,))
+        write_state(path, dict(display=f':{number}', x_identity=identity,
+                              supervisor_pid=os.getpid(), supervisor_start=process_id(os.getpid()),
+                              server_pid=child.pid, server_start=process_id(child.pid),
+                              codex=codex, codex_home=codex_home(), environment=environment(),
+                              overrides={key: hashlib.sha256(value.encode()).hexdigest()
+                                         for key, value in overrides.items()},
+                              endpoint=f'unix://{path}/server.sock'))
+        while not stopping and child.poll() is None and session_alive(number, identity):
+            time.sleep(.25)
+    finally:
+        if child is not None:
+            # stop MCPs and helpers in this server's process group as well
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait()
+        (path / 'server.sock').unlink(missing_ok=True)
+        (path / 'state.json').unlink(missing_ok=True)
+        os.close(lock_fd)
+
+
+def ensure(display, codex, overrides):
+    number, identity, path = session_dir(display)
+    os.environ['DISPLAY'] = f':{number}'
+    os.environ['LIN_BROWSER_USE_AUTH_DISPLAY'] = f':{number}'
+    os.environ.setdefault('XAUTHORITY', str(Path.home() / '.Xauthority'))
+    # serialize contenders, but keep the lifetime lock independent of clients
+    with (path / 'start.lock').open('a') as startup:
+        fcntl.flock(startup, fcntl.LOCK_EX)
+        lifetime = os.open(path / 'server.lock', os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            try:
+                fcntl.flock(lifetime, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                running = False
+            except BlockingIOError:
+                running = True
+            if running:
+                state = read_state(path)
+                if not state or not ready(path):
+                    raise RuntimeError(f'server is still owned but unavailable; inspect {path}/server.log')
+                if state['codex_home'] != codex_home() or state['environment'] != environment():
+                    raise RuntimeError('existing server has a different display environment or CODEX_HOME; '
+                                       'use attach explicitly, or stop it before changing its environment')
+                expected = state.get('overrides', {})
+                if any(expected.get(key) != hashlib.sha256(value.encode()).hexdigest()
+                       for key, value in overrides.items()):
+                    raise RuntimeError('requested overrides differ from this display server; '
+                                       'stop it explicitly before changing server configuration')
+                return state['endpoint']
+            # startup is local-only; remote tools must use the attach command
+            if ssh_ancestor():
+                raise RuntimeError('refusing server startup from an SSH session; use attach')
+            result = subprocess.run(['xdpyinfo', '-display', f':{number}'],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            if result.returncode:
+                raise RuntimeError('cannot authenticate to the selected X session')
+            with (path / 'server.log').open('a') as log:
+                worker = subprocess.Popen(
+                    [sys.executable, str(Path(__file__).resolve()), '_serve', str(number),
+                     json.dumps(identity), str(path), str(lifetime), codex, json.dumps(overrides)],
+                    stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                    start_new_session=True, pass_fds=(lifetime,))
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and worker.poll() is None:
+                state = read_state(path)
+                if state and state['supervisor_pid'] == worker.pid and ready(path):
+                    return state['endpoint']
+                time.sleep(.1)
+            # a failed start must release its lock rather than leave a hidden worker
+            worker.terminate()
+            try:
+                worker.wait(timeout=7)
+            except subprocess.TimeoutExpired:
+                worker.kill()
+                worker.wait()
+            raise RuntimeError(f'server startup failed; inspect {path}/server.log')
+        finally:
+            os.close(lifetime)
+
+
+def existing(display, require_ready=True):
+    _, _, path = session_dir(display)
+    state = read_state(path)
+    if not state or (require_ready and not ready(path)):
+        raise RuntimeError(f'no running server for {display}; start cody-display locally first')
+    return path, state
+
+
+def server_overrides(argv):
+    overrides = {}
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == '--':
+            break
+        if arg in ('--no-daemon', '--remote', '--profile', '-p', '--strict-config') or arg.startswith(('--remote=', '--profile=')):
+            raise RuntimeError(f'{arg} cannot be combined with a managed display server')
+        if arg in ('-c', '--config', '--enable', '--disable'):
+            index += 1
+            if index == len(argv):
+                raise RuntimeError(f'{arg} requires a value')
+            value = argv[index]
+            if arg in ('--enable', '--disable'):
+                overrides['features.' + value] = 'true' if arg == '--enable' else 'false'
+            else:
+                key, separator, value = value.partition('=')
+                if not separator:
+                    raise RuntimeError('configuration overrides require key=value')
+                overrides[key.strip()] = value.strip()
+        elif arg.startswith(('--config=', '--enable=', '--disable=')) or (arg.startswith('-c') and len(arg) > 2):
+            flag, value = arg.split('=', 1) if arg.startswith('--') else ('-c', arg[2:])
+            overrides.update(server_overrides([flag, value]))
+        elif arg == '--search':
+            overrides['web_search'] = '"live"'
+        index += 1
+    return overrides
+
+
+def main():
+    os.umask(0o077)
+    if len(sys.argv) > 1 and sys.argv[1] == '_serve':
+        supervise(int(sys.argv[2]), json.loads(sys.argv[3]), Path(sys.argv[4]),
+                  int(sys.argv[5]), sys.argv[6], json.loads(sys.argv[7]))
+        return
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['start', 'endpoint', 'status', 'stop', 'local', 'attach'])
+    parser.add_argument('--display', default=os.environ.get('DISPLAY', ''))
+    # parse client options separately so manager flags work after the action
+    argv = sys.argv[1:]
+    split = argv.index('--') if '--' in argv else len(argv)
+    args = parser.parse_args(argv[:split])
+    extra = argv[split + 1:]
+    codex = shutil.which('codex')
+    if not codex:
+        raise RuntimeError('codex is not on PATH')
+    if args.action in ('start', 'local'):
+        endpoint = ensure(args.display, codex, server_overrides(extra))
+    else:
+        if args.action == 'attach' and server_overrides(extra):
+            raise RuntimeError('attach cannot change server configuration; omit -c/--enable/--disable/--search')
+        path, state = existing(args.display, require_ready=args.action not in ('status', 'stop'))
+        endpoint = state['endpoint']
+        if args.action == 'status':
+            state['ready'] = ready(path)
+            print(json.dumps(state, indent=2))
+            return
+        if args.action == 'stop':
+            # pidfds prevent a recycled PID from receiving the stop signal
+            fd = os.pidfd_open(state['supervisor_pid'])
+            try:
+                if process_id(state['supervisor_pid']) != state['supervisor_start']:
+                    raise RuntimeError('supervisor identity changed; refusing to stop')
+                signal.pidfd_send_signal(fd, signal.SIGTERM)
+            finally:
+                os.close(fd)
+            deadline = time.monotonic() + 8
+            while (path / 'state.json').exists() and time.monotonic() < deadline:
+                time.sleep(.1)
+            if (path / 'state.json').exists():
+                raise RuntimeError('server did not stop within 8 seconds')
+            print(f'stopped {args.display}')
+            return
+    if args.action in ('start', 'endpoint'):
+        print(endpoint)
+    else:
+        # explicit attachment never falls back to the default shared daemon
+        os.execv(codex, [codex, '--remote', endpoint, *extra])
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        print(f'cody-display: {error}', file=sys.stderr)
+        sys.exit(1)
