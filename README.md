@@ -12,6 +12,21 @@ With a local numeric display, `cody` starts or reuses one app-server per live
 X/VNC session. `cody --attach :2` attaches to an existing display server;
 `--server-status`, `--server-endpoint`, and `--server-stop` manage it.
 
+Managed `cody resume` opens the current-directory picker and automatically
+applies the named Full Access profile with approvals disabled to the selected
+thread. This also works with a thread ID, `--last`, and `--attach :N resume`.
+It selects cody's yolo default even if the saved thread used restricted access.
+Codex's remote CLI rejects launch-time permission overrides, so the
+`cody-resume` helper briefly delays the resume response, updates that thread
+through the app-server API, and verifies its effective permissions. Update
+failure is reported as a resume error. Other threads and later manual
+permission changes are unaffected. Fork and in-session `/resume` retain their
+existing behavior.
+
+Keep `cody`, `cody-display`, and `cody-resume` together on Linux. Both Python
+helpers use only the Python 3.9+ standard library. The temporary resume proxy
+connects to the existing display server and exits with its client.
+
 With `DISPLAY` unset or empty, `cody` starts the regular Codex CLI after its
 usual update check. This path uses normal default app-server behavior and
 requires no display manager, VNC, Xauthority, or desktop runtime setup. On

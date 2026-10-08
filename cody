@@ -284,7 +284,7 @@ if $use_display_server; then
   done
 fi
 declare -a codex_args=()
-## remote resumes and forks must inherit saved permissions instead of --yolo
+## the remote CLI rejects launch-time permission flags on resume and fork
 if ! $use_display_server || [[ "$codex_command" != resume && "$codex_command" != fork ]]; then
   codex_args+=(--yolo)
 fi
@@ -307,6 +307,11 @@ if $use_docs; then
 fi
 
 if $use_display_server; then
+  declare -a display_args=()
+  ## apply full access through the selected thread's settings API, after resume
+  if [[ "$codex_command" == resume ]]; then
+    display_args+=(--restore-yolo)
+  fi
   ## remote startup pickers need an explicit cwd to filter by project
   if [[ "$codex_command" == resume ]]; then
     resume_here=true
@@ -324,12 +329,12 @@ if $use_display_server; then
   display_manager="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cody-display"
   [[ -x "$display_manager" ]] || { printf 'cody: missing display manager: %s\n' "$display_manager" >&2; exit 127; }
   if [[ "$display_action" == attach ]]; then
-    exec "$display_manager" attach --display "$attach_display" -- "${codex_args[@]}" "$@"
+    exec "$display_manager" attach --display "$attach_display" "${display_args[@]}" -- "${codex_args[@]}" "$@"
   elif [[ "$display_action" != local ]]; then
     [[ $# -eq 0 ]] || { printf 'cody: unexpected arguments to display-server management\n' >&2; exit 2; }
     exec "$display_manager" "$display_action" --display "${attach_display:-${DISPLAY:-}}"
   fi
-  exec "$display_manager" local -- "${codex_args[@]}" "$@"
+  exec "$display_manager" local "${display_args[@]}" -- "${codex_args[@]}" "$@"
 fi
 if [[ "$display_action" != local ]]; then
   printf 'cody: display server management requires Linux\n' >&2

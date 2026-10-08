@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Restore full access on the first selected resume through a local client proxy."""
+import asyncio
+import json
+from pathlib import Path
+import secrets
+import signal
+import struct
+import sys
+import tempfile
+
+
+async def header(reader):
+    return await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 10)
+
+
+async def frame(reader):
+    first, second = await reader.readexactly(2)
+    size = second & 127
+    prefix = bytes((first, second))
+    if size in (126, 127):
+        extended = await reader.readexactly(2 if size == 126 else 8)
+        prefix += extended
+        size = struct.unpack('!H' if size == 126 else '!Q', extended)[0]
+    mask = await reader.readexactly(4) if second & 128 else b''
+    body = await reader.readexactly(size)
+    raw = prefix + mask + body
+    if mask:
+        body = bytes(value ^ mask[index % 4] for index, value in enumerate(body))
+    return first, body, raw
+
+
+def encode(message, masked=False):
+    body = json.dumps(message, separators=(',', ':')).encode()
+    size = len(body)
+    prefix = bytes((0x81, (0x80 if masked else 0) | min(size, 126)))
+    if size >= 126:
+        prefix = bytes((0x81, (0x80 if masked else 0) | (126 if size < 65536 else 127)))
+        prefix += struct.pack('!H' if size < 65536 else '!Q', size)
+    if not masked:
+        return prefix + body
+    mask = secrets.token_bytes(4)
+    return prefix + mask + bytes(value ^ mask[index % 4] for index, value in enumerate(body))
+
+
+class ResumeProxy:
+    def __init__(self, endpoint):
+        self.path = endpoint.removeprefix('unix://')
+        self.claimed = False
+        self.tasks = set()
+
+    async def connect(self, reader, writer):
+        task = asyncio.current_task()
+        self.tasks.add(task)
+        upstream = None
+        pumps = []
+        updates, checks = {}, {}
+        try:
+            server_reader, upstream = await asyncio.open_unix_connection(self.path)
+            upstream.write(await header(reader))
+            await upstream.drain()
+            reply = await header(server_reader)
+            if not reply.startswith(b'HTTP/1.1 101 '):
+                raise RuntimeError('app-server refused WebSocket connection')
+            writer.write(reply)
+            await writer.drain()
+            resumes = set()
+            token = 'cody-' + secrets.token_hex(16)
+
+            async def pump(source, destination, from_server):
+                parts, raws = [], []
+                opcode = None
+                deadline = None
+                while True:
+                    if self.claimed and not updates and not checks and not parts:
+                        # after startup restoration, relay ordinary traffic without inspection
+                        chunk = await source.read(65536)
+                        if not chunk:
+                            return
+                        destination.write(chunk)
+                        await destination.drain()
+                        continue
+                    # bound internal RPCs without imposing an idle-client timeout
+                    pending = bool(updates or checks) if from_server else False
+                    timeout = max(0, deadline - asyncio.get_running_loop().time()) if pending else None
+                    first, body, raw = await asyncio.wait_for(frame(source), timeout)
+                    current = first & 15
+                    if current >= 8:
+                        destination.write(raw)
+                        await destination.drain()
+                        if current == 8:
+                            return
+                        continue
+                    if current:
+                        opcode = current
+                    parts.append(body)
+                    raws.append(raw)
+                    if not first & 128:
+                        continue
+                    message = json.loads(b''.join(parts)) if opcode == 1 else None
+                    outgoing = b''.join(raws)
+                    parts, raws = [], []
+                    if isinstance(message, dict):
+                        request_id = message.get('id')
+                        if not from_server and message.get('method') == 'thread/resume':
+                            resumes.add(request_id)
+                        elif from_server and 'method' not in message:
+                            if request_id in resumes:
+                                resumes.remove(request_id)
+                                if 'result' in message and not self.claimed:
+                                    # only the selected startup thread gets cody's yolo default
+                                    self.claimed = True
+                                    thread_id = message['result']['thread']['id']
+                                    update_id = token + '-update'
+                                    updates[update_id] = message
+                                    deadline = asyncio.get_running_loop().time() + 20
+                                    upstream.write(encode(dict(id=update_id, method='thread/settings/update',
+                                        params=dict(threadId=thread_id, permissions=':danger-full-access',
+                                                    approvalPolicy='never', approvalsReviewer='user')), True))
+                                    await upstream.drain()
+                                    continue
+                            elif request_id in updates:
+                                original = updates.pop(request_id)
+                                if 'error' in message:
+                                    self.claimed = False
+                                    outgoing = encode(self.failure(original, message['error']['message']))
+                                else:
+                                    # read back effective settings, including warm-thread behavior
+                                    check_id = token + '-check'
+                                    checks[check_id] = original
+                                    upstream.write(encode(dict(id=check_id, method='thread/resume',
+                                        params=dict(threadId=original['result']['thread']['id'], excludeTurns=True)), True))
+                                    await upstream.drain()
+                                    continue
+                            elif request_id in checks:
+                                original = checks.pop(request_id)
+                                result = message.get('result', {})
+                                profile = result.get('activePermissionProfile') or {}
+                                if (result.get('approvalPolicy') != 'never'
+                                        or result.get('sandbox', {}).get('type') != 'dangerFullAccess'
+                                        or profile.get('id') != ':danger-full-access'):
+                                    self.claimed = False
+                                    outgoing = encode(self.failure(original, 'server did not confirm Full Access'))
+                                else:
+                                    # preserve history/cwd/model; expose verified permission fields to the TUI
+                                    for key in ('approvalPolicy', 'approvalsReviewer', 'sandbox', 'activePermissionProfile'):
+                                        original['result'][key] = result[key]
+                                    outgoing = encode(original)
+                    destination.write(outgoing)
+                    await destination.drain()
+
+            pumps = [asyncio.create_task(pump(reader, upstream, False)),
+                     asyncio.create_task(pump(server_reader, writer, True))]
+            done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
+            for finished in done:
+                finished.result()
+        except (OSError, RuntimeError, ValueError, asyncio.IncompleteReadError, asyncio.TimeoutError) as error:
+            if updates or checks:
+                self.claimed = False
+                reason = str(error) or 'permission restoration timed out or disconnected'
+                try:
+                    for original in [*updates.values(), *checks.values()]:
+                        writer.write(encode(self.failure(original, reason)))
+                    await writer.drain()
+                except OSError:
+                    pass
+            if not isinstance(error, asyncio.IncompleteReadError):
+                print(f'cody-resume: {error}', file=sys.stderr)
+        finally:
+            if updates or checks:
+                self.claimed = False
+            for running in pumps:
+                running.cancel()
+            await asyncio.gather(*pumps, return_exceptions=True)
+            for stream in (writer, upstream):
+                if stream:
+                    stream.close()
+            self.tasks.discard(task)
+
+    @staticmethod
+    def failure(original, reason):
+        return dict(id=original['id'], error=dict(code=-32000,
+                    message='cody: cannot restore Full Access: ' + reason))
+
+
+async def run(codex, endpoint, arguments):
+    if not endpoint.startswith('unix://'):
+        raise RuntimeError('a local Unix app-server endpoint is required')
+    proxy = ResumeProxy(endpoint)
+    # the private socket exists only for this client; the display server is unchanged
+    with tempfile.TemporaryDirectory(prefix='cody-resume-', dir='/tmp') as directory:
+        path = str(Path(directory) / 'client.sock')
+        server = await asyncio.start_unix_server(proxy.connect, path)
+        async with server:
+            child = await asyncio.create_subprocess_exec(codex, '--remote', 'unix://' + path, *arguments)
+            loop = asyncio.get_running_loop()
+            for signum in (signal.SIGTERM, signal.SIGHUP):
+                loop.add_signal_handler(signum, lambda sig=signum: child.send_signal(sig) if child.returncode is None else None)
+            try:
+                result = await child.wait()
+            finally:
+                for task in list(proxy.tasks):
+                    task.cancel()
+                await asyncio.gather(*proxy.tasks, return_exceptions=True)
+            return result if result >= 0 else 128 - result
+
+
+if __name__ == '__main__':
+    # terminal Ctrl-C belongs to Codex, which shares this process group
+    signal.signal(signal.SIGINT, lambda *_: None)
+    try:
+        sys.exit(asyncio.run(run(sys.argv[1], sys.argv[2], sys.argv[3:])))
+    except (OSError, RuntimeError) as error:
+        print(f'cody-resume: {error}', file=sys.stderr)
+        sys.exit(1)

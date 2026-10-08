@@ -280,6 +280,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['start', 'endpoint', 'status', 'stop', 'local', 'attach'])
     parser.add_argument('--display', default=os.environ.get('DISPLAY', ''))
+    parser.add_argument('--restore-yolo', action='store_true')
     # parse client options separately so manager flags work after the action
     argv = sys.argv[1:]
     split = argv.index('--') if '--' in argv else len(argv)
@@ -318,6 +319,11 @@ def main():
     if args.action in ('start', 'endpoint'):
         print(endpoint)
     else:
+        if args.restore_yolo:
+            helper = Path(__file__).resolve().with_name('cody-resume')
+            if not helper.is_file():
+                raise RuntimeError(f'missing resume helper: {helper}')
+            os.execv(sys.executable, [sys.executable, str(helper), codex, endpoint, *extra])
         # explicit attachment never falls back to the default shared daemon
         os.execv(codex, [codex, '--remote', endpoint, *extra])
 

@@ -60,9 +60,9 @@ printf '%s\n' 'PASS: display pin and terminal colors are preserved'
 
 ## startup resume filtering must not change plain launches or explicit choices
 DISPLAY=:42 "$fixture/cody" resume
-grep -Fxq "manager=<local><--><--cd><$PWD><resume>" "$fixture/manager.log"
+grep -Fxq "manager=<local><--restore-yolo><--><--cd><$PWD><resume>" "$fixture/manager.log"
 DISPLAY=:42 "$fixture/cody" --attach :42 resume
-grep -Fxq "manager=<attach><--display><:42><--><--cd><$PWD><resume>" "$fixture/manager.log"
+grep -Fxq "manager=<attach><--display><:42><--restore-yolo><--><--cd><$PWD><resume>" "$fixture/manager.log"
 for override in '--all' '--cd=/tmp/another-project' '-C/tmp/another-project'; do
   DISPLAY=:42 "$fixture/cody" resume "$override"
   grep -Fxq "args=<resume><$override>" "$fixture/calls.log"
