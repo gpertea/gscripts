@@ -46,8 +46,8 @@ export CODY_TEST_MANAGER_LOG="$fixture/manager.log"
 
 DISPLAY=:42.0 TERM=xterm-256color COLORTERM=rxvt-xpm NO_COLOR=1 \
   env -u XAUTHORITY -u FORCE_COLOR -u CLICOLOR_FORCE "$fixture/cody" first
-grep -Fxq 'manager=<local><--><--yolo><first>' "$fixture/manager.log"
-grep -Fxq 'args=<--yolo><first>' "$fixture/calls.log"
+grep -Fxq "manager=<local><--><--yolo><--cd><$PWD><first>" "$fixture/manager.log"
+grep -Fxq "args=<--yolo><--cd><$PWD><first>" "$fixture/calls.log"
 grep -Fxq 'DISPLAY=:42.0' "$fixture/calls.log"
 grep -Fxq "XAUTHORITY=$fixture/home/.Xauthority" "$fixture/calls.log"
 grep -Fxq 'PIN=:42' "$fixture/calls.log"
@@ -58,7 +58,17 @@ grep -Fxq 'FORCE_COLOR=' "$fixture/calls.log"
 grep -Fxq 'CLICOLOR_FORCE=' "$fixture/calls.log"
 printf '%s\n' 'PASS: display pin and terminal colors are preserved'
 
-## startup resume filtering must not change plain launches or explicit choices
+## new sessions and resume default to cwd while preserving explicit choices
+DISPLAY=:42 "$fixture/cody"
+grep -Fxq "args=<--yolo><--cd><$PWD>" "$fixture/calls.log"
+DISPLAY=:42 "$fixture/cody" --attach :42
+grep -Fxq "manager=<attach><--display><:42><--><--yolo><--cd><$PWD>" "$fixture/manager.log"
+DISPLAY=:42 "$fixture/cody" --cd /tmp/another-project prompt
+grep -Fxq 'args=<--yolo><--cd></tmp/another-project><prompt>' "$fixture/calls.log"
+DISPLAY=:42 "$fixture/cody" -C/tmp/another-project prompt
+grep -Fxq 'args=<--yolo><-C/tmp/another-project><prompt>' "$fixture/calls.log"
+DISPLAY=:42 "$fixture/cody" -- --cd
+grep -Fxq "args=<--yolo><--cd><$PWD><--><--cd>" "$fixture/calls.log"
 DISPLAY=:42 "$fixture/cody" resume
 grep -Fxq "manager=<local><--restore-yolo><--><--cd><$PWD><resume>" "$fixture/manager.log"
 DISPLAY=:42 "$fixture/cody" --attach :42 resume
@@ -76,7 +86,7 @@ grep -Fxq 'args=<-C></tmp/another-project><resume>' "$fixture/calls.log"
 DISPLAY=:42 "$fixture/cody" fork
 grep -Fxq 'args=<fork>' "$fixture/calls.log"
 DISPLAY=:42 "$fixture/cody" -m resume new-prompt
-grep -Fxq 'args=<--yolo><-m><resume><new-prompt>' "$fixture/calls.log"
+grep -Fxq "args=<--yolo><--cd><$PWD><-m><resume><new-prompt>" "$fixture/calls.log"
 printf '%s\n' 'PASS: resume scope defaults to cwd and preserves explicit overrides'
 
 ## the terminal-only wrapper must work even with no display manager installed

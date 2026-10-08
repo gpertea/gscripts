@@ -12,6 +12,13 @@ With a local numeric display, `cody` starts or reuses one app-server per live
 X/VNC session. `cody --attach :2` attaches to an existing display server;
 `--server-status`, `--server-endpoint`, and `--server-stop` manage it.
 
+New managed sessions use the caller's current directory, including when the
+display server started in another folder. The wrapper supplies `--cd "$PWD"`
+unless you provide `-C` or `--cd` explicitly. This applies to plain cody,
+launches with an initial prompt, and `cody --attach :N` new sessions.
+Explicit relative directory options are converted to absolute paths using the
+client's working directory before connecting to the server.
+
 Managed `cody resume` opens the current-directory picker and automatically
 applies the named Full Access profile with approvals disabled to the selected
 thread. This also works with a thread ID, `--last`, and `--attach :N resume`.

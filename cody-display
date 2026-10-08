@@ -271,6 +271,32 @@ def server_overrides(argv):
     return overrides
 
 
+def client_directories(argv):
+    result = list(argv)
+    index = 0
+    while index < len(result):
+        arg = result[index]
+        if arg == '--':
+            break
+        if arg in ('-C', '--cd'):
+            index += 1
+            if index < len(result) and result[index]:
+                result[index] = os.path.abspath(result[index])
+        elif arg.startswith(('--cd=', '-C=')):
+            flag, value = arg.split('=', 1)
+            if value:
+                result[index] = flag + '=' + os.path.abspath(value)
+        elif arg.startswith('-C') and len(arg) > 2:
+            result[index] = '-C' + os.path.abspath(arg[2:])
+        elif arg in ('-c', '--config', '--enable', '--disable', '-m', '--model', '-i', '--image',
+                     '-p', '--profile', '-s', '--sandbox', '-a', '--ask-for-approval', '--add-dir',
+                     '--local-provider', '--remote-auth-token-env'):
+            # values belonging to another option are not working-directory flags
+            index += 1
+        index += 1
+    return result
+
+
 def main():
     os.umask(0o077)
     if len(sys.argv) > 1 and sys.argv[1] == '_serve':
@@ -319,6 +345,8 @@ def main():
     if args.action in ('start', 'endpoint'):
         print(endpoint)
     else:
+        # relative paths must be resolved on the client, before crossing the socket
+        extra = client_directories(extra)
         if args.restore_yolo:
             helper = Path(__file__).resolve().with_name('cody-resume')
             if not helper.is_file():

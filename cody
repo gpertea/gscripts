@@ -312,16 +312,21 @@ if $use_display_server; then
   if [[ "$codex_command" == resume ]]; then
     display_args+=(--restore-yolo)
   fi
-  ## remote startup pickers need an explicit cwd to filter by project
-  if [[ "$codex_command" == resume ]]; then
-    resume_here=true
+  ## remote new sessions otherwise inherit the server's launch directory
+  if [[ "$codex_command" != fork ]]; then
+    launch_here=true
     for arg in "$@"; do
       [[ "$arg" != -- ]] || break
       case "$arg" in
-        -C*|--cd|--cd=*|--all) resume_here=false; break ;;
+        -C*|--cd|--cd=*) launch_here=false; break ;;
+        --all)
+          if [[ "$codex_command" == resume ]]; then
+            launch_here=false
+            break
+          fi ;;
       esac
     done
-    if $resume_here; then
+    if $launch_here; then
       codex_args+=(--cd "$PWD")
     fi
   fi
