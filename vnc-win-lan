@@ -13,6 +13,7 @@ usage() {
   printf '%s\n' \
     "Usage:" \
     "  $(basename "$0") [--direct|--tunnel] [--force-restart] SSH_HOST[:DISPLAY|:NAME]" \
+    "  $(basename "$0") -l|--list SSH_HOST" \
     "  $(basename "$0") --status SSH_HOST[:DISPLAY|:NAME]" \
     "  $(basename "$0") --stop [--force] SSH_HOST[:DISPLAY|:NAME]" \
     "  $(basename "$0") SSH_HOST [DISPLAY|NAME|GEOMETRY] [GEOMETRY]" \
@@ -33,12 +34,13 @@ force_restart="false"
 force_stop="false"
 geometry="${VNC_SESSION_GEOMETRY:-1820x960}"
 
-while [[ "${1:-}" == --* ]]; do
+while [[ "${1:-}" == -* ]]; do
   case "$1" in
     --direct|--tunnel) transport="${1#--}" ;;
     --force-restart) force_restart="true" ;;
     --force) force_stop="true" ;;
     --status|--stop) action="${1#--}" ;;
+    -l|--list) action="list" ;;
     --help|-h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -405,6 +407,12 @@ ensure_control_master() {
   fi
   remember_control_master
 }
+
+if [[ "$action" == "list" ]]; then
+  ## list the host's active desktops, including unmanaged displays
+  remote_vnc list | awk 'NR == 1 || $3 == "running"'
+  exit
+fi
 
 if [[ "$action" == "status" ]]; then
   remote_vnc status "$session"

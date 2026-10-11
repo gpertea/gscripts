@@ -5,6 +5,7 @@ usage() {
   printf '%s\n' \
     "Usage: vnc-session-view [--direct] [--force-restart] SSH_HOST[:DISPLAY|:NAME]" \
     "       vnc-session-view [--tunnel] SSH_HOST[:DISPLAY|:NAME]" \
+    "       vnc-session-view -l|--list SSH_HOST" \
     "       vnc-session-view --status SSH_HOST[:DISPLAY|:NAME]" \
     "       vnc-session-view --stop [--force] SSH_HOST[:DISPLAY|:NAME]" \
     "Default transport: --tunnel; default target: display :1" \
@@ -20,12 +21,13 @@ action="start"
 transport="tunnel"
 force_restart="false"
 force_stop="false"
-while [[ "${1:-}" == --* ]]; do
+while [[ "${1:-}" == -* ]]; do
   case "$1" in
     --direct|--tunnel) transport="${1#--}" ;;
     --force-restart) force_restart="true" ;;
     --force) force_stop="true" ;;
     --status|--stop) action="${1#--}" ;;
+    -l|--list) action="list" ;;
     --help|-h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -254,6 +256,12 @@ ensure_tunnel() {
   printf '%s\n' "$output" >&2
   die "could not bind an automatically allocated VNC port after five attempts"
 }
+
+if [[ "$action" == "list" ]]; then
+  ## list the host's active desktops, including unmanaged displays
+  remote_vnc list | awk 'NR == 1 || $3 == "running"'
+  exit
+fi
 
 if [[ "$action" == "status" ]]; then
   remote_vnc status "$session"
