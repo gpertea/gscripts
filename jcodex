@@ -1,0 +1,23 @@
+#!/bin/bash
+set -euo pipefail
+
+## load the JHPCE runtime and user-installed Codex
+module load node
+export PATH="$HOME/.local/bin:$PATH"
+
+## recreate the node-local helper directory for the existing NFS workaround
+codex_arg0_root="${CODEX_HOME:-$HOME/.codex}/tmp/arg0"
+codex_arg0_local="/tmp/cody-codex-arg0-$(id -u)"
+if [[ -L "$codex_arg0_root" && "$(readlink "$codex_arg0_root")" == "$codex_arg0_local" ]]; then
+  if [[ ! -e "$codex_arg0_local" && ! -L "$codex_arg0_local" ]]; then
+    (umask 077; mkdir -- "$codex_arg0_local")
+  fi
+  [[ -d "$codex_arg0_local" && ! -L "$codex_arg0_local" && -O "$codex_arg0_local" ]] || {
+    printf 'jcodex: expected a private helper directory owned by this user: %s\n' "$codex_arg0_local" >&2
+    exit 1
+  }
+  chmod 700 -- "$codex_arg0_local"
+fi
+
+## use the embedded CLI and forward all user arguments
+exec codex --no-daemon --yolo "$@"
