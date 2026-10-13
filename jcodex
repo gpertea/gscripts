@@ -5,6 +5,19 @@ set -euo pipefail
 module load node
 export PATH="$HOME/.local/bin:$PATH"
 
+## install or upgrade only the user copy, never the module's Codex
+codex_bin="$HOME/.local/bin/codex"
+if [[ "${1:-}" == --update || ! -x "$codex_bin" ]] || [[ "$("$codex_bin" --help)" != *--no-daemon* ]]; then
+  npm install --global --prefix "$HOME/.local" @openai/codex@latest
+fi
+[[ "$("$codex_bin" --help)" == *--no-daemon* ]] || {
+  printf 'jcodex: user-installed Codex does not support --no-daemon: %s\n' "$codex_bin" >&2
+  exit 1
+}
+if [[ "${1:-}" == --update ]]; then
+  exec "$codex_bin" --version
+fi
+
 ## recreate the node-local helper directory for the existing NFS workaround
 codex_arg0_root="${CODEX_HOME:-$HOME/.codex}/tmp/arg0"
 codex_arg0_local="/tmp/cody-codex-arg0-$(id -u)"
@@ -20,4 +33,4 @@ if [[ -L "$codex_arg0_root" && "$(readlink "$codex_arg0_root")" == "$codex_arg0_
 fi
 
 ## use the embedded CLI and forward all user arguments
-exec codex --no-daemon --yolo "$@"
+exec "$codex_bin" --no-daemon --yolo "$@"
