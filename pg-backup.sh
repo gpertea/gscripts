@@ -11,16 +11,19 @@ dump_pid=''
 check_only=0
 if_changed=0
 check_changes=0
+all_dbs=0
 dbs=()
 work=''
 failed=0
 export PGUSER=${PG_BACKUP_USER:-gpertea} PGCONNECT_TIMEOUT=${PGCONNECT_TIMEOUT:-10}
 
 usage() {
-  printf 'usage: %s [--check] [--if-changed|--check-changes] [db ...]\n' "${0##*/}"
+  printf 'usage: %s [--check] [--if-changed|--check-changes] [--all | db ...]\n' "${0##*/}"
   printf '%s\n' 'env: PG_BACKUP_USER, PGHOST, PGPORT, PG_BACKUP_ROOT, PG_BACKUP_DB, PG_BACKUP_KEEP,' \
     '     PG_BACKUP_COMPRESS, PG_BACKUP_MIN_FREE_GB (default 5),' \
     '     PG_BACKUP_SECONDARY (empty disables the secondary copy)' \
+    '     PG_BACKUP_EXCLUDE (space-separated database names skipped by --all)' \
+    '--all backs up every connectable non-template database on the server.' \
     '--if-changed checks each database separately; --check-changes reports decisions without dumping/copying/pruning.'
 }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -35,6 +38,7 @@ while (($#)); do
     --check) check_only=1 ;;
     --if-changed) if_changed=1 ;;
     --check-changes) if_changed=1; check_changes=1 ;;
+    --all) all_dbs=1 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; dbs+=( "$@" ); break ;;
     -*) die "unknown option: $1" ;;
@@ -42,15 +46,30 @@ while (($#)); do
   esac
   shift
 done
-((${#dbs[@]})) || dbs=( "${PG_BACKUP_DB:-rse}" )
+if ((all_dbs)); then
+  ((${#dbs[@]} == 0)) || die '--all cannot be combined with database names'
+else
+  ((${#dbs[@]})) || dbs=( "${PG_BACKUP_DB:-rse}" )
+fi
 [[ $keep =~ ^[1-9][0-9]{0,5}$ ]] || die 'PG_BACKUP_KEEP must be between 1 and 999999'
 [[ $min_free_gb =~ ^[1-9][0-9]{0,4}$ ]] || die 'PG_BACKUP_MIN_FREE_GB must be between 1 and 99999'
 min_free=$((min_free_gb * 1024 * 1024 * 1024))
-for db in "${dbs[@]}"; do
-  [[ $db =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$ ]] || die "unsupported database name: $db"
-done
 for cmd in psql pg_dump pg_dumpall pg_restore zstd sha256sum stat find sort tail flock mktemp python3 tar cmp sync hostname date cut cat mv rm mkdir df awk sed sleep readlink dirname; do
   command -v "$cmd" >/dev/null || die "missing command: $cmd"
+done
+if ((all_dbs)); then
+  ## new databases are picked up automatically; exclusions are explicit and reported.
+  mapfile -t dbs < <(psqlq -d postgres -c "select datname from pg_database where not datistemplate and datallowconn order by datname")
+  ((${#dbs[@]})) || die 'no connectable databases found'
+  for skip in ${PG_BACKUP_EXCLUDE:-}; do
+    kept=()
+    for db in "${dbs[@]}"; do [[ $db == "$skip" ]] && printf 'excluded %s\n' "$db" || kept+=( "$db" ); done
+    dbs=( "${kept[@]}" )
+  done
+  ((${#dbs[@]})) || die 'PG_BACKUP_EXCLUDE removed every database'
+fi
+for db in "${dbs[@]}"; do
+  [[ $db =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$ ]] || die "unsupported database name: $db"
 done
 if ((if_changed)); then
   wal_checker=$(dirname -- "$(readlink -f -- "$0")")/pg-backup-wal.py
@@ -204,7 +223,8 @@ select format('select %L, last_value, is_called from %I.%I;', n.nspname || '.' |
 from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.relkind='S' order by n.nspname,c.relname
 \gexec
 SQL
-  psqlq -d postgres -c "select name,setting from pg_settings order by name" > "$work/settings"
+  ## tcp_keepalives_* report 0 over Unix sockets and the OS defaults over TCP; they describe the client connection, not the server.
+  psqlq -d postgres -c "select name,setting from pg_settings where name not like 'tcp_keepalives%' order by name" > "$work/settings"
   ## read server-side paths, including includes and ALTER SYSTEM, even over a remote connection.
   psqlq -d postgres > "$work/config" <<'SQL'
 with paths as (
@@ -235,6 +255,8 @@ SQL
           state_ok=0; reason='previous change-detection state is unreadable'; break
         fi
       done
+      ## older state archives still carry the connection-dependent keepalive settings.
+      sed -i '/^tcp_keepalives_/d' "$work/previous/settings"
       for member in identity sequences settings config; do
         if ! cmp -s "$work/$member" "$work/previous/$member"; then
           state_ok=0; reason="$member changed since this database's backup"

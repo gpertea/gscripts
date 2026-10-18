@@ -206,4 +206,21 @@ if "$fixture/missing-helper/pg-backup.sh" --check-changes quiet > "$fixture/miss
 grep -q 'missing change-detection helper' "$fixture/missing-helper.log" || fail helper_diagnostic
 [[ $(count) == "$before" ]] || fail missing_helper_created_backup
 printf 'PASS: incomplete script deployment stops instead of creating redundant backups\n'
+
+## --all must cover every connectable database so new databases join the schedule without edits.
+expected=$(q -d postgres -c "select datname from pg_database where not datistemplate and datallowconn order by datname")
+"$repo/pg-backup.sh" --check-changes --all > "$fixture/all.log"
+[[ $(grep '^decision ' "$fixture/all.log" | awk '{print $2}' | tr -d ':') == "$expected" ]] || fail all_databases
+PG_BACKUP_EXCLUDE='busy' "$repo/pg-backup.sh" --check-changes --all > "$fixture/all-exclude.log"
+grep -q '^excluded busy$' "$fixture/all-exclude.log" || fail all_exclude_report
+grep -q '^decision busy' "$fixture/all-exclude.log" && fail all_exclude_applied
+grep -q '^decision quiet' "$fixture/all-exclude.log" || fail all_exclude_kept
+if "$repo/pg-backup.sh" --check-changes --all quiet > "$fixture/all-conflict.log" 2>&1; then fail all_conflict; fi
+[[ $(count) == "$before" ]] || fail all_created_backup
+printf 'PASS: --all enumerates databases and honors PG_BACKUP_EXCLUDE\n'
+
+## saved settings must not depend on whether the client connected over TCP or a Unix socket.
+state=$(latest)/$(basename "$(latest)").state.tar.zst
+if zstd -dc "$state" | tar -xOf - settings | grep -q '^tcp_keepalives_'; then fail keepalives_in_state; fi
+printf 'PASS: connection-dependent keepalive settings are excluded from change detection\n'
 printf 'All backup/restore integration checks passed.\n'
