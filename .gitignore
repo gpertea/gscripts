@@ -1,0 +1,4 @@
+## local symlinks to srv16 PostgreSQL backup scripts (source: ~/work/pg-database-git/pg-server)
+pg-backup.sh
+pg-restore.sh
+pg-backup-wal.py
