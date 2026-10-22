@@ -1,6 +1,49 @@
 # gscripts
 This is a mishmash of utility scripts I have been using in my Genomics/Bioinformatics work.  Many of them may not make much sense outside of my work environment, some of them were project specific and I probably already forgot why I wrote them.. 
 
+## arx array concurrency
+
+For SLURM, omitting `-j` and any `%limit` suffix submits an array with no
+arx concurrency throttle. Cluster scheduling and account/QOS limits still
+apply. With `-C commands.txt`, omitting `-a` selects all command-file lines;
+`-a 1-` selects the same range. Without `-C` or `-a`, arx submits one script
+job rather than constructing an array.
+
+```bash
+arx sub -D -C commands.txt           ## all lines, no array throttle
+arx sub -D -a1- -C commands.txt      ## same selection, no array throttle
+arx sub -D -j 10 -C commands.txt     ## at most ten simultaneous tasks
+arx sub -D -a '1-%10' -C commands.txt
+```
+
+Without `-C`, specify the array and pass the data file as the script's first
+argument:
+
+```bash
+arx sub -D -a1- -p katun -c1 -m1G -t 00:05:00 task.sh samples.txt
+```
+
+For a data file with N lines, arx uses `linix` to index/count the lines and
+submits `sbatch ... -a 1-N task.sh samples.txt`, without a `%` throttle.
+Explicit ranges such as `-a 10-50` also work without `-j`. Each task receives
+the same script arguments; the script selects its row, for example:
+
+```bash
+row=$(linix "$1" "$SLURM_ARRAY_TASK_ID")
+```
+
+Array indexes address physical lines, including any header; use a headerless
+file or choose a range that skips the header. Omitting `-a` in this mode
+submits one ordinary script job, even when a data-file argument is present.
+
+When both `-j` and `%limit` are supplied, the smaller limit wins. Local GNU
+parallel runs (`-P`) retain a default of six simultaneous tasks. `-D` previews
+commands without executing jobs. Regression checks:
+
+```bash
+python3 tests/arx-concurrency.py
+```
+
 ## Codex sessions by display
 
 On Linux, `cody` recognizes numeric displays such as `:1`, `:2`, and `:2.0`.
