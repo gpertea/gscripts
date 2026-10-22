@@ -7,6 +7,7 @@ case "${OSTYPE:-$(uname -s)}" in
   *) default_transport="--tunnel" ;;
 esac
 transport="${VNC_HOST_DEFAULT_TRANSPORT:-$default_transport}"
+transport_explicit="${VNC_HOST_DEFAULT_TRANSPORT:+true}"
 force_restart=""
 force_stop=""
 action=""
@@ -16,11 +17,14 @@ usage() {
     "Usage:" \
     "  vnc-host [--direct|--tunnel] [--force-restart] HOST[:DISPLAY|:NAME]" \
     "  vnc-HOST [--direct|--tunnel] [--force-restart] [DISPLAY|NAME]" \
+    "  vnc-HOST-USER [--direct|--tunnel] [--force-restart] [DISPLAY|NAME]" \
     "  vnc-host -l|--list HOST" \
     "  vnc-HOST -l|--list" \
     "  vnc-HOST --status [DISPLAY|NAME]" \
     "  vnc-HOST --stop [--force] [DISPLAY|NAME]" \
-    "Default transport: ${default_transport} (overridable by VNC_HOST_DEFAULT_TRANSPORT); default display: :1"
+    "Host-only default: ${default_transport}, display :1; user-specific default: --tunnel, session self" \
+    "The final alias token is USER; use vnc-host HOST for a literal hyphenated hostname." \
+    "VNC_HOST_ALIAS and VNC_HOST_DEFAULT_TRANSPORT override alias and transport defaults."
 }
 
 die() {
@@ -30,7 +34,7 @@ die() {
 
 while [[ "${1:-}" == -* ]]; do
   case "$1" in
-    --direct|--tunnel) transport="$1" ;;
+    --direct|--tunnel) transport="$1"; transport_explicit=true ;;
     --force-restart) force_restart="$1" ;;
     --force) force_stop="$1" ;;
     --status|--stop) action="$1" ;;
@@ -41,22 +45,32 @@ while [[ "${1:-}" == -* ]]; do
   shift
 done
 
-if [[ -n "${VNC_HOST_ALIAS:-}" ]]; then
-  host="$VNC_HOST_ALIAS"
-  [[ $# -le 1 ]] || { usage >&2; exit 1; }
-  suffix="${1:-1}"
-  suffix="${suffix#:}"
-  target="${host}:${suffix}"
-elif [[ "$program" == "vnc-host" ]]; then
+if [[ "$program" == "vnc-host" && -z "${VNC_HOST_ALIAS:-}" ]]; then
   [[ $# -eq 1 ]] || { usage >&2; exit 1; }
   target="$1"
+  [[ "$target" != *@* || "$target" == *:* ]] || target="${target}:self"
 else
-  host="${program#vnc-}"
-  [[ -n "$host" && "$host" != "$program" ]] || die "cannot derive host from $program"
+  host="${VNC_HOST_ALIAS:-${program#vnc-}}"
+  [[ -n "$host" && ( -n "${VNC_HOST_ALIAS:-}" || "$host" != "$program" ) ]] || die "cannot derive host from $program"
+  if [[ -z "${VNC_HOST_ALIAS:-}" && "$host" == *-* ]]; then
+    ## the final token selects the account; earlier hyphens belong to the host
+    remote_user="${host##*-}"
+    host="${host%-*}"
+    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ &&
+       "$remote_user" =~ ^[A-Za-z0-9_][A-Za-z0-9_.]*$ ]] || die "invalid host/user alias: $program"
+    host="${remote_user}@${host}"
+  fi
   [[ $# -le 1 ]] || { usage >&2; exit 1; }
-  suffix="${1:-1}"
+  default_suffix=1
+  [[ "$host" != *@* ]] || default_suffix=self
+  suffix="${1:-$default_suffix}"
   suffix="${suffix#:}"
   target="${host}:${suffix}"
+fi
+
+## user desktops have their own display assignment and stay behind SSH by default
+if [[ "${target%%:*}" == *@* && "$transport_explicit" != true ]]; then
+  transport=--tunnel
 fi
 
 case "$transport" in

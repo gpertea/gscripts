@@ -14,7 +14,7 @@ cat > "$fixture/bin/ssh" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$VNC_CLI_FIXTURE/calls"
-[[ "$*" == '-n srv16 "$HOME/bin/vnc-session" list' ]] || exit 2
+[[ "$*" == "-n ${VNC_CLI_REMOTE_HOST:-srv16} \"\$HOME/bin/vnc-session\" list" ]] || exit 2
 [[ ! -e "$VNC_CLI_FIXTURE/fail" ]] || exit 7
 cat "$VNC_CLI_FIXTURE/sessions"
 MOCK
@@ -22,6 +22,7 @@ chmod +x "$fixture/bin/ssh"
 printf 'NAME\tDISPLAY\tSTATE\tLISTEN\nbrowser\t:2\trunning\tloopback\nold\t:3\tstopped\tlan\n-\t:4\trunning\tunknown\n' > "$fixture/sessions"
 printf 'NAME\tDISPLAY\tSTATE\tLISTEN\nbrowser\t:2\trunning\tloopback\n-\t:4\trunning\tunknown\n' > "$fixture/expected"
 ln -s "$repo/vnc-host" "$fixture/bin/vnc-srv16"
+ln -s "$repo/vnc-host" "$fixture/bin/vnc-srv16-umango"
 
 for program in vnc-host vnc-session-view vnc-win-lan; do
   "$repo/$program" -h > "$fixture/short-help"
@@ -41,6 +42,16 @@ for client_os in linux-gnu msys; do
   done
 done
 printf '%s\n' 'PASS: Linux and Windows list active managed/unmanaged sessions via host and alias'
+
+## both real viewer helpers must send the explicit account through to SSH
+for client_os in linux-gnu msys; do
+  : > "$fixture/calls"
+  VNC_CLI_REMOTE_HOST=umango@srv16 OSTYPE="$client_os" \
+    "$fixture/bin/vnc-srv16-umango" --list > "$fixture/output"
+  cmp "$fixture/expected" "$fixture/output"
+  [[ "$(wc -l < "$fixture/calls")" == 1 ]]
+done
+printf '%s\n' 'PASS: Linux and Windows real helper paths use umango@srv16'
 
 printf 'NAME\tDISPLAY\tSTATE\tLISTEN\nold\t:3\tstopped\tlan\n' > "$fixture/sessions"
 printf 'NAME\tDISPLAY\tSTATE\tLISTEN\n' > "$fixture/expected"

@@ -416,6 +416,43 @@ direct LAN on Windows and an SSH tunnel elsewhere. Small host wrappers can set
 `VNC_HOST_ALIAS` or override the default with `VNC_HOST_DEFAULT_TRANSPORT`.
 Explicit `--direct` or `--tunnel` arguments always take precedence.
 
+An alias `vnc-HOST-USER` selects an explicit SSH account. The last
+hyphen-separated token is the username; earlier tokens form the hostname.
+User-specific connections default to the retained session `self` and an SSH
+tunnel on every platform, so they do not assume that display `:1` belongs to
+that account. Explicit display/session arguments and transport overrides still
+work:
+
+```bash
+ln -s ~/gscripts/vnc-host ~/bin/vnc-srv16-umango
+vnc-srv16-umango              # SSH umango@srv16, session self, tunnel
+vnc-srv16-umango --status
+vnc-srv16-umango --list
+vnc-srv16-umango 3            # explicit display :3 under umango
+vnc-host umango@srv16         # same user-specific default without an alias
+```
+
+Keep the updated viewer helpers beside `vnc-host` on each client. Remote
+accounts need `~/bin/vnc-session` and their own VNC password/configuration.
+Host-only aliases retain their existing platform defaults and display `:1`.
+For a literal hyphenated SSH hostname, use `vnc-host lab-server` or set
+`VNC_HOST_ALIAS=lab-server` in a small wrapper. Explicit `user@host` targets
+also support usernames that contain hyphens.
+
+The SSH account selects whose session manager runs. If `srv16` logs in as
+`gpertea`, `vnc-srv16 3` refuses while display `:3` belongs to `umango`; it
+does not switch accounts. Programs inside a connected desktop always run as
+that desktop's owner. VNC itself authenticates using its password rather than
+the SSH username, so a manually forwarded port can still be accessed with a
+shared VNC password. The manager's ownership guard prevents accidental
+cross-account attachment; it is not a security boundary between accounts with
+shared passwords or administrative privileges.
+
+```bash
+bash tests/vnc-host-cli.sh
+bash tests/vnc-host-user.sh
+```
+
 ### Diagnose and recover VNC input
 
 `vnc-fix HOST` is read-only by default and reports the active display, viewer
