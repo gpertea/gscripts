@@ -165,7 +165,7 @@ in `~/bin`.
 nothing. Installation moves an existing regular managed file into
 `${VNC_BRU_BACKUP_DIR:-~/.local/state/vnc-bru-setup/backups/<run>}/<absolute path>`
 before replacing it, prints each `>>> BACKUP:` path, and appends it to the
-`MANIFEST` file there. `lin-config/browser-use/install-vnc-bru.sh` sets
+`MANIFEST` file there. `lin-config/install-managed-sessions.sh` sets
 `VNC_BRU_BACKUP_DIR` so one run keeps all backups together. Replaced symlinks
 are reported with their previous target. It does not alter host-specific
 `vnc-HOST` commands.
