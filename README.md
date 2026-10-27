@@ -384,29 +384,25 @@ options (`-DesktopSize Server`, `VNC_SCALE`, and the default `tvncviewer`).
 `VNC_VIEWER` can select another compatible TurboVNC launcher;
 `VNC_SESSION_PASSWORD_FILE` overrides `~/.vnc/passwd`.
 
-After pulling this checkout on each Mac, create local aliases in `~/bin`.
-The host list belongs to that device; adding another host requires just
-another symlink. Existing links need no reinstall when the checkout updates:
+Create device-local aliases in `~/bin`; add one symlink per configured SSH
+host. Existing links need no reinstall when the checkout updates:
 
 ```bash
 mkdir -p ~/bin
 ln -s ~/gscripts/vnc-lan ~/bin/vnc-lan # skip if already installed
-for host in srv16 gw gwrk gglin gxlin glin; do
-  ln -s vnc-lan ~/bin/vnc-"$host"
-done
-ln -s vnc-lan ~/bin/vnc-srv16-umango
+ln -s vnc-lan ~/bin/vnc-srv16
+ln -s vnc-lan ~/bin/vnc-srv16-alice # example SSH account
 
 vnc-srv16                    # ensure srv16 display :1, then connect
 vnc-srv16 :2                 # ensure exactly :2, then connect
 vnc-srv16 3                  # numeric form also accepted
 vnc-srv16 --direct :2        # explicit direct LAN connection
-vnc-srv16-umango             # SSH as umango; discover or allocate a desktop
-vnc-srv16-umango --list
+vnc-srv16-alice              # discover or allocate a desktop as alice
+vnc-srv16-alice --list
 ```
 
 `vnc-lan srv16:2` and `vnc-lan srv16 --session browser-a` are also supported.
-SSH tunneling is now the default for both host aliases and plain `vnc-lan`,
-so moving between work and home does not change the viewer's transport.
+SSH tunneling is the default for both host aliases and plain `vnc-lan`.
 `--direct` ensures the remote LAN listener through the same guarded server
 command as Linux; changing a running loopback listener still requires
 `--force-restart`. Explicit `--direct`/`--tunnel` options take precedence.
@@ -511,12 +507,12 @@ every platform and never assume that display `:1` belongs to that account.
 Explicit display/session arguments skip discovery:
 
 ```bash
-ln -s ~/gscripts/vnc-host ~/bin/vnc-srv16-umango
-vnc-srv16-umango              # SSH umango@srv16, first owned desktop, tunnel
-vnc-srv16-umango --status
-vnc-srv16-umango --list
-vnc-srv16-umango 3            # explicit display :3 under umango
-vnc-host umango@srv16         # same user-specific default without an alias
+ln -s ~/gscripts/vnc-host ~/bin/vnc-srv16-alice
+vnc-srv16-alice               # first owned desktop, tunnel
+vnc-srv16-alice --status
+vnc-srv16-alice --list
+vnc-srv16-alice 3             # explicit display :3 under alice
+vnc-host alice@srv16          # same default without an alias
 ```
 
 Keep the updated viewer helpers beside `vnc-host` on each client. Remote
@@ -527,7 +523,7 @@ For a literal hyphenated SSH hostname, use `vnc-host lab-server` or set
 also support usernames that contain hyphens.
 
 The SSH account selects whose session manager runs. If `srv16` logs in as
-`gpertea`, `vnc-srv16 3` refuses while display `:3` belongs to `umango`; it
+`bob`, `vnc-srv16 3` refuses while display `:3` belongs to `alice`; it
 does not switch accounts. Programs inside a connected desktop always run as
 that desktop's owner. VNC itself authenticates using its password rather than
 the SSH username, so a manually forwarded port can still be accessed with a
