@@ -9,7 +9,10 @@ usage() {
     "  $(basename "$0") SSH_HOST --session NAME [GEOMETRY]" \
     "  $(basename "$0") SSH_HOST --status NAME" \
     "  $(basename "$0") SSH_HOST --stop [--force] NAME" \
-    "Set VNC_SCALE to a percent, Auto, or FixedRatio; default: 90."
+    "Set VNC_SCALE to a percent, Auto, or FixedRatio; default: 90." \
+    "Set VNC_TUNNEL to auto, always, or never for legacy connections; default: auto." \
+    "Named sessions always use an SSH tunnel." \
+    "Set VNC_LOCAL_DISPLAY to override the tunneled local display; default: remote display + 10."
 }
 
 die() {
@@ -104,7 +107,8 @@ if [[ -n "$session" ]]; then
   [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid session name: $session"
 fi
 
-readonly control_dir="${TMPDIR:-/tmp}/vnc-session-${UID}"
+## macOS TMPDIR paths can exceed the Unix socket limit after SSH expands %C.
+readonly control_dir="/tmp/vnc-session-${UID}"
 readonly control_path="${control_dir}/ssh-${session:-legacy}-%C"
 
 if [[ "$action" == "status" ]]; then
@@ -121,11 +125,38 @@ fi
 readonly passwd_file="${HOME}/.vnc/passwd"
 readonly scale="${VNC_SCALE:-90}"
 readonly viewer="${VNC_VIEWER:-tvncviewer}"
+readonly tunnel="${VNC_TUNNEL:-auto}"
 
 [[ -r "$passwd_file" ]] || die "missing VNC password file: $passwd_file"
 [[ "$scale" =~ ^([0-9]+|Auto|auto|FixedRatio|fixedratio)$ ]] || die "invalid VNC_SCALE: $scale"
 command -v "$viewer" >/dev/null 2>&1 || \
   die "missing $viewer; install TurboVNC Viewer or set VNC_VIEWER"
+
+use_tunnel="false"
+if [[ "$action" == "session" ]]; then
+  use_tunnel="true"
+else
+  case "$tunnel" in
+    always) use_tunnel="true" ;;
+    never) ;;
+    auto)
+      if [[ "$vnc_host" == "$ssh_host" ]]; then
+        ssh_config="$(ssh -G "$ssh_host")" || die "could not read SSH configuration for $ssh_host"
+        ssh_hostname="$(awk '$1 == "hostname" { print $2; exit }' <<< "$ssh_config")"
+        ssh_port="$(awk '$1 == "port" { print $2; exit }' <<< "$ssh_config")"
+        ssh_proxyjump="$(awk '$1 == "proxyjump" { print $2; exit }' <<< "$ssh_config")"
+        ssh_proxycommand="$(awk '$1 == "proxycommand" { print $2; exit }' <<< "$ssh_config")"
+        if [[ ( -n "$ssh_hostname" && "$ssh_hostname" != "${ssh_host#*@}" ) ||
+              ( -n "$ssh_port" && "$ssh_port" != 22 ) ||
+              ( -n "$ssh_proxyjump" && "$ssh_proxyjump" != none ) ||
+              ( -n "$ssh_proxycommand" && "$ssh_proxycommand" != none ) ]]; then
+          use_tunnel="true"
+        fi
+      fi
+      ;;
+    *) die "invalid VNC_TUNNEL: $tunnel (expected auto, always, or never)" ;;
+  esac
+fi
 
 if [[ "$action" == "session" ]]; then
   display_output="$(ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' --session "$session" "$geometry")"
@@ -142,21 +173,32 @@ display="$(
   exit 1
 }
 
-if [[ "$action" == "session" ]]; then
+if [[ "$use_tunnel" == "true" ]]; then
   local_display="${VNC_LOCAL_DISPLAY:-$((display + 10))}"
   [[ "$local_display" =~ ^[1-9][0-9]*$ ]] || die "invalid VNC_LOCAL_DISPLAY: $local_display"
   remote_port=$((5900 + display))
   local_port=$((5900 + local_display))
   (( remote_port <= 65535 && local_port <= 65535 )) || die "VNC display is too large"
 
+  forward_host="127.0.0.1"
+  tunnel_control_path="$control_path"
+  if [[ "$action" == "legacy" ]]; then
+    [[ "$vnc_host" == "$ssh_host" ]] || forward_host="$vnc_host"
+    ## Distinct legacy targets and local ports must not reuse another forward.
+    forward_key="$(printf '%s\n' "$forward_host" "$remote_port" "$local_port" | cksum)"
+    forward_key="${forward_key%% *}"
+    tunnel_control_path="${control_dir}/ssh-legacy-${forward_key}-%C"
+  fi
+
   mkdir -p "$control_dir"
   chmod 700 "$control_dir"
-  if ! ssh -n -S "$control_path" -O check "$ssh_host" >/dev/null 2>&1; then
-    ssh -fNT -M -S "$control_path" \
+  if ! ssh -n -S "$tunnel_control_path" -O check "$ssh_host" >/dev/null 2>&1; then
+    ssh -fNT -M -S "$tunnel_control_path" \
       -o ExitOnForwardFailure=yes \
-      -L "127.0.0.1:${local_port}:127.0.0.1:${remote_port}" \
+      -L "127.0.0.1:${local_port}:${forward_host}:${remote_port}" \
       "$ssh_host"
   fi
+  printf 'SSH tunnel through %s to %s:%s\n' "$ssh_host" "$forward_host" "$remote_port"
   vnc_host="localhost"
   display="$local_display"
 fi

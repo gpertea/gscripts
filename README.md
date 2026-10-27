@@ -378,9 +378,16 @@ Linux tunnel management requires `perl` (core `IO::Socket::INET`), `flock`,
 the SSH endpoint and display. New tunnels use SSH server keepalives.
 
 On macOS, `vnc-lan linwks34 --session browser-a` creates an SSH tunnel and
-opens TurboVNC. Legacy direct-LAN usage remains
-`vnc-lan linwks34 [vnc-host] [geometry]`.
-The macOS tunnel port policy is unchanged by the Linux update.
+opens TurboVNC. Legacy usage remains `vnc-lan linwks34 [vnc-host] [geometry]`.
+Its default `VNC_TUNNEL=auto` uses a tunnel when the SSH configuration maps
+the host to a different hostname, uses a nonstandard port, or specifies
+`ProxyJump`/`ProxyCommand`. A separately supplied VNC host stays direct in
+auto mode. Set `VNC_TUNNEL=always` to force tunneling, including when moving
+between work and home, or `VNC_TUNNEL=never` to force a direct LAN connection.
+With `VNC_TUNNEL=always vnc-lan gateway desktop`, SSH forwards to `desktop`
+as reached from `gateway`. Named sessions always tunnel, regardless of
+`VNC_TUNNEL`. Both tunnel modes use remote display + 10 as the local display;
+override this with `VNC_LOCAL_DISPLAY` if that port is occupied.
 
 On Windows/MSYS2, `vnc-win-lan` now accepts the same host/session target form
 as `vnc-session-view` while retaining the established
@@ -451,6 +458,7 @@ Regression checks:
 bash tests/vnc-win-title.sh
 bash tests/vnc-win-tunnel.sh
 bash tests/vnc-session-view-tunnel.sh
+python3 tests/vnc-lan-tunnel.py
 ```
 
 `vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin and to
