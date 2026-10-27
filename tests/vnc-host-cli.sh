@@ -24,34 +24,34 @@ printf 'NAME\tDISPLAY\tSTATE\tLISTEN\nbrowser\t:2\trunning\tloopback\n-\t:4\trun
 ln -s "$repo/vnc-host" "$fixture/bin/vnc-srv16"
 ln -s "$repo/vnc-host" "$fixture/bin/vnc-srv16-umango"
 
-for program in vnc-host vnc-session-view vnc-win-lan; do
+for program in vnc-host vnc-session-view vnc-win-lan vnc-lan; do
   "$repo/$program" -h > "$fixture/short-help"
   "$repo/$program" --help > "$fixture/long-help"
   cmp "$fixture/short-help" "$fixture/long-help"
 done
 printf '%s\n' 'PASS: -h matches --help for wrapper and both helpers'
 
-for client_os in linux-gnu msys; do
+for client_os in linux-gnu msys darwin; do
   for option in -l --list; do
     : > "$fixture/calls"
     OSTYPE="$client_os" "$repo/vnc-host" "$option" srv16 > "$fixture/output"
     cmp "$fixture/expected" "$fixture/output"
-    [[ "$(wc -l < "$fixture/calls")" == 1 ]]
+    (( $(wc -l < "$fixture/calls") == 1 ))
     OSTYPE="$client_os" "$fixture/bin/vnc-srv16" "$option" > "$fixture/output"
     cmp "$fixture/expected" "$fixture/output"
   done
 done
-printf '%s\n' 'PASS: Linux and Windows list active managed/unmanaged sessions via host and alias'
+printf '%s\n' 'PASS: Linux/macOS/Windows list active managed/unmanaged sessions via host and alias'
 
 ## both real viewer helpers must send the explicit account through to SSH
-for client_os in linux-gnu msys; do
+for client_os in linux-gnu msys darwin; do
   : > "$fixture/calls"
   VNC_CLI_REMOTE_HOST=umango@srv16 OSTYPE="$client_os" \
     "$fixture/bin/vnc-srv16-umango" --list > "$fixture/output"
   cmp "$fixture/expected" "$fixture/output"
-  [[ "$(wc -l < "$fixture/calls")" == 1 ]]
+  (( $(wc -l < "$fixture/calls") == 1 ))
 done
-printf '%s\n' 'PASS: Linux and Windows real helper paths use umango@srv16'
+printf '%s\n' 'PASS: Linux/macOS/Windows real helper paths use umango@srv16'
 
 printf 'NAME\tDISPLAY\tSTATE\tLISTEN\nold\t:3\tstopped\tlan\n' > "$fixture/sessions"
 printf 'NAME\tDISPLAY\tSTATE\tLISTEN\n' > "$fixture/expected"
@@ -60,10 +60,10 @@ cmp "$fixture/expected" "$fixture/output"
 printf '%s\n' 'PASS: no active sessions yields only the header'
 
 touch "$fixture/fail"
-for client_os in linux-gnu msys; do
+for client_os in linux-gnu msys darwin; do
   if OSTYPE="$client_os" "$repo/vnc-host" --list srv16 > "$fixture/output"; then
     echo 'FAIL: SSH failure was hidden' >&2
     exit 1
   fi
 done
-printf '%s\n' 'PASS: remote listing failures propagate on both platforms'
+printf '%s\n' 'PASS: remote listing failures propagate on all platforms'

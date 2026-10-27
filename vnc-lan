@@ -1,18 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-## macOS client; assumes TurboVNC Viewer is installed
+## macOS client: share alias parsing with vnc-host, retain TurboVNC options.
+program="$(basename -- "$0")"
+if [[ "$program" == vnc-* && "$program" != vnc-lan ]]; then
+  script_path="${BASH_SOURCE[0]}"
+  while [[ -L "$script_path" ]]; do
+    script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+    script_path="$(readlink "$script_path")"
+    [[ "$script_path" == /* ]] || script_path="${script_dir}/${script_path}"
+  done
+  script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+  # shellcheck source=vnc-host
+  source "${script_dir}/vnc-host"
+  exit
+fi
+
 usage() {
   printf '%s\n' \
     "Usage:" \
-    "  $(basename "$0") SSH_HOST [VNC_HOST] [GEOMETRY]" \
-    "  $(basename "$0") SSH_HOST --session NAME [GEOMETRY]" \
-    "  $(basename "$0") SSH_HOST --status NAME" \
-    "  $(basename "$0") SSH_HOST --stop [--force] NAME" \
+    "  vnc-lan [--direct|--tunnel] [--force-restart] SSH_HOST[:DISPLAY|:NAME]" \
+    "  vnc-HOST [--direct|--tunnel] [DISPLAY|NAME]" \
+    "  vnc-HOST-USER [--direct|--tunnel] [DISPLAY|NAME]" \
+    "  vnc-lan -l|--list SSH_HOST" \
+    "  vnc-lan --status SSH_HOST[:DISPLAY|:NAME]" \
+    "  vnc-lan --stop [--force] SSH_HOST[:DISPLAY|:NAME]" \
+    "  vnc-lan SSH_HOST [VNC_HOST|:DISPLAY|GEOMETRY] [GEOMETRY]" \
+    "  vnc-lan SSH_HOST --session NAME [GEOMETRY]" \
+    "Default: SSH tunnel, display :1. User aliases select the first owned session." \
+    "macOS viewer: TurboVNC (tvncviewer); override with VNC_VIEWER." \
     "Set VNC_SCALE to a percent, Auto, or FixedRatio; default: 90." \
-    "Set VNC_TUNNEL to auto, always, or never for legacy connections; default: auto." \
-    "Named sessions always use an SSH tunnel." \
-    "Set VNC_LOCAL_DISPLAY to override the tunneled local display; default: remote display + 10."
+    "VNC_TUNNEL=auto|always|never sets legacy transport; default: always." \
+    "Named sessions default to a tunnel; explicit --direct is supported." \
+    "VNC_LOCAL_DISPLAY overrides remote display + 10 for tunneled connections."
 }
 
 die() {
@@ -20,188 +40,197 @@ die() {
   exit 1
 }
 
-action="legacy"
+action="start"
 force_stop="false"
-session=""
-ssh_host=""
+force_restart="false"
+transport_override=""
+geometry="${VNC_SESSION_GEOMETRY:-1820x960}"
 vnc_host=""
-geometry="1820x960"
 
-case "${1:-}" in
-  --help|-h)
-    usage
-    exit 0
-    ;;
-  --session)
-    [[ $# -ge 3 && $# -le 4 ]] || { usage >&2; exit 2; }
-    action="session"
-    session="$2"
-    ssh_host="$3"
-    geometry="${4:-$geometry}"
-    ;;
-  --status)
-    [[ $# -eq 3 ]] || { usage >&2; exit 2; }
-    action="${1#--}"
-    session="$2"
-    ssh_host="$3"
-    ;;
-  --stop)
-    [[ $# -ge 3 && $# -le 4 ]] || { usage >&2; exit 2; }
-    action="stop"
-    if [[ "${2:-}" == "--force" ]]; then
-      [[ $# -eq 4 ]] || { usage >&2; exit 2; }
-      force_stop="true"
-      session="$3"
-      ssh_host="$4"
-    else
-      [[ $# -eq 3 ]] || { usage >&2; exit 2; }
-      session="$2"
-      ssh_host="$3"
-    fi
-    ;;
-  *)
-    [[ $# -ge 1 && $# -le 4 ]] || { usage >&2; exit 2; }
-    ssh_host="$1"
-    vnc_host="$ssh_host"
-    case "${2:-}" in
-      --session)
-        [[ $# -ge 3 && $# -le 4 ]] || { usage >&2; exit 2; }
-        action="session"
-        session="$3"
-        geometry="${4:-$geometry}"
-        ;;
-      --status)
-        [[ $# -eq 3 ]] || { usage >&2; exit 2; }
-        action="${2#--}"
-        session="$3"
-        ;;
-      --stop)
-        [[ $# -ge 3 && $# -le 4 ]] || { usage >&2; exit 2; }
-        action="stop"
-        if [[ "${3:-}" == "--force" ]]; then
-          [[ $# -eq 4 ]] || { usage >&2; exit 2; }
-          force_stop="true"
-          session="$4"
-        else
-          [[ $# -eq 3 ]] || { usage >&2; exit 2; }
-          session="$3"
-        fi
-        ;;
-      *)
-        [[ $# -le 3 ]] || { usage >&2; exit 2; }
-        if [[ $# -ge 2 ]]; then
-          if [[ "$2" =~ ^[0-9]+x[0-9]+$ ]]; then
-            geometry="$2"
-          else
-            vnc_host="$2"
-          fi
-        fi
-        [[ $# -lt 3 ]] || geometry="$3"
-        ;;
-    esac
-    ;;
-esac
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    --direct|--tunnel) transport_override="${1#--}" ;;
+    --force-restart) force_restart="true" ;;
+    --force) force_stop="true" ;;
+    --status|--stop) action="${1#--}" ;;
+    -l|--list) action="list" ;;
+    --help|-h) usage; exit 0 ;;
+    --session)
+      [[ $# -ge 3 && $# -le 4 ]] || { usage >&2; exit 2; }
+      set -- "$3" --session "$2" "${@:4}"
+      break
+      ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
 
-[[ "$geometry" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || die "invalid geometry: $geometry"
-if [[ -n "$session" ]]; then
-  [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid session name: $session"
-fi
-
-## macOS TMPDIR paths can exceed the Unix socket limit after SSH expands %C.
-readonly control_dir="/tmp/vnc-session-${UID}"
-readonly control_path="${control_dir}/ssh-${session:-legacy}-%C"
-
-if [[ "$action" == "status" ]]; then
-  exec ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' --status "$session"
-fi
-if [[ "$action" == "stop" ]]; then
-  stop_args=(--stop)
-  [[ "$force_stop" == "false" ]] || stop_args+=(--force)
-  ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' "${stop_args[@]}" "$session"
-  ssh -n -S "$control_path" -O exit "$ssh_host" >/dev/null 2>&1 || true
-  exit 0
-fi
-
-readonly passwd_file="${HOME}/.vnc/passwd"
-readonly scale="${VNC_SCALE:-90}"
-readonly viewer="${VNC_VIEWER:-tvncviewer}"
-readonly tunnel="${VNC_TUNNEL:-auto}"
-
-[[ -r "$passwd_file" ]] || die "missing VNC password file: $passwd_file"
-[[ "$scale" =~ ^([0-9]+|Auto|auto|FixedRatio|fixedratio)$ ]] || die "invalid VNC_SCALE: $scale"
-command -v "$viewer" >/dev/null 2>&1 || \
-  die "missing $viewer; install TurboVNC Viewer or set VNC_VIEWER"
-
-use_tunnel="false"
-if [[ "$action" == "session" ]]; then
-  use_tunnel="true"
+[[ $# -ge 1 ]] || { usage >&2; exit 2; }
+if [[ ( "$action" == status || "$action" == stop ) && $# -eq 2 ]]; then
+  ## Preserve the original --status NAME HOST / --stop NAME HOST forms.
+  target="$2:$1"
+  shift 2
 else
-  case "$tunnel" in
-    always) use_tunnel="true" ;;
-    never) ;;
-    auto)
-      if [[ "$vnc_host" == "$ssh_host" ]]; then
-        ssh_config="$(ssh -G "$ssh_host")" || die "could not read SSH configuration for $ssh_host"
-        ssh_hostname="$(awk '$1 == "hostname" { print $2; exit }' <<< "$ssh_config")"
-        ssh_port="$(awk '$1 == "port" { print $2; exit }' <<< "$ssh_config")"
-        ssh_proxyjump="$(awk '$1 == "proxyjump" { print $2; exit }' <<< "$ssh_config")"
-        ssh_proxycommand="$(awk '$1 == "proxycommand" { print $2; exit }' <<< "$ssh_config")"
-        if [[ ( -n "$ssh_hostname" && "$ssh_hostname" != "${ssh_host#*@}" ) ||
-              ( -n "$ssh_port" && "$ssh_port" != 22 ) ||
-              ( -n "$ssh_proxyjump" && "$ssh_proxyjump" != none ) ||
-              ( -n "$ssh_proxycommand" && "$ssh_proxycommand" != none ) ]]; then
-          use_tunnel="true"
-        fi
+  target="$1"
+  shift
+fi
+remote_host="${target%%:*}"
+requested_target="1"
+[[ "$target" != *:* ]] || requested_target="${target#*:}"
+
+if [[ $# -gt 0 ]]; then
+  [[ "$target" == "$remote_host" && "$action" == start ]] || die "extra arguments are not valid with $target"
+  case "$1" in
+    --session)
+      [[ $# -ge 2 && $# -le 3 ]] || { usage >&2; exit 2; }
+      requested_target="$2"
+      geometry="${3:-$geometry}"
+      ;;
+    --status)
+      [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+      action="status"
+      requested_target="$2"
+      ;;
+    --stop)
+      action="stop"
+      if [[ "${2:-}" == --force ]]; then
+        [[ $# -eq 3 ]] || { usage >&2; exit 2; }
+        force_stop="true"
+        requested_target="$3"
+      else
+        [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+        requested_target="$2"
       fi
       ;;
-    *) die "invalid VNC_TUNNEL: $tunnel (expected auto, always, or never)" ;;
+    *)
+      [[ $# -le 2 ]] || { usage >&2; exit 2; }
+      if [[ "$1" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
+        [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+        geometry="$1"
+      elif [[ "$1" == :* || "$1" =~ ^[0-9]+$ ]]; then
+        requested_target="${1#:}"
+        geometry="${2:-$geometry}"
+      else
+        vnc_host="$1"
+        geometry="${2:-$geometry}"
+      fi
+      ;;
   esac
 fi
-
-if [[ "$action" == "session" ]]; then
-  display_output="$(ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' --session "$session" "$geometry")"
+[[ -n "$remote_host" && -n "$requested_target" ]] || die "target must look like srv16, srv16:2, or srv16:browser"
+if [[ "$requested_target" =~ ^[1-9][0-9]*$ ]]; then
+  session=":$requested_target"
 else
-  display_output="$(ssh -n "$ssh_host" '"$HOME/bin/vnc-get-display"' "$geometry")"
+  session="$requested_target"
+  [[ ! "$session" =~ ^[0-9]+$ && "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid display or session name: $session"
 fi
-display="$(
-  printf '%s\n' "$display_output" |
-    sed -n 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' |
-    tail -n 1
-)"
-[[ -n "$display" ]] || {
-  printf 'Could not determine VNC display from %s.\n%s\n' "$ssh_host" "$display_output" >&2
-  exit 1
+[[ "$geometry" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || die "invalid geometry: $geometry"
+[[ "$action" == start || "$force_restart" == false ]] || die "--force-restart is only valid when opening a viewer"
+[[ "$action" == stop || "$force_stop" == false ]] || die "--force is only valid with --stop"
+vnc_host="${vnc_host:-$remote_host}"
+
+remote_vnc() {
+  ssh -n "$remote_host" '"$HOME/bin/vnc-session"' "$@"
 }
 
-if [[ "$use_tunnel" == "true" ]]; then
-  local_display="${VNC_LOCAL_DISPLAY:-$((display + 10))}"
-  [[ "$local_display" =~ ^[1-9][0-9]*$ ]] || die "invalid VNC_LOCAL_DISPLAY: $local_display"
-  remote_port=$((5900 + display))
+## Short socket paths are required on macOS even when TMPDIR is much longer.
+readonly control_dir="/tmp/vnc-session-${UID}"
+tunnel_settings() {
+  local_display="${VNC_LOCAL_DISPLAY:-${VNC_SESSION_LOCAL_DISPLAY:-$((display + 10))}}"
+  [[ "$local_display" =~ ^[1-9][0-9]{0,4}$ ]] || die "invalid VNC_LOCAL_DISPLAY: $local_display"
   local_port=$((5900 + local_display))
-  (( remote_port <= 65535 && local_port <= 65535 )) || die "VNC display is too large"
-
+  (( local_port <= 65535 )) || die "VNC display is too large"
   forward_host="127.0.0.1"
-  tunnel_control_path="$control_path"
-  if [[ "$action" == "legacy" ]]; then
-    [[ "$vnc_host" == "$ssh_host" ]] || forward_host="$vnc_host"
-    ## Distinct legacy targets and local ports must not reuse another forward.
-    forward_key="$(printf '%s\n' "$forward_host" "$remote_port" "$local_port" | cksum)"
-    forward_key="${forward_key%% *}"
-    tunnel_control_path="${control_dir}/ssh-legacy-${forward_key}-%C"
-  fi
+  [[ "$vnc_host" == "$remote_host" ]] || forward_host="$vnc_host"
+  forward_key="$(printf '%s\n' "$forward_host" "$local_port" | cksum)"
+  forward_key="${forward_key%% *}"
+  control_path="${control_dir}/d${display}-${forward_key}-%C"
+}
 
-  mkdir -p "$control_dir"
-  chmod 700 "$control_dir"
-  if ! ssh -n -S "$tunnel_control_path" -O check "$ssh_host" >/dev/null 2>&1; then
-    ssh -fNT -M -S "$tunnel_control_path" \
-      -o ExitOnForwardFailure=yes \
-      -L "127.0.0.1:${local_port}:${forward_host}:${remote_port}" \
-      "$ssh_host"
-  fi
-  printf 'SSH tunnel through %s to %s:%s\n' "$ssh_host" "$forward_host" "$remote_port"
-  vnc_host="localhost"
-  display="$local_display"
+validate_remote_display() {
+  [[ "$display" =~ ^[1-9][0-9]{0,4}$ ]] || die "invalid remote display: $display"
+  remote_port=$((5900 + display))
+  (( remote_port <= 65535 )) || die "VNC display is too large"
+}
+
+if [[ "$action" == list ]]; then
+  remote_vnc list | awk 'NR == 1 || $3 == "running"'
+  exit
+fi
+if [[ "$action" == status ]]; then
+  remote_vnc status "$session"
+  exit
+fi
+if [[ "$action" == stop ]]; then
+  display="$(remote_vnc display "$session")"
+  validate_remote_display
+  stop_args=(stop)
+  [[ "$force_stop" == false ]] || stop_args+=(--force)
+  remote_vnc "${stop_args[@]}" "$session"
+  tunnel_settings
+  ssh -n -S "$control_path" -O exit "$remote_host" >/dev/null 2>&1 || true
+  exit
 fi
 
+readonly passwd_file="${VNC_SESSION_PASSWORD_FILE:-${HOME}/.vnc/passwd}"
+readonly scale="${VNC_SCALE:-90}"
+readonly viewer="${VNC_VIEWER:-tvncviewer}"
+[[ -r "$passwd_file" ]] || die "missing VNC password file: $passwd_file"
+[[ "$scale" =~ ^([0-9]+|Auto|auto|FixedRatio|fixedratio)$ ]] || die "invalid VNC_SCALE: $scale"
+command -v "$viewer" >/dev/null 2>&1 || die "missing $viewer; install TurboVNC Viewer or set VNC_VIEWER"
+
+transport="${transport_override:-${VNC_TUNNEL:-always}}"
+case "$transport" in
+  always) transport="tunnel" ;;
+  never) transport="direct" ;;
+  auto|direct|tunnel) ;;
+  *) die "invalid VNC_TUNNEL: $transport (expected auto, always, or never)" ;;
+esac
+## Preserve named-session tunneling unless the user explicitly chose --direct.
+[[ "$session" == :* || -n "$transport_override" ]] || transport="tunnel"
+if [[ "$transport" == auto ]]; then
+  transport="direct"
+  if [[ "$vnc_host" == "$remote_host" ]]; then
+    ssh_config="$(ssh -G "$remote_host")" || die "could not read SSH configuration for $remote_host"
+    ssh_hostname="$(awk '$1 == "hostname" { print $2; exit }' <<< "$ssh_config")"
+    if awk -v host="${remote_host#*@}" '
+      $1 == "hostname" && $2 != host { tunnel = 1 }
+      $1 == "port" && $2 != 22 { tunnel = 1 }
+      ($1 == "proxyjump" || $1 == "proxycommand") && $2 != "none" { tunnel = 1 }
+      END { exit !tunnel }
+    ' <<< "$ssh_config"; then
+      transport="tunnel"
+    fi
+  fi
+fi
+[[ "$transport" == direct || "$force_restart" == false ]] || die "--force-restart is only valid with --direct"
+
+ensure_args=(ensure)
+if [[ "$transport" == direct ]]; then
+  ensure_args+=(--direct)
+  [[ "$force_restart" == false ]] || ensure_args+=(--force-restart)
+fi
+display="$(remote_vnc "${ensure_args[@]}" "$session" "$geometry")"
+validate_remote_display
+remote_vnc status ":$display" >/dev/null
+
+if [[ "$transport" == tunnel ]]; then
+  tunnel_settings
+  mkdir -p "$control_dir"
+  chmod 700 "$control_dir"
+  if ! ssh -n -S "$control_path" -O check "$remote_host" >/dev/null 2>&1; then
+    ssh -fNT -M -S "$control_path" -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=15 -o ServerAliveCountMax=2 \
+      -L "127.0.0.1:${local_port}:${forward_host}:${remote_port}" "$remote_host"
+  fi
+  printf 'SSH tunnel through %s to %s:%s\n' "$remote_host" "$forward_host" "$remote_port"
+  vnc_host="localhost"
+  display="$local_display"
+else
+  if [[ "$vnc_host" == "$remote_host" ]]; then
+    vnc_host="${VNC_DIRECT_HOST:-${ssh_hostname:-$(ssh -G "$remote_host" | awk '$1 == "hostname" {print $2; exit}')}}"
+    [[ -n "$vnc_host" ]] || die "could not resolve direct VNC host for $remote_host"
+  fi
+fi
 printf 'connecting to %s:%s\n' "$vnc_host" "$display"
 "$viewer" passwd="$passwd_file" -DesktopSize Server -Scale "$scale" "$vnc_host:$display" &

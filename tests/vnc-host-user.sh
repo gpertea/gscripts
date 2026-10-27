@@ -5,12 +5,24 @@ repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 fixture="$(mktemp -d)"
 trap 'rm -rf -- "$fixture"' EXIT
 export VNC_USER_FIXTURE="$fixture"
+export PATH="$fixture:$PATH"
 unset VNC_HOST_ALIAS VNC_HOST_DEFAULT_TRANSPORT
+
+cat > "$fixture/ssh" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$VNC_USER_FIXTURE/ssh-calls"
+[[ "$*" == '-n '*@*' "$HOME/bin/vnc-session" list' ]] || exit 2
+[[ ! -e "$VNC_USER_FIXTURE/fail" ]] || exit 7
+cat "$VNC_USER_FIXTURE/sessions"
+MOCK
+chmod +x "$fixture/ssh"
+printf 'NAME\tDISPLAY\tSTATE\tLISTEN\n' > "$fixture/sessions"
 
 ## use adjacent viewer probes to inspect every argument passed by the real wrapper
 cp "${VNC_HOST_TEST_SCRIPT:-$repo/vnc-host}" "$fixture/vnc-host"
 chmod +x "$fixture/vnc-host"
-for helper in vnc-session-view vnc-win-lan; do
+for helper in vnc-session-view vnc-win-lan vnc-lan; do
   cat > "$fixture/$helper" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -30,10 +42,12 @@ expect_route() {
   diff -u "$fixture/expected" "$fixture/actual"
 }
 
-for client_os in linux-gnu msys cygwin; do
+for client_os in linux-gnu msys cygwin darwin; do
   helper=vnc-session-view
   host_transport=--tunnel
-  if [[ "$client_os" != linux-gnu ]]; then
+  if [[ "$client_os" == darwin ]]; then
+    helper=vnc-lan
+  elif [[ "$client_os" != linux-gnu ]]; then
     helper=vnc-win-lan
     host_transport=--direct
   fi
@@ -72,7 +86,7 @@ for client_os in linux-gnu msys cygwin; do
   expect_route "$client_os" "$helper"$'\n'"$host_transport"$'\nvnc-host:1' \
     env VNC_HOST_ALIAS=vnc-host "$fixture/vnc-host"
 done
-printf '%s\n' 'PASS: user aliases, explicit user targets, actions, transports and legacy routing on Linux/MSYS2/Cygwin'
+printf '%s\n' 'PASS: user aliases, explicit targets, actions and transports on Linux/macOS/MSYS2/Cygwin'
 
 if "$fixture/vnc-srv16-" > "$fixture/stdout" 2> "$fixture/stderr"; then
   echo 'FAIL: empty alias username accepted' >&2
@@ -80,3 +94,30 @@ if "$fixture/vnc-srv16-" > "$fixture/stdout" 2> "$fixture/stderr"; then
 fi
 grep -q 'invalid host/user alias' "$fixture/stderr"
 printf '%s\n' 'PASS: malformed user alias is rejected'
+
+printf 'NAME\tDISPLAY\tSTATE\tLISTEN\nold\t:2\tstopped\tloopback\nlater\t:10\trunning\tloopback\n-\t:3\trunning\tunknown\n' > "$fixture/sessions"
+for client_os in linux-gnu darwin msys; do
+  case "$client_os" in
+    linux-gnu) helper=vnc-session-view ;;
+    darwin) helper=vnc-lan ;;
+    msys) helper=vnc-win-lan ;;
+  esac
+  expect_route "$client_os" "$helper"$'\n--tunnel\numango@srv16:3' \
+    "$fixture/vnc-srv16-umango"
+  expect_route "$client_os" "$helper"$'\n--tunnel\numango@srv16:self' \
+    "$fixture/vnc-srv16-umango" self
+done
+printf '%s\n' 'PASS: user default chooses the lowest running owned display; explicit self stays named'
+
+printf 'NAME\tDISPLAY\tSTATE\tLISTEN\nlater\t:10\tstopped\tloopback\nold\t:2\tstopped\tloopback\n' > "$fixture/sessions"
+expect_route darwin $'vnc-lan\n--tunnel\numango@srv16:2' "$fixture/vnc-srv16-umango"
+printf '%s\n' 'PASS: a retained stopped desktop is preferred over allocating another display'
+
+touch "$fixture/fail"
+rm -f "$fixture/actual"
+if OSTYPE=darwin "$fixture/vnc-srv16-umango" > "$fixture/stdout" 2> "$fixture/stderr"; then
+  echo 'FAIL: SSH listing failure was ignored' >&2
+  exit 1
+fi
+[[ ! -e "$fixture/actual" ]]
+printf '%s\n' 'PASS: listing failure does not create a replacement session or open a viewer'

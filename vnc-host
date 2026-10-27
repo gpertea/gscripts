@@ -11,6 +11,7 @@ transport_explicit="${VNC_HOST_DEFAULT_TRANSPORT:+true}"
 force_restart=""
 force_stop=""
 action=""
+user_default="false"
 
 usage() {
   printf '%s\n' \
@@ -22,7 +23,7 @@ usage() {
     "  vnc-HOST -l|--list" \
     "  vnc-HOST --status [DISPLAY|NAME]" \
     "  vnc-HOST --stop [--force] [DISPLAY|NAME]" \
-    "Host-only default: ${default_transport}, display :1; user-specific default: --tunnel, session self" \
+    "Host-only default: ${default_transport}, display :1; user-specific default: --tunnel, first owned session" \
     "The final alias token is USER; use vnc-host HOST for a literal hyphenated hostname." \
     "VNC_HOST_ALIAS and VNC_HOST_DEFAULT_TRANSPORT override alias and transport defaults."
 }
@@ -48,7 +49,10 @@ done
 if [[ "$program" == "vnc-host" && -z "${VNC_HOST_ALIAS:-}" ]]; then
   [[ $# -eq 1 ]] || { usage >&2; exit 1; }
   target="$1"
-  [[ "$target" != *@* || "$target" == *:* ]] || target="${target}:self"
+  if [[ "$target" == *@* && "$target" != *:* ]]; then
+    user_default="true"
+    target="${target}:self"
+  fi
 else
   host="${VNC_HOST_ALIAS:-${program#vnc-}}"
   [[ -n "$host" && ( -n "${VNC_HOST_ALIAS:-}" || "$host" != "$program" ) ]] || die "cannot derive host from $program"
@@ -62,7 +66,10 @@ else
   fi
   [[ $# -le 1 ]] || { usage >&2; exit 1; }
   default_suffix=1
-  [[ "$host" != *@* ]] || default_suffix=self
+  if [[ "$host" == *@* ]]; then
+    default_suffix=self
+    [[ $# -ne 0 ]] || user_default="true"
+  fi
   suffix="${1:-$default_suffix}"
   suffix="${suffix#:}"
   target="${host}:${suffix}"
@@ -78,13 +85,36 @@ case "$transport" in
   *) die "invalid VNC_HOST_DEFAULT_TRANSPORT: $transport" ;;
 esac
 
-script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+  script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+  script_path="$(readlink "$script_path")"
+  [[ "$script_path" == /* ]] || script_path="${script_dir}/${script_path}"
+done
 script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
 case "${OSTYPE:-$(uname -s)}" in
   msys*|cygwin*|MINGW*|MSYS*|CYGWIN*) viewer_helper="${script_dir}/vnc-win-lan" ;;
+  darwin*) viewer_helper="${script_dir}/vnc-lan" ;;
   *) viewer_helper="${script_dir}/vnc-session-view" ;;
 esac
 [[ -x "$viewer_helper" ]] || die "viewer helper is missing or not executable: $viewer_helper"
+
+if [[ "$user_default" == "true" && "$action" != --list ]]; then
+  remote_host="${target%%:*}"
+  sessions="$(ssh -n "$remote_host" '"$HOME/bin/vnc-session"' list)" || \
+    die "could not list VNC sessions for $remote_host"
+  ## The server lists only this account's desktops. Prefer a running desktop;
+  ## otherwise restart the lowest retained display before allocating self.
+  first_display="$(awk '
+    $2 ~ /^:[1-9][0-9]*$/ {
+      display = substr($2, 2) + 0
+      if ($3 == "running" && (!running || display < running)) running = display
+      if ($3 == "stopped" && (!stopped || display < stopped)) stopped = display
+    }
+    END { if (running) print running; else if (stopped) print stopped }
+  ' <<< "$sessions")"
+  target="${remote_host}:${first_display:-self}"
+fi
 
 if [[ -n "$action" ]]; then
   [[ -z "$force_restart" ]] || die "--force-restart is not valid with $action"

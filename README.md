@@ -258,8 +258,9 @@ higher. Existing copied wrappers therefore continue working after the remote
 host installs these tools.
 
 To replace copied wrappers with one maintained implementation, link
-`vnc-HOST` to `vnc-host`. Linux and macOS default to an SSH tunnel and display
-`:1`; Windows retains the legacy direct-LAN default.
+`vnc-HOST` to `vnc-host` on Linux and Windows, or to `vnc-lan` on macOS.
+All use the shared host-alias parser. Linux and macOS default to an SSH tunnel
+and display `:1`; Windows retains the legacy direct-LAN default.
 
 ```bash
 mv ~/bin/vnc-srv16 ~/bin/vnc-srv16.legacy
@@ -377,17 +378,48 @@ Linux tunnel management requires `perl` (core `IO::Socket::INET`), `flock`,
 `timeout`, and `/proc`. Locks, PID records, and socket cleanup are scoped to
 the SSH endpoint and display. New tunnels use SSH server keepalives.
 
-On macOS, `vnc-lan linwks34 --session browser-a` creates an SSH tunnel and
-opens TurboVNC. Legacy usage remains `vnc-lan linwks34 [vnc-host] [geometry]`.
-Its default `VNC_TUNNEL=auto` uses a tunnel when the SSH configuration maps
-the host to a different hostname, uses a nonstandard port, or specifies
-`ProxyJump`/`ProxyCommand`. A separately supplied VNC host stays direct in
-auto mode. Set `VNC_TUNNEL=always` to force tunneling, including when moving
-between work and home, or `VNC_TUNNEL=never` to force a direct LAN connection.
-With `VNC_TUNNEL=always vnc-lan gateway desktop`, SSH forwards to `desktop`
-as reached from `gateway`. Named sessions always tunnel, regardless of
-`VNC_TUNNEL`. Both tunnel modes use remote display + 10 as the local display;
-override this with `VNC_LOCAL_DISPLAY` if that port is occupied.
+On macOS, `vnc-lan` uses the same remote `vnc-session ensure` commands for
+exact displays and named sessions, while retaining TurboVNC-specific viewer
+options (`-DesktopSize Server`, `VNC_SCALE`, and the default `tvncviewer`).
+`VNC_VIEWER` can select another compatible TurboVNC launcher;
+`VNC_SESSION_PASSWORD_FILE` overrides `~/.vnc/passwd`.
+
+After pulling this checkout on each Mac, create local aliases in `~/bin`.
+The host list belongs to that device; adding another host requires just
+another symlink. Existing links need no reinstall when the checkout updates:
+
+```bash
+mkdir -p ~/bin
+ln -s ~/gscripts/vnc-lan ~/bin/vnc-lan # skip if already installed
+for host in srv16 gw gwrk gglin gxlin glin; do
+  ln -s vnc-lan ~/bin/vnc-"$host"
+done
+ln -s vnc-lan ~/bin/vnc-srv16-umango
+
+vnc-srv16                    # ensure srv16 display :1, then connect
+vnc-srv16 :2                 # ensure exactly :2, then connect
+vnc-srv16 3                  # numeric form also accepted
+vnc-srv16 --direct :2        # explicit direct LAN connection
+vnc-srv16-umango             # SSH as umango; discover or allocate a desktop
+vnc-srv16-umango --list
+```
+
+`vnc-lan srv16:2` and `vnc-lan srv16 --session browser-a` are also supported.
+SSH tunneling is now the default for both host aliases and plain `vnc-lan`,
+so moving between work and home does not change the viewer's transport.
+`--direct` ensures the remote LAN listener through the same guarded server
+command as Linux; changing a running loopback listener still requires
+`--force-restart`. Explicit `--direct`/`--tunnel` options take precedence.
+
+The older `vnc-lan SSH_HOST [VNC_HOST] [GEOMETRY]` form remains supported.
+`VNC_TUNNEL=always` (the default) forwards a separately supplied VNC host
+as reached from the SSH host. `VNC_TUNNEL=never` selects direct LAN mode.
+Optional `VNC_TUNNEL=auto` checks hostname aliases, nonstandard SSH ports,
+and `ProxyJump`/`ProxyCommand`; separately supplied VNC hosts stay direct in
+auto mode. Named sessions default to tunneling unless `--direct` is explicit.
+The Mac local display defaults to remote display + 10; use
+`VNC_LOCAL_DISPLAY` (or `VNC_SESSION_LOCAL_DISPLAY`) to override an occupied
+local port.
 
 On Windows/MSYS2, `vnc-win-lan` now accepts the same host/session target form
 as `vnc-session-view` while retaining the established
@@ -461,22 +493,26 @@ bash tests/vnc-session-view-tunnel.sh
 python3 tests/vnc-lan-tunnel.py
 ```
 
-`vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin and to
-`vnc-session-view` elsewhere. Its platform default follows that viewer:
+`vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin,
+`vnc-lan` on macOS, and `vnc-session-view` on Linux. Its platform default follows that viewer:
 direct LAN on Windows and an SSH tunnel elsewhere. Small host wrappers can set
 `VNC_HOST_ALIAS` or override the default with `VNC_HOST_DEFAULT_TRANSPORT`.
 Explicit `--direct` or `--tunnel` arguments always take precedence.
 
 An alias `vnc-HOST-USER` selects an explicit SSH account. The last
 hyphen-separated token is the username; earlier tokens form the hostname.
-User-specific connections default to the retained session `self` and an SSH
-tunnel on every platform, so they do not assume that display `:1` belongs to
-that account. Explicit display/session arguments and transport overrides still
-work:
+With no explicit display/session argument, user-specific connections list
+desktops as that SSH account and select its lowest-numbered running display.
+If none is running, they restart its lowest-numbered retained stopped display.
+If no desktop exists, the server ensures the retained name `self`, allocating
+the next free display using its existing allocator. This internal name does
+not invoke the `vnc-self` command. User aliases default to an SSH tunnel on
+every platform and never assume that display `:1` belongs to that account.
+Explicit display/session arguments skip discovery:
 
 ```bash
 ln -s ~/gscripts/vnc-host ~/bin/vnc-srv16-umango
-vnc-srv16-umango              # SSH umango@srv16, session self, tunnel
+vnc-srv16-umango              # SSH umango@srv16, first owned desktop, tunnel
 vnc-srv16-umango --status
 vnc-srv16-umango --list
 vnc-srv16-umango 3            # explicit display :3 under umango
