@@ -13,12 +13,18 @@ unset VNC_HOST_ALIAS VNC_HOST_DEFAULT_TRANSPORT
 cat > "$fixture/bin/ssh" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$1" == -G ]]; then
+  printf 'hostname %s\nport 22\n' "${2#*@}"
+  exit
+fi
 printf '%s\n' "$*" >> "$VNC_CLI_FIXTURE/calls"
 [[ "$*" == "-n ${VNC_CLI_REMOTE_HOST:-srv16} \"\$HOME/bin/vnc-session\" list" ]] || exit 2
 [[ ! -e "$VNC_CLI_FIXTURE/fail" ]] || exit 7
 cat "$VNC_CLI_FIXTURE/sessions"
 MOCK
 chmod +x "$fixture/bin/ssh"
+printf '#!/bin/sh\nexit 1\n' > "$fixture/bin/nc"
+chmod +x "$fixture/bin/nc"
 printf 'NAME\tDISPLAY\tSTATE\tLISTEN\nbrowser\t:2\trunning\tloopback\nold\t:3\tstopped\tlan\n-\t:4\trunning\tunknown\n' > "$fixture/sessions"
 printf 'NAME\tDISPLAY\tSTATE\tLISTEN\nbrowser\t:2\trunning\tloopback\n-\t:4\trunning\tunknown\n' > "$fixture/expected"
 ln -s "$repo/vnc-host" "$fixture/bin/vnc-srv16"

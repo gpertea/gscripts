@@ -4,8 +4,11 @@ set -euo pipefail
 program="$(basename -- "$0")"
 case "${OSTYPE:-$(uname -s)}" in
   msys*|cygwin*|MINGW*|MSYS*|CYGWIN*) default_transport="--direct" ;;
+  darwin*) default_transport="--auto" ;;
   *) default_transport="--tunnel" ;;
 esac
+user_default_transport="--tunnel"
+[[ "$default_transport" != --auto ]] || user_default_transport="--auto"
 transport="${VNC_HOST_DEFAULT_TRANSPORT:-$default_transport}"
 transport_explicit="${VNC_HOST_DEFAULT_TRANSPORT:+true}"
 force_restart=""
@@ -23,9 +26,10 @@ usage() {
     "  vnc-HOST -l|--list" \
     "  vnc-HOST --status [DISPLAY|NAME]" \
     "  vnc-HOST --stop [--force] [DISPLAY|NAME]" \
-    "Host-only default: ${default_transport}, display :1; user-specific default: --tunnel, first owned session" \
+    "Host-only default: ${default_transport}, display :1; user-specific default: ${user_default_transport}, first owned session" \
     "The final alias token is USER; use vnc-host HOST for a literal hyphenated hostname." \
     "VNC_HOST_ALIAS and VNC_HOST_DEFAULT_TRANSPORT override alias and transport defaults."
+  [[ "$default_transport" != --auto ]] || printf '%s\n' 'macOS --auto (default): direct LAN, direct tailnet, then SSH tunnel.'
 }
 
 die() {
@@ -35,7 +39,7 @@ die() {
 
 while [[ "${1:-}" == -* ]]; do
   case "$1" in
-    --direct|--tunnel) transport="$1"; transport_explicit=true ;;
+    --auto|--direct|--tunnel) transport="$1"; transport_explicit=true ;;
     --force-restart) force_restart="$1" ;;
     --force) force_stop="$1" ;;
     --status|--stop) action="$1" ;;
@@ -76,12 +80,13 @@ else
 fi
 
 ## user desktops have their own display assignment and stay behind SSH by default
-if [[ "${target%%:*}" == *@* && "$transport_explicit" != true ]]; then
+if [[ "${target%%:*}" == *@* && "$transport_explicit" != true && "$default_transport" != --auto ]]; then
   transport=--tunnel
 fi
 
 case "$transport" in
   --direct|--tunnel) ;;
+  --auto) [[ "$default_transport" == --auto ]] || die "--auto is only supported on macOS" ;;
   *) die "invalid VNC_HOST_DEFAULT_TRANSPORT: $transport" ;;
 esac
 
@@ -99,9 +104,17 @@ case "${OSTYPE:-$(uname -s)}" in
 esac
 [[ -x "$viewer_helper" ]] || die "viewer helper is missing or not executable: $viewer_helper"
 
+resolution_host="${target%%:*}"
+if [[ "$viewer_helper" == */vnc-lan ]]; then
+  # shellcheck source=vnc-mac-route
+  source "${script_dir}/vnc-mac-route"
+  vnc_mac_route "$resolution_host"
+  resolution_host="$VNC_MAC_SSH_HOST"
+fi
+
 if [[ "$user_default" == "true" && "$action" != --list ]]; then
   remote_host="${target%%:*}"
-  sessions="$(ssh -n "$remote_host" '"$HOME/bin/vnc-session"' list)" || \
+  sessions="$(ssh -n "$resolution_host" '"$HOME/bin/vnc-session"' list)" || \
     die "could not list VNC sessions for $remote_host"
   ## The server lists only this account's desktops. Prefer a running desktop;
   ## otherwise restart the lowest retained display before allocating self.

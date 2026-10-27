@@ -259,8 +259,9 @@ host installs these tools.
 
 To replace copied wrappers with one maintained implementation, link
 `vnc-HOST` to `vnc-host` on Linux and Windows, or to `vnc-lan` on macOS.
-All use the shared host-alias parser. Linux and macOS default to an SSH tunnel
-and display `:1`; Windows retains the legacy direct-LAN default.
+All use the shared host-alias parser and default to display `:1`. Linux defaults
+to an SSH tunnel; macOS selects an available direct route before falling back
+to SSH forwarding; Windows retains the legacy direct-LAN default.
 
 ```bash
 mv ~/bin/vnc-srv16 ~/bin/vnc-srv16.legacy
@@ -402,17 +403,23 @@ vnc-srv16-alice --list
 ```
 
 `vnc-lan srv16:2` and `vnc-lan srv16 --session browser-a` are also supported.
-SSH tunneling is the default for both host aliases and plain `vnc-lan`.
+Automatic route selection is the default for both host aliases and plain
+`vnc-lan`. Device-specific endpoints belong in private SSH configuration;
+see `vnc-lan --help` for the optional companion-alias convention.
+Availability is checked on every launch. Running desktops keep their listener
+configuration, with SSH forwarding used when direct VNC is unavailable.
+New or stopped desktops are started in direct mode by automatic selection.
 `--direct` ensures the remote LAN listener through the same guarded server
 command as Linux; changing a running loopback listener still requires
-`--force-restart`. Explicit `--direct`/`--tunnel` options take precedence.
+`--force-restart`. Explicit `--direct`/`--tunnel` options take precedence;
+`--auto` restores automatic route selection.
 
 The older `vnc-lan SSH_HOST [VNC_HOST] [GEOMETRY]` form remains supported.
-`VNC_TUNNEL=always` (the default) forwards a separately supplied VNC host
+`VNC_TUNNEL=always` forwards a separately supplied VNC host
 as reached from the SSH host. `VNC_TUNNEL=never` selects direct LAN mode.
-Optional `VNC_TUNNEL=auto` checks hostname aliases, nonstandard SSH ports,
-and `ProxyJump`/`ProxyCommand`; separately supplied VNC hosts stay direct in
-auto mode. Named sessions default to tunneling unless `--direct` is explicit.
+`VNC_TUNNEL=auto` (the default) probes configured direct endpoints before
+falling back to SSH forwarding. Named and exact-display targets use the same
+route-selection policy.
 The Mac local display defaults to remote display + 10; use
 `VNC_LOCAL_DISPLAY` (or `VNC_SESSION_LOCAL_DISPLAY`) to override an occupied
 local port.
@@ -491,7 +498,8 @@ python3 tests/vnc-lan-tunnel.py
 
 `vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin,
 `vnc-lan` on macOS, and `vnc-session-view` on Linux. Its platform default follows that viewer:
-direct LAN on Windows and an SSH tunnel elsewhere. Small host wrappers can set
+direct LAN on Windows, automatic route selection on macOS, and an SSH tunnel
+on Linux. Small host wrappers can set
 `VNC_HOST_ALIAS` or override the default with `VNC_HOST_DEFAULT_TRANSPORT`.
 Explicit `--direct` or `--tunnel` arguments always take precedence.
 
@@ -502,8 +510,9 @@ desktops as that SSH account and select its lowest-numbered running display.
 If none is running, they restart its lowest-numbered retained stopped display.
 If no desktop exists, the server ensures the retained name `self`, allocating
 the next free display using its existing allocator. This internal name does
-not invoke the `vnc-self` command. User aliases default to an SSH tunnel on
-every platform and never assume that display `:1` belongs to that account.
+not invoke the `vnc-self` command. User aliases use automatic route selection
+on macOS and default to an SSH tunnel elsewhere. They never assume that
+display `:1` belongs to that account.
 Explicit display/session arguments skip discovery:
 
 ```bash

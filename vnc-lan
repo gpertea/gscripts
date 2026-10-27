@@ -3,14 +3,14 @@ set -euo pipefail
 
 ## macOS client: share alias parsing with vnc-host, retain TurboVNC options.
 program="$(basename -- "$0")"
-if [[ "$program" == vnc-* && "$program" != vnc-lan ]]; then
-  script_path="${BASH_SOURCE[0]}"
-  while [[ -L "$script_path" ]]; do
-    script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
-    script_path="$(readlink "$script_path")"
-    [[ "$script_path" == /* ]] || script_path="${script_dir}/${script_path}"
-  done
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
   script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+  script_path="$(readlink "$script_path")"
+  [[ "$script_path" == /* ]] || script_path="${script_dir}/${script_path}"
+done
+script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+if [[ "$program" == vnc-* && "$program" != vnc-lan ]]; then
   # shellcheck source=vnc-host
   source "${script_dir}/vnc-host"
   exit
@@ -19,7 +19,7 @@ fi
 usage() {
   printf '%s\n' \
     "Usage:" \
-    "  vnc-lan [--direct|--tunnel] [--force-restart] SSH_HOST[:DISPLAY|:NAME]" \
+    "  vnc-lan [--auto|--direct|--tunnel] [--force-restart] SSH_HOST[:DISPLAY|:NAME]" \
     "  vnc-HOST [--direct|--tunnel] [DISPLAY|NAME]" \
     "  vnc-HOST-USER [--direct|--tunnel] [DISPLAY|NAME]" \
     "  vnc-lan -l|--list SSH_HOST" \
@@ -27,11 +27,14 @@ usage() {
     "  vnc-lan --stop [--force] SSH_HOST[:DISPLAY|:NAME]" \
     "  vnc-lan SSH_HOST [VNC_HOST|:DISPLAY|GEOMETRY] [GEOMETRY]" \
     "  vnc-lan SSH_HOST --session NAME [GEOMETRY]" \
-    "Default: SSH tunnel, display :1. User aliases select the first owned session." \
+    "Default: direct LAN, direct tailnet, then SSH tunnel; display :1." \
+    "User aliases select the first owned session." \
     "macOS viewer: TurboVNC (tvncviewer); override with VNC_VIEWER." \
     "Set VNC_SCALE to a percent, Auto, or FixedRatio; default: 90." \
-    "VNC_TUNNEL=auto|always|never sets legacy transport; default: always." \
-    "Named sessions default to a tunnel; explicit --direct is supported." \
+    "Optional SSH companions HOST-lan and HOST-tailnet define private endpoints." \
+    "Availability is checked each launch; each TCP probe is limited to one second." \
+    "VNC_TUNNEL=auto|always|never sets legacy transport; default: auto." \
+    "Automatic mode never restarts running desktops to change their listener." \
     "VNC_LOCAL_DISPLAY overrides remote display + 10 for tunneled connections."
 }
 
@@ -49,7 +52,7 @@ vnc_host=""
 
 while [[ "${1:-}" == -* ]]; do
   case "$1" in
-    --direct|--tunnel) transport_override="${1#--}" ;;
+    --auto|--direct|--tunnel) transport_override="${1#--}" ;;
     --force-restart) force_restart="true" ;;
     --force) force_stop="true" ;;
     --status|--stop) action="${1#--}" ;;
@@ -129,8 +132,13 @@ fi
 [[ "$action" == stop || "$force_stop" == false ]] || die "--force is only valid with --stop"
 vnc_host="${vnc_host:-$remote_host}"
 
+# shellcheck source=vnc-mac-route
+source "${script_dir}/vnc-mac-route"
+vnc_mac_route "$remote_host"
+ssh_host="$VNC_MAC_SSH_HOST"
+
 remote_vnc() {
-  ssh -n "$remote_host" '"$HOME/bin/vnc-session"' "$@"
+  ssh -n "$ssh_host" '"$HOME/bin/vnc-session"' "$@"
 }
 
 ## Short socket paths are required on macOS even when TMPDIR is much longer.
@@ -142,6 +150,10 @@ tunnel_settings() {
   (( local_port <= 65535 )) || die "VNC display is too large"
   forward_host="127.0.0.1"
   [[ "$vnc_host" == "$remote_host" ]] || forward_host="$vnc_host"
+  tunnel_identity
+}
+
+tunnel_identity() {
   forward_key="$(printf '%s\n' "$forward_host" "$local_port" | cksum)"
   forward_key="${forward_key%% *}"
   control_path="${control_dir}/d${display}-${forward_key}-%C"
@@ -168,7 +180,14 @@ if [[ "$action" == stop ]]; then
   [[ "$force_stop" == false ]] || stop_args+=(--force)
   remote_vnc "${stop_args[@]}" "$session"
   tunnel_settings
-  ssh -n -S "$control_path" -O exit "$remote_host" >/dev/null 2>&1 || true
+  ## Automatic forwarding can have moved past an occupied preferred port.
+  stop_attempts=5
+  [[ -z "${VNC_LOCAL_DISPLAY:-${VNC_SESSION_LOCAL_DISPLAY:-}}" ]] || stop_attempts=1
+  for ((attempt = 1; attempt <= stop_attempts && local_port <= 65535; attempt++)); do
+    ssh -n -S "$control_path" -O exit "$ssh_host" >/dev/null 2>&1 || true
+    (( local_port++ ))
+    tunnel_identity
+  done
   exit
 fi
 
@@ -179,56 +198,88 @@ readonly viewer="${VNC_VIEWER:-tvncviewer}"
 [[ "$scale" =~ ^([0-9]+|Auto|auto|FixedRatio|fixedratio)$ ]] || die "invalid VNC_SCALE: $scale"
 command -v "$viewer" >/dev/null 2>&1 || die "missing $viewer; install TurboVNC Viewer or set VNC_VIEWER"
 
-transport="${transport_override:-${VNC_TUNNEL:-always}}"
+transport="${transport_override:-${VNC_TUNNEL:-auto}}"
 case "$transport" in
   always) transport="tunnel" ;;
   never) transport="direct" ;;
   auto|direct|tunnel) ;;
   *) die "invalid VNC_TUNNEL: $transport (expected auto, always, or never)" ;;
 esac
-## Preserve named-session tunneling unless the user explicitly chose --direct.
-[[ "$session" == :* || -n "$transport_override" ]] || transport="tunnel"
-if [[ "$transport" == auto ]]; then
-  transport="direct"
-  if [[ "$vnc_host" == "$remote_host" ]]; then
-    ssh_config="$(ssh -G "$remote_host")" || die "could not read SSH configuration for $remote_host"
-    ssh_hostname="$(awk '$1 == "hostname" { print $2; exit }' <<< "$ssh_config")"
-    if awk -v host="${remote_host#*@}" '
-      $1 == "hostname" && $2 != host { tunnel = 1 }
-      $1 == "port" && $2 != 22 { tunnel = 1 }
-      ($1 == "proxyjump" || $1 == "proxycommand") && $2 != "none" { tunnel = 1 }
-      END { exit !tunnel }
-    ' <<< "$ssh_config"; then
-      transport="tunnel"
-    fi
-  fi
-fi
 [[ "$transport" == direct || "$force_restart" == false ]] || die "--force-restart is only valid with --direct"
 
 ensure_args=(ensure)
 if [[ "$transport" == direct ]]; then
   ensure_args+=(--direct)
   [[ "$force_restart" == false ]] || ensure_args+=(--force-restart)
+elif [[ "$transport" == auto ]]; then
+  ## Existing desktops keep their listener. New/stopped desktops can be direct.
+  session_status="$(remote_vnc status "$session" 2>/dev/null)" || session_status=""
+  if ! grep -q '^State: running$' <<< "$session_status"; then
+    ensure_args+=(--direct)
+  fi
 fi
 display="$(remote_vnc "${ensure_args[@]}" "$session" "$geometry")"
 validate_remote_display
 remote_vnc status ":$display" >/dev/null
 
+if [[ "$transport" == auto ]]; then
+  if [[ "$vnc_host" != "$remote_host" ]]; then
+    if vnc_mac_probe "$vnc_host" "$remote_port"; then
+      transport="direct"
+    else
+      transport="tunnel"
+    fi
+  elif direct_address="$(vnc_mac_direct_address "$remote_port")"; then
+    vnc_host="$direct_address"
+    transport="direct"
+  else
+    printf 'Direct VNC unavailable; using SSH forwarding through %s\n' "$ssh_host"
+    transport="tunnel"
+  fi
+fi
+
 if [[ "$transport" == tunnel ]]; then
   tunnel_settings
   mkdir -p "$control_dir"
   chmod 700 "$control_dir"
-  if ! ssh -n -S "$control_path" -O check "$remote_host" >/dev/null 2>&1; then
-    ssh -fNT -M -S "$control_path" -o ExitOnForwardFailure=yes \
-      -o ServerAliveInterval=15 -o ServerAliveCountMax=2 \
-      -L "127.0.0.1:${local_port}:${forward_host}:${remote_port}" "$remote_host"
-  fi
-  printf 'SSH tunnel through %s to %s:%s\n' "$remote_host" "$forward_host" "$remote_port"
+  tunnel_ready=false
+  for ((attempt = 1; attempt <= 5; attempt++)); do
+    if ssh -n -S "$control_path" -O check "$ssh_host" >/dev/null 2>&1; then
+      tunnel_ready=true
+      break
+    fi
+    error_file="$(mktemp "${control_dir}/.start.XXXXXX")"
+    if ssh -fNT -M -S "$control_path" -o ExitOnForwardFailure=yes \
+        -o ServerAliveInterval=15 -o ServerAliveCountMax=2 \
+        -L "127.0.0.1:${local_port}:${forward_host}:${remote_port}" "$ssh_host" >"$error_file" 2>&1; then
+      rm -f "$error_file"
+      tunnel_ready=true
+      break
+    fi
+    error_output="$(cat "$error_file")"
+    rm -f "$error_file"
+    if [[ -n "${VNC_LOCAL_DISPLAY:-${VNC_SESSION_LOCAL_DISPLAY:-}}" ]] ||
+        ! grep -Eiq 'Address already in use|cannot listen to port' <<< "$error_output"; then
+      printf '%s\n' "$error_output" >&2
+      die "could not create SSH VNC forward"
+    fi
+    ## Another route or host may still have the preferred port. Try the next.
+    (( local_port++ ))
+    (( local_display++ ))
+    (( local_port <= 65535 )) || die "no available VNC forwarding port"
+    tunnel_identity
+  done
+  [[ "$tunnel_ready" == true ]] || die "could not find a VNC forwarding port after five attempts"
+  printf 'SSH tunnel through %s to %s:%s\n' "$ssh_host" "$forward_host" "$remote_port"
   vnc_host="localhost"
   display="$local_display"
 else
   if [[ "$vnc_host" == "$remote_host" ]]; then
-    vnc_host="${VNC_DIRECT_HOST:-${ssh_hostname:-$(ssh -G "$remote_host" | awk '$1 == "hostname" {print $2; exit}')}}"
+    if direct_address="$(vnc_mac_direct_address "$remote_port")"; then
+      vnc_host="$direct_address"
+    else
+      vnc_host="${VNC_DIRECT_HOST:-${VNC_MAC_LAN_ADDR:-${VNC_MAC_TAIL_ADDR:-$VNC_MAC_ORIGINAL_ADDR}}}"
+    fi
     [[ -n "$vnc_host" ]] || die "could not resolve direct VNC host for $remote_host"
   fi
 fi

@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+## Sourced by the macOS client and shared alias wrapper. Addresses stay in SSH config.
+
+vnc_mac_probe() {
+  nc -z -G 1 -w 1 "$1" "$2" >/dev/null 2>&1
+}
+
+vnc_mac_route() {
+  local original="$1" base account="" config hostname port proxy alias lan_available=false
+  [[ "${VNC_MAC_ROUTE_FOR:-}" != "$original" || -z "${VNC_MAC_SSH_HOST:-}" ]] || return 0
+  command -v nc >/dev/null 2>&1 || { printf 'error: nc is required for macOS route checks\n' >&2; return 1; }
+  base="${original#*@}"
+  [[ "$original" != *@* ]] || account="${original%@*}@"
+  VNC_MAC_LAN_ADDR=""
+  VNC_MAC_TAIL_ADDR=""
+  VNC_MAC_SSH_HOST="$original"
+
+  config="$(ssh -G "$original" 2>/dev/null)" || {
+    printf 'error: could not read SSH configuration for %s\n' "$original" >&2
+    return 1
+  }
+  VNC_MAC_ORIGINAL_ADDR="$(awk '$1 == "hostname" {print $2; exit}' <<< "$config")"
+  port="$(awk '$1 == "port" {print $2; exit}' <<< "$config")"
+  proxy="$(awk '($1 == "proxyjump" || $1 == "proxycommand") && $2 != "none" {print "yes"; exit}' <<< "$config")"
+  ## A forwarded SSH port is not evidence that its gateway is the VNC server.
+  if [[ "$port" == 22 && -z "$proxy" ]]; then
+    VNC_MAC_LAN_ADDR="$VNC_MAC_ORIGINAL_ADDR"
+  fi
+
+  alias="${account}${base}-lan"
+  config="$(ssh -G "$alias" 2>/dev/null)" || config=""
+  hostname="$(awk '$1 == "hostname" {print $2; exit}' <<< "$config")"
+  if [[ -n "$hostname" && "$hostname" != "${base}-lan" ]]; then
+    VNC_MAC_LAN_ADDR="$hostname"
+    port="$(awk '$1 == "port" {print $2; exit}' <<< "$config")"
+  else
+    alias="$original"
+    port=22
+  fi
+  if [[ -n "$VNC_MAC_LAN_ADDR" ]] && vnc_mac_probe "$VNC_MAC_LAN_ADDR" "${port:-22}"; then
+    VNC_MAC_SSH_HOST="$alias"
+    lan_available=true
+  fi
+
+  ## Companion aliases are optional; an unconfigured name resolves to itself.
+  alias="${account}${base}-tailnet"
+  config="$(ssh -G "$alias" 2>/dev/null)" || config=""
+  hostname="$(awk '$1 == "hostname" {print $2; exit}' <<< "$config")"
+  if [[ -n "$hostname" && "$hostname" != "${base}-tailnet" ]]; then
+    VNC_MAC_TAIL_ADDR="$hostname"
+    port="$(awk '$1 == "port" {print $2; exit}' <<< "$config")"
+    if [[ "$lan_available" == false ]] &&
+        vnc_mac_probe "$VNC_MAC_TAIL_ADDR" "${port:-22}"; then
+      VNC_MAC_SSH_HOST="$alias"
+    fi
+  fi
+  VNC_MAC_ROUTE_FOR="$original"
+  export VNC_MAC_ROUTE_FOR VNC_MAC_SSH_HOST VNC_MAC_LAN_ADDR VNC_MAC_TAIL_ADDR VNC_MAC_ORIGINAL_ADDR
+}
+
+vnc_mac_direct_address() {
+  local port="$1" candidate
+  for candidate in "${VNC_DIRECT_HOST:-}" "${VNC_MAC_LAN_ADDR:-}" "${VNC_MAC_TAIL_ADDR:-}"; do
+    [[ -n "$candidate" ]] || continue
+    if vnc_mac_probe "$candidate" "$port"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
