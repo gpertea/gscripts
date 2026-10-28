@@ -62,16 +62,34 @@ launches with an initial prompt, and `cody --attach :N` new sessions.
 Explicit relative directory options are converted to absolute paths using the
 client's working directory before connecting to the server.
 
-Managed `cody resume` opens the current-directory picker and automatically
-applies the named Full Access profile with approvals disabled to the selected
-thread. This also works with a thread ID, `--last`, and `--attach :N resume`.
-It selects cody's yolo default even if the saved thread used restricted access.
-Codex's remote CLI rejects launch-time permission overrides, so the
-`cody-resume` helper briefly delays the resume response, updates that thread
-through the app-server API, and verifies its effective permissions. Update
-failure is reported as a resume error. Other threads and later manual
-permission changes are unaffected. Fork and in-session `/resume` retain their
-existing behavior.
+Managed clients use a private `cody-resume` proxy throughout their lifetime.
+Each newly selected thread receives the named Full Access profile with approvals
+disabled, even if it was saved with restricted access. This covers new sessions,
+forks, the resume picker, explicit thread IDs, `--last`, `--all`,
+`--attach :N resume`, and later in-session `/resume` selections. Current-directory
+filtering and explicit directory options retain their normal behavior.
+
+Codex's remote CLI rejects launch-time permission overrides on resume/fork.
+For resumed and forked threads, the proxy holds the response, updates that
+thread through the app-server API, and reads back its effective permissions.
+For new threads, it supplies the profile in the start request and verifies the
+returned settings; these threads have no saved rollout to resume yet. Rejection, inconsistent readback, timeout, or disconnect
+fails the selection visibly. Unselected threads are unaffected.
+
+A thread receives this default once per cody process. Later permission choices
+made through settings or turn overrides pass through unchanged; reconnecting or
+reselecting that thread within the same client does not reset them. Exiting and
+starting cody again reapplies the Full Access default. The proxy does not force
+permissions on every turn or restart shared servers.
+
+Regression checks: `python3 tests/cody-resume.py`,
+`bash tests/cody-display-env.sh`, and `python3 tests/cody-update.py`.
+`python3 tests/cody-resume-live.py` additionally exercises the installed CLI and
+an isolated app-server with a local Responses fixture. It checks warm-thread
+restoration, a deliberate restriction across reconnect, and a cold saved-thread
+TUI resume followed by actual `git add` and an outside-workspace write. It uses
+no account credentials or remote model requests. Launcher option routing and
+failure cases use protocol doubles; account switching is not reproduced.
 
 Keep `cody`, `cody-display`, and `cody-resume` together on Linux. Both Python
 helpers use only the Python 3.9+ standard library. The temporary resume proxy

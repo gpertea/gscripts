@@ -308,10 +308,8 @@ fi
 
 if $use_display_server; then
   declare -a display_args=()
-  ## apply full access through the selected thread's settings API, after resume
-  if [[ "$codex_command" == resume ]]; then
-    display_args+=(--restore-yolo)
-  fi
+  ## keep permission restoration available for forks and later in-session resumes
+  display_args+=(--restore-yolo)
   ## remote new sessions otherwise inherit the server's launch directory
   if [[ "$codex_command" != fork ]]; then
     launch_here=true

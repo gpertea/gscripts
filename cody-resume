@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore full access on the first selected resume through a local client proxy."""
+"""Apply cody defaults to newly selected threads through a local client proxy."""
 import asyncio
 import json
 from pathlib import Path
@@ -46,15 +46,16 @@ def encode(message, masked=False):
 class ResumeProxy:
     def __init__(self, endpoint):
         self.path = endpoint.removeprefix('unix://')
-        self.claimed = False
+        self.restored = set()
         self.tasks = set()
+        self.timeout = 20
 
     async def connect(self, reader, writer):
         task = asyncio.current_task()
         self.tasks.add(task)
         upstream = None
         pumps = []
-        updates, checks = {}, {}
+        updates, checks, deadlines = {}, {}, {}
         try:
             server_reader, upstream = await asyncio.open_unix_connection(self.path)
             upstream.write(await header(reader))
@@ -64,28 +65,21 @@ class ResumeProxy:
                 raise RuntimeError('app-server refused WebSocket connection')
             writer.write(reply)
             await writer.drain()
-            resumes = set()
+            resumes = {}
             token = 'cody-' + secrets.token_hex(16)
 
             async def pump(source, destination, from_server):
                 parts, raws = [], []
                 opcode = None
-                deadline = None
                 while True:
-                    if self.claimed and not updates and not checks and not parts:
-                        # after startup restoration, relay ordinary traffic without inspection
-                        chunk = await source.read(65536)
-                        if not chunk:
-                            return
-                        destination.write(chunk)
-                        await destination.drain()
-                        continue
                     # bound internal RPCs without imposing an idle-client timeout
                     pending = bool(updates or checks) if from_server else False
-                    timeout = max(0, deadline - asyncio.get_running_loop().time()) if pending else None
+                    timeout = max(0, min(deadlines.values()) - asyncio.get_running_loop().time()) if pending else None
                     first, body, raw = await asyncio.wait_for(frame(source), timeout)
                     current = first & 15
                     if current >= 8:
+                        if current == 8 and (updates or checks):
+                            raise RuntimeError('connection closed during permission restoration')
                         destination.write(raw)
                         await destination.drain()
                         if current == 8:
@@ -102,18 +96,30 @@ class ResumeProxy:
                     parts, raws = [], []
                     if isinstance(message, dict):
                         request_id = message.get('id')
-                        if not from_server and message.get('method') == 'thread/resume':
-                            resumes.add(request_id)
+                        if not from_server and message.get('method') in ('thread/start', 'thread/resume', 'thread/fork'):
+                            method = message['method']
+                            resumes[request_id] = method
+                            if method == 'thread/start':
+                                # new threads have no saved rollout to resume for readback yet
+                                params = message.setdefault('params', {})
+                                params.pop('sandbox', None)
+                                params.update(permissions=':danger-full-access',
+                                              approvalPolicy='never', approvalsReviewer='user')
+                                outgoing = encode(message, True)
                         elif from_server and 'method' not in message:
                             if request_id in resumes:
-                                resumes.remove(request_id)
-                                if 'result' in message and not self.claimed:
-                                    # only the selected startup thread gets cody's yolo default
-                                    self.claimed = True
+                                method = resumes.pop(request_id)
+                                if method == 'thread/start' and 'result' in message:
+                                    if self.full_access(message['result']):
+                                        self.restored.add(message['result']['thread']['id'])
+                                    else:
+                                        outgoing = encode(self.failure(message, 'server did not confirm Full Access'))
+                                elif 'result' in message and message['result']['thread']['id'] not in self.restored:
+                                    # each selected thread receives the default once per client lifetime
                                     thread_id = message['result']['thread']['id']
-                                    update_id = token + '-update'
+                                    update_id = token + '-update-' + secrets.token_hex(16)
                                     updates[update_id] = message
-                                    deadline = asyncio.get_running_loop().time() + 20
+                                    deadlines[update_id] = asyncio.get_running_loop().time() + self.timeout
                                     upstream.write(encode(dict(id=update_id, method='thread/settings/update',
                                         params=dict(threadId=thread_id, permissions=':danger-full-access',
                                                     approvalPolicy='never', approvalsReviewer='user')), True))
@@ -121,27 +127,26 @@ class ResumeProxy:
                                     continue
                             elif request_id in updates:
                                 original = updates.pop(request_id)
+                                deadline = deadlines.pop(request_id)
                                 if 'error' in message:
-                                    self.claimed = False
                                     outgoing = encode(self.failure(original, message['error']['message']))
                                 else:
                                     # read back effective settings, including warm-thread behavior
-                                    check_id = token + '-check'
+                                    check_id = token + '-check-' + secrets.token_hex(16)
                                     checks[check_id] = original
+                                    deadlines[check_id] = deadline
                                     upstream.write(encode(dict(id=check_id, method='thread/resume',
                                         params=dict(threadId=original['result']['thread']['id'], excludeTurns=True)), True))
                                     await upstream.drain()
                                     continue
                             elif request_id in checks:
                                 original = checks.pop(request_id)
+                                deadlines.pop(request_id)
                                 result = message.get('result', {})
-                                profile = result.get('activePermissionProfile') or {}
-                                if (result.get('approvalPolicy') != 'never'
-                                        or result.get('sandbox', {}).get('type') != 'dangerFullAccess'
-                                        or profile.get('id') != ':danger-full-access'):
-                                    self.claimed = False
+                                if not self.full_access(result):
                                     outgoing = encode(self.failure(original, 'server did not confirm Full Access'))
                                 else:
+                                    self.restored.add(original['result']['thread']['id'])
                                     # preserve history/cwd/model; expose verified permission fields to the TUI
                                     for key in ('approvalPolicy', 'approvalsReviewer', 'sandbox', 'activePermissionProfile'):
                                         original['result'][key] = result[key]
@@ -156,7 +161,6 @@ class ResumeProxy:
                 finished.result()
         except (OSError, RuntimeError, ValueError, asyncio.IncompleteReadError, asyncio.TimeoutError) as error:
             if updates or checks:
-                self.claimed = False
                 reason = str(error) or 'permission restoration timed out or disconnected'
                 try:
                     for original in [*updates.values(), *checks.values()]:
@@ -165,17 +169,28 @@ class ResumeProxy:
                 except OSError:
                     pass
             if not isinstance(error, asyncio.IncompleteReadError):
-                print(f'cody-resume: {error}', file=sys.stderr)
+                print(f'cody-resume: {str(error) or "permission restoration timed out"}', file=sys.stderr)
         finally:
-            if updates or checks:
-                self.claimed = False
             for running in pumps:
                 running.cancel()
-            await asyncio.gather(*pumps, return_exceptions=True)
             for stream in (writer, upstream):
                 if stream:
                     stream.close()
+            await asyncio.gather(*pumps, return_exceptions=True)
+            for stream in (writer, upstream):
+                if stream:
+                    try:
+                        await stream.wait_closed()
+                    except OSError:
+                        pass
             self.tasks.discard(task)
+
+    @staticmethod
+    def full_access(result):
+        return (result.get('approvalPolicy') == 'never'
+                and (result.get('sandbox') or {}).get('type') == 'dangerFullAccess'
+                and (result.get('activePermissionProfile') or {}).get('id') == ':danger-full-access'
+                and result.get('approvalsReviewer') == 'user')
 
     @staticmethod
     def failure(original, reason):

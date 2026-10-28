@@ -46,7 +46,7 @@ export CODY_TEST_MANAGER_LOG="$fixture/manager.log"
 
 DISPLAY=:42.0 TERM=xterm-256color COLORTERM=rxvt-xpm NO_COLOR=1 \
   env -u XAUTHORITY -u FORCE_COLOR -u CLICOLOR_FORCE "$fixture/cody" first
-grep -Fxq "manager=<local><--><--yolo><--cd><$PWD><first>" "$fixture/manager.log"
+grep -Fxq "manager=<local><--restore-yolo><--><--yolo><--cd><$PWD><first>" "$fixture/manager.log"
 grep -Fxq "args=<--yolo><--cd><$PWD><first>" "$fixture/calls.log"
 grep -Fxq 'DISPLAY=:42.0' "$fixture/calls.log"
 grep -Fxq "XAUTHORITY=$fixture/home/.Xauthority" "$fixture/calls.log"
@@ -62,7 +62,7 @@ printf '%s\n' 'PASS: display pin and terminal colors are preserved'
 DISPLAY=:42 "$fixture/cody"
 grep -Fxq "args=<--yolo><--cd><$PWD>" "$fixture/calls.log"
 DISPLAY=:42 "$fixture/cody" --attach :42
-grep -Fxq "manager=<attach><--display><:42><--><--yolo><--cd><$PWD>" "$fixture/manager.log"
+grep -Fxq "manager=<attach><--display><:42><--restore-yolo><--><--yolo><--cd><$PWD>" "$fixture/manager.log"
 DISPLAY=:42 "$fixture/cody" --cd /tmp/another-project prompt
 grep -Fxq 'args=<--yolo><--cd></tmp/another-project><prompt>' "$fixture/calls.log"
 DISPLAY=:42 "$fixture/cody" -C/tmp/another-project prompt
@@ -73,6 +73,10 @@ DISPLAY=:42 "$fixture/cody" resume
 grep -Fxq "manager=<local><--restore-yolo><--><--cd><$PWD><resume>" "$fixture/manager.log"
 DISPLAY=:42 "$fixture/cody" --attach :42 resume
 grep -Fxq "manager=<attach><--display><:42><--restore-yolo><--><--cd><$PWD><resume>" "$fixture/manager.log"
+for selection in --last 00000000-0000-0000-0000-000000000000; do
+  DISPLAY=:42 "$fixture/cody" resume "$selection"
+  grep -Fxq "manager=<local><--restore-yolo><--><--cd><$PWD><resume><$selection>" "$fixture/manager.log"
+done
 for override in '--all' '--cd=/tmp/another-project' '-C/tmp/another-project'; do
   DISPLAY=:42 "$fixture/cody" resume "$override"
   grep -Fxq "args=<resume><$override>" "$fixture/calls.log"
@@ -84,6 +88,7 @@ grep -Fxq "args=<--cd><$PWD><-m><resume><--no-alt-screen><resume>" "$fixture/cal
 DISPLAY=:42 "$fixture/cody" -C /tmp/another-project resume
 grep -Fxq 'args=<-C></tmp/another-project><resume>' "$fixture/calls.log"
 DISPLAY=:42 "$fixture/cody" fork
+grep -Fxq 'manager=<local><--restore-yolo><--><fork>' "$fixture/manager.log"
 grep -Fxq 'args=<fork>' "$fixture/calls.log"
 DISPLAY=:42 "$fixture/cody" -m resume new-prompt
 grep -Fxq "args=<--yolo><--cd><$PWD><-m><resume><new-prompt>" "$fixture/calls.log"
