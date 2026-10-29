@@ -70,11 +70,15 @@ forks, the resume picker, explicit thread IDs, `--last`, `--all`,
 filtering and explicit directory options retain their normal behavior.
 
 Codex's remote CLI rejects launch-time permission overrides on resume/fork.
-For resumed and forked threads, the proxy holds the response, updates that
-thread through the app-server API, and reads back its effective permissions.
-For new threads, it supplies the profile in the start request and verifies the
-returned settings; these threads have no saved rollout to resume yet. Rejection, inconsistent readback, timeout, or disconnect
-fails the selection visibly. Unselected threads are unaffected.
+For resumed and persisted forked threads, the proxy holds the response, updates
+that thread through the app-server API, and reads back its effective permissions.
+For new threads and ephemeral `/side` forks, it supplies the profile in the
+creation request and verifies the returned settings. Ephemeral threads have no
+saved rollout and cannot use `thread/resume` for verification. Experimental
+prediction forks require inherited configuration; the proxy verifies their
+returned permissions without adding forbidden overrides. Rejection, inconsistent
+readback, timeout, or disconnect fails the selection visibly, preserving server
+readback errors. Unselected threads are unaffected.
 
 A thread receives this default once per cody process. Later permission choices
 made through settings or turn overrides pass through unchanged; reconnecting or
@@ -87,9 +91,14 @@ Regression checks: `python3 tests/cody-resume.py`,
 `python3 tests/cody-resume-live.py` additionally exercises the installed CLI and
 an isolated app-server with a local Responses fixture. It checks warm-thread
 restoration, a deliberate restriction across reconnect, and a cold saved-thread
-TUI resume followed by actual `git add` and an outside-workspace write. It uses
+TUI resume followed by actual `git add` and an outside-workspace write. It also
+checks ephemeral forks and the actual TUI `/side` command followed by a side tool
+performing those writes. It uses
 no account credentials or remote model requests. Launcher option routing and
 failure cases use protocol doubles; account switching is not reproduced.
+
+After updating the proxy, exit and resume existing cody clients to load the new
+code. The shared app-server does not need a restart.
 
 Keep `cody`, `cody-display`, and `cody-resume` together on Linux. Both Python
 helpers use only the Python 3.9+ standard library. The temporary resume proxy

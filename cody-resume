@@ -98,18 +98,21 @@ class ResumeProxy:
                         request_id = message.get('id')
                         if not from_server and message.get('method') in ('thread/start', 'thread/resume', 'thread/fork'):
                             method = message['method']
-                            resumes[request_id] = method
-                            if method == 'thread/start':
-                                # new threads have no saved rollout to resume for readback yet
-                                params = message.setdefault('params', {})
+                            params = message.setdefault('params', {})
+                            verify_creation = method == 'thread/start' or (
+                                method == 'thread/fork' and params.get('ephemeral', False))
+                            resumes[request_id] = verify_creation
+                            # ephemeral forks have no rollout; verify their creation response
+                            # prediction forks only allow inherited configuration
+                            if verify_creation and not params.get('experimentalPredictionMode', False):
                                 params.pop('sandbox', None)
                                 params.update(permissions=':danger-full-access',
                                               approvalPolicy='never', approvalsReviewer='user')
                                 outgoing = encode(message, True)
                         elif from_server and 'method' not in message:
                             if request_id in resumes:
-                                method = resumes.pop(request_id)
-                                if method == 'thread/start' and 'result' in message:
+                                verify_creation = resumes.pop(request_id)
+                                if verify_creation and 'result' in message:
                                     if self.full_access(message['result']):
                                         self.restored.add(message['result']['thread']['id'])
                                     else:
@@ -143,7 +146,9 @@ class ResumeProxy:
                                 original = checks.pop(request_id)
                                 deadlines.pop(request_id)
                                 result = message.get('result', {})
-                                if not self.full_access(result):
+                                if 'error' in message:
+                                    outgoing = encode(self.failure(original, message['error']['message']))
+                                elif not self.full_access(result):
                                     outgoing = encode(self.failure(original, 'server did not confirm Full Access'))
                                 else:
                                     self.restored.add(original['result']['thread']['id'])
