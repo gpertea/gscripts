@@ -87,8 +87,11 @@ cody -b login
 cody -g resume
 ```
 
-Settings, skills, and plugins are resolved from the selected home. Login, history,
-configuration, and other home contents are independent unless explicitly shared.
+On the configured work machines, `config.toml`, `AGENTS.md`, skills, rules,
+and the plugin code cache are symlinked to the primary home. Editing shared
+settings or instructions affects all three homes. Codex login credentials,
+SQLite state, and session history remain in each selected home. Connector
+authorization may need its own setup. Mesh enrollment is managed independently.
 The normal `cody` command continues honoring an existing `CODEX_HOME` unchanged.
 
 ### Codex updates
