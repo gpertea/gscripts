@@ -2,6 +2,32 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-10-31  Cancel alternate account homes
+
+Branch: `master`. Documentation: `6da5320`. Sources and tests for the installed
+selector remain at `659e170` and `3f1ba19`. The replacement is not deployed.
+
+### Done
+
+- Removed the unused alternate homes on both work machines and restored Mesh
+  enrollment to the primary home only. Preserved existing sessions and logins.
+- Corrected README guidance; the old alternate selectors now fail closed.
+
+### Measured
+
+- Both monitors are active and both producer queues are caught up.
+- An isolated installed-CLI fixture resumed one session using two fictional
+  credential files. A synthetic refresh updated only its selected file; its
+  model turn did not complete due to a network-policy error.
+
+### Not done
+
+- Shared-home account selection and live-account verification are unfinished.
+
+### Next
+
+- Validate a maintainable per-process credential selector before deployment.
+
 ## 2026-10-31  Account-home native verification follow-up
 
 Branch: `master`. Sources: `cody` at `659e170`, `tests/cody-accounts.py` at

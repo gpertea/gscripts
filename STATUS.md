@@ -19,10 +19,9 @@ independent behavior and tests.
   the previous embedded wrapper. Reviewed code is pushed.
   Windows uses a small launcher exporting its trusted optional patch-helper root.
   Native Windows checks verify normal and opt-in behavior without the old wrapper.
-- Personal and business homes are configured on both work machines. Configuration,
-  instructions, skills, rules, and plugin code cache are shared by symlink;
-  Codex credentials, SQLite state, and sessions are independent. All three
-  homes per machine are enrolled in the private Mesh inventory.
+- The alternate homes were canceled and removed on both work machines; Mesh
+  monitors only the primary home there. The existing alternate selectors fail
+  until a shared-home replacement is implemented and verified.
 - Both Macs now expose `cody` and the same npm-installed Codex CLI version
   through their normal login-shell paths. The app-bundled CLI remains independent.
 
@@ -44,17 +43,17 @@ independent behavior and tests.
 
 - [Decision 0001](docs/decisions/0001-embedded-cody.md): direct embedded sessions,
   native resume, and no wrapper-managed app-server lifecycle.
-- [Decision 0002](docs/decisions/0002-account-homes.md): independent account
-  state with explicitly shared settings and enrolled metadata.
+- [Decision 0002](docs/decisions/0002-account-homes.md) describes the canceled
+  alternate-home design and is retained as historical context.
 
 ## Waiting on people
 
-1. Sign in to the personal and business homes on each work machine as desired;
-   then check the active account with `/status`.
+None for the deployed primary-home wrapper.
 
 ## Next
 
-1. After login, verify account identity and any external connector authorization.
+1. Investigate per-account credentials with one shared home and safe concurrent
+   sessions; do not disturb existing logins or session data.
 2. Use fresh cody launches for embedded mode; existing processes keep their current
    mode until closed. Future CLI changes require rerunning the native fixture.
 
