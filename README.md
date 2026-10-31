@@ -69,30 +69,12 @@ workaround remain: when `~/.codex/tmp/arg0` is already linked to
 `/tmp/cody-codex-arg0-UID`, `cody` recreates that private directory on the current
 node. Settings, authentication, and saved history remain in the original home.
 
-### Alternate account homes
+### Account selection
 
-On configured work machines, `cody -g` or `gcody` selects `~/.codex-g`, and
-`cody -b` or `bcody` selects `~/.codex-b`. These wrapper options precede Codex
-subcommands; they can be combined with `--noupdate` or `--docs`. The aliases are
-symlinks to the same wrapper. The selected home must already exist as a real
-private directory. Conflicting selectors fail instead of guessing.
-
-The wrapper keeps SQLite state and file-backed Codex credentials in the selected
-home. Environment-supplied Codex credentials and explicit overrides of these
-storage settings are rejected for account-selected launches. Sign in yourself:
-
-```bash
-cody -g login
-cody -b login
-cody -g resume
-```
-
-On the configured work machines, `config.toml`, `AGENTS.md`, skills, rules,
-and the plugin code cache are symlinked to the primary home. Editing shared
-settings or instructions affects all three homes. Codex login credentials,
-SQLite state, and session history remain in each selected home. Connector
-authorization may need its own setup. Mesh enrollment is managed independently.
-The normal `cody` command continues honoring an existing `CODEX_HOME` unchanged.
+The former alternate-home account selection has been canceled. The `-g` and
+`-b` selectors and their `gcody` and `bcody` aliases are not configured and
+currently fail because those homes were removed. Normal `cody` continues to use
+its current Codex home. A shared-home account selector is under investigation.
 
 ### Codex updates
 
