@@ -61,8 +61,9 @@ remain under ignored `worklog/`.
 
 ### Not done
 
-- At this round, one desktop lacked terminal-visible cody/Codex commands. A later
-  entry records its standalone CLI installation and login-shell verification.
+- One desktop has no terminal-visible cody/Codex commands. Its existing bundled
+  CLI accepts embedded mode; native wrapper checks pass with the explicit binary
+  path. Terminal exposure or standalone installation awaits a preference.
 - Native Windows checks exercise installed CLI 0.160.0 help and isolated launcher
   routing, not full Windows TUI conversation switching. In-session switches were
   verified on Linux CLI 0.166.0; other installed CLI versions were not upgraded.
