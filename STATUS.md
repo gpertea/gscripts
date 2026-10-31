@@ -14,9 +14,14 @@ independent behavior and tests.
   Windows/MSYS2 behavior, and the existing cluster helper workaround remain.
 - Native in-session `/resume` switches saved threads with the intended Full
   Access settings. Mesh continues passive history/process collection separately.
-- All seven checkouts have the same reviewed wrapper bytes; code is pushed.
+- The two work machines use the account-selector wrapper; other machines retain
+  the previous embedded wrapper. Reviewed code is pushed.
   Windows uses a small launcher exporting its trusted optional patch-helper root.
   Native Windows checks verify normal and opt-in behavior without the old wrapper.
+- Personal and business homes are configured on both work machines. Configuration,
+  instructions, skills, rules, and plugin code cache are shared by symlink;
+  Codex credentials, SQLite state, and sessions are independent. All three
+  homes per machine are enrolled in the private Mesh inventory.
 - Both Macs now expose `cody` and the same npm-installed Codex CLI version
   through their normal login-shell paths. The app-bundled CLI remains independent.
 
@@ -26,6 +31,8 @@ independent behavior and tests.
 - `cody --update` updates the CLI and reports its version; it does not restart
   running sessions. Explicit remote/display-wrapper flags are retired.
 - `bash tests/cody-env.sh` passes; `python3 tests/cody-update.py` passes 26 tests.
+  `python3 tests/cody-accounts.py` passes five selector/isolation tests; the
+  native `tests/cody-accounts-live.py` passes on both work machines.
 - `python3 tests/cody-embedded-live.py` passes against installed CLI 0.166.0 with
   isolated homes and a local Responses fixture. New, explicit resume, fork, and
   two actual in-session switches verify saved identities, permissions, and tool
@@ -35,14 +42,18 @@ independent behavior and tests.
 
 - [Decision 0001](docs/decisions/0001-embedded-cody.md): direct embedded sessions,
   native resume, and no wrapper-managed app-server lifecycle.
+- [Decision 0002](docs/decisions/0002-account-homes.md): independent account
+  state with explicitly shared settings and enrolled metadata.
 
 ## Waiting on people
 
-None.
+1. Sign in to the personal and business homes on each work machine as desired;
+   then verify the active account with `/status`.
 
 ## Next
 
-1. Use fresh cody launches for embedded mode; existing processes keep their current
+1. After login, verify account identity and any external connector authorization.
+2. Use fresh cody launches for embedded mode; existing processes keep their current
    mode until closed. Future CLI changes require rerunning the native fixture.
 
 ## Resuming

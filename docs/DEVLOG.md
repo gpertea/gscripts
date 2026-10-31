@@ -2,6 +2,45 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-10-31  Isolated account homes with shared settings
+
+Branch: `master`. Implementation: `b47d545`, documentation/native fixture:
+`15a987b` and `e5942e0`. Sources: `cody`, `tests/cody-accounts.py`, and
+`tests/cody-accounts-live.py` at those revisions. Private setup and verification
+records remain under ignored `worklog/`.
+
+### Done
+
+- Added personal/business wrapper flags and symlink aliases. Explicit selection
+  fences Codex home, SQLite location, and file-backed login storage; conflicting
+  selectors and credential/storage overrides fail closed.
+- Configured private homes on two work machines. Shared the primary settings,
+  instructions, skills, rules, and plugin code cache via symlinks, without sharing
+  Codex credentials, sessions, SQLite state, or plugin-local secret directories.
+- Enrolled all three homes per work machine in the existing private Mesh catalog
+  with explicit owner authorization. No hooks were installed.
+
+### Measured
+
+- Five selector tests, 26 update tests, and the environment test pass. Actual
+  installed CLIs on both work machines pass the isolated account fixture: signed-out
+  login checks, shared configuration writes, real fixture session and SQLite files
+  in the selected home, and unchanged primary auth/history sentinels.
+- All four new history sources completed without errors; monitors remained fresh
+  and sync acknowledgments caught up. Actual account login remains outstanding.
+- A local footer profile-label fixture works with CLI 0.166.0; CLI 0.165.0 did not
+  show it. A profile label identifies configuration, not verified account identity.
+
+### Not done
+
+- No user login was performed; external connector authorization may need attention.
+- Codex has no documented account-email footer item. Profile-label behavior was
+  tested in isolated local fixtures; no persistent status-line settings were changed.
+
+### Next
+
+- Sign in to each desired account and verify identity using Codex's account status.
+
 ## 2026-10-31  Align Mac Codex CLI installations
 
 Branch: `master`. Source and previous fleet deployment: `fd115d7`; this round
