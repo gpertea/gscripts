@@ -71,6 +71,7 @@ with tempfile.TemporaryDirectory(prefix='cody-accounts-', dir=Path.home() / '.ca
         assert result.returncode == 0, result.stderr[-700:]
         assert list((personal / 'sessions').rglob('*.jsonl'))
         assert sorted(p.name for p in (primary / 'sessions').iterdir()) == ['sentinel']
+        assert list(personal.glob('state_*.sqlite'))
         assert not list(primary.glob('state_*.sqlite'))
         assert not list(business.rglob('*.jsonl'))
     finally:
