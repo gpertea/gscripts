@@ -2,6 +2,30 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-10-31  Account status and usage
+
+Branch: `master`. Implementation: `4393dba`.
+
+### Done
+
+- Made `cody-account` show the selected account, available login email,
+  process status, and usage when called without arguments. Authentication
+  tokens are not displayed.
+
+### Measured
+
+- The 12 account-swap fixture tests passed, including no-argument output,
+  missing setup, environment credentials, and token privacy.
+
+### Not done
+
+- Cross-account resume with real accounts has not been verified in this round.
+
+### Next
+
+- Use the account commands as needed and verify real cross-account resume when
+  the alternate accounts have been signed in.
+
 ## 2026-10-31  Shared-home credential switching
 
 Branch: `master`. Implementation: `a849a03`; the approved plan remains under

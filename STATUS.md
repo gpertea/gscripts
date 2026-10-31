@@ -10,11 +10,10 @@ behavior and tests.
   configured Linux work machines, account selection swaps private credentials in
   the same Codex home and preserves sessions, projects, and SQLite state.
 - `cody` selects the original default account; `gcody`/`cody -g` and
-  `bcody`/`cody -b` select the alternate accounts. Neither alternate has been
-  signed in. `cody-account --status` reports the active label and process IDs.
+  `bcody`/`cody -b` select the alternate accounts. `cody-account` reports the
+  selected label, available login email, process IDs, and usage.
 - Account changes and login mutations stop when other sessions or servers may
-  use the home. Existing processes were not stopped; both machines currently
-  report such processes. Their original credential files were unchanged.
+  use the home; they do not stop those processes.
 - Session locks, conservative process detection, and a private recovery journal
   coordinate swaps. Direct `codex` launches do not take the lock and can race a
   switch; use `cody` consistently for the shared home.
@@ -28,7 +27,8 @@ behavior and tests.
 
 ## Works now
 
-- `cody`, `cody --noupdate resume`, `cody fork`, and `cody-account --status`.
+- `cody`, `cody --noupdate resume`, `cody fork`, `cody-account`, and
+  `cody-account --status`.
 - `cody -g login`, `cody -b login`, `gcody resume`, and `bcody resume` are
   available once other Codex sessions and servers using that home are closed.
 - Unit checks cover file-move recovery, process detection, locks, signal and
