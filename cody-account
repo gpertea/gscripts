@@ -2,6 +2,8 @@
 """Coordinate shared-home credential swaps without copying login tokens."""
 
 import argparse
+import base64
+import binascii
 import fcntl
 import json
 import os
@@ -258,10 +260,52 @@ def lockfile(root):
     return fd
 
 
+def login_identity(home):
+    # Environment credentials can override the account saved in auth.json.
+    if any(os.environ.get(key) for key in ('CODEX_ACCESS_TOKEN', 'CODEX_API_KEY',
+                                           'OPENAI_API_KEY', 'OPENAI_IDENTITY_TOKEN_FILE')):
+        return 'environment-provided credential (email unavailable)'
+    # Decode only the identity-token payload; never display authentication tokens.
+    path = home / 'auth.json'
+    try:
+        if not regular(path):
+            return 'not signed in'
+        auth = json.loads(path.read_text())
+        if not isinstance(auth, dict):
+            return 'unavailable'
+        if auth.get('auth_mode') == 'api' or auth.get('OPENAI_API_KEY'):
+            return 'API key (no ChatGPT account email)'
+        tokens = auth.get('tokens')
+        token = tokens.get('id_token') if isinstance(tokens, dict) else None
+        if not isinstance(token, str):
+            return 'unavailable'
+        parts = token.split('.')
+        if len(parts) < 2:
+            return 'unavailable'
+        payload = parts[1] + '=' * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload.encode('ascii')))
+        if not isinstance(claims, dict):
+            return 'unavailable'
+        profile = claims.get('https://api.openai.com/profile')
+        email = claims.get('email') or (profile.get('email') if isinstance(profile, dict) else None)
+        if isinstance(email, str) and 0 < len(email) <= 320 and email.isprintable():
+            return email
+    except (AccountError, OSError, ValueError, UnicodeError, binascii.Error):
+        pass
+    return 'unavailable'
+
+
 def show_status(home):
     root = home / 'cody-accounts'
-    if not root.is_dir() or root.is_symlink() or root.stat().st_uid != os.getuid():
-        raise AccountError('account switching is not configured for this home')
+    if root.is_symlink():
+        raise AccountError('account directory must be an owned directory, not a symlink')
+    if not root.exists():
+        print('Active account: unmanaged')
+        print('Signed in as: ' + login_identity(home))
+        print('Account switching is not configured for this home.')
+        return
+    if not root.is_dir() or root.stat().st_uid != os.getuid():
+        raise AccountError('account directory must be an owned directory')
     fd = lockfile(root)
     try:
         try:
@@ -270,7 +314,10 @@ def show_status(home):
             raise AccountError('an account change is in progress; try again') from None
         print('Active account: ' + state(root)['active'])
         if regular(root / 'journal.json'):
+            print('Signed in as: unavailable (account change interrupted)')
             print('An interrupted account change needs recovery before another session starts.')
+        else:
+            print('Signed in as: ' + login_identity(home))
         processes = codex_processes(home)
         print('Codex processes using or possibly using this home: ' + (', '.join(processes) if processes else 'none'))
     finally:
@@ -391,19 +438,24 @@ def run(home, desired, mutates_auth, command):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--home', type=Path, default=Path.home() / '.codex')
-    parser.add_argument('--account', choices=ACCOUNTS)
-    parser.add_argument('--init', action='store_true')
-    parser.add_argument('--status', action='store_true')
-    parser.add_argument('--mutates-auth', action='store_true')
-    parser.add_argument('command', nargs=argparse.REMAINDER)
+    parser = argparse.ArgumentParser(description='Show the current Codex account and manage account switching.')
+    parser.add_argument('--home', type=Path, default=Path.home() / '.codex', help='Codex home (default: ~/.codex)')
+    parser.add_argument('--status', action='store_true', help='show the current account and running Codex processes')
+    parser.add_argument('--account', choices=ACCOUNTS, help='account selection (used internally by cody)')
+    parser.add_argument('--init', action='store_true', help='initialize account metadata without changing login')
+    parser.add_argument('--mutates-auth', action='store_true', help='require exclusive access for login or logout')
+    parser.add_argument('command', nargs=argparse.REMAINDER, help='command to run (used internally by cody)')
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
-    if args.status:
+    show_usage = not args.status and not args.init and not args.account and not args.mutates_auth and not command
+    if args.status or show_usage:
         if args.init or args.account or command or args.mutates_auth:
             raise AccountError('status does not accept an account or command')
         show_status(args.home)
+        if show_usage:
+            print('\nAccount commands: cody (default), gcody / cody -g, bcody / cody -b')
+            print('')
+            parser.print_help()
     elif args.init:
         if args.account or command or args.mutates_auth:
             raise AccountError('initialization does not accept an account or command')

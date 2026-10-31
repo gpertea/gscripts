@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise crash-safe credential moves and process coordination using fixtures."""
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -98,6 +99,37 @@ class Recovery(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Active account: default', result.stdout)
         self.assertNotIn('fictional-secret-never-display', result.stdout + result.stderr)
+
+    def test_no_arguments_shows_identity_and_usage_without_tokens(self):
+        claims = base64.urlsafe_b64encode(json.dumps({'email': 'fixture@example.invalid'}).encode()).decode().rstrip('=')
+        secret(self.auth, json.dumps({'auth_mode': 'chatgpt', 'tokens':
+                                      {'id_token': 'header.' + claims + '.signature',
+                                       'access_token': 'fictional-secret-never-display'}}))
+        env = {'PATH': os.environ['PATH'], 'HOME': str(self.home.parent)}
+        result = subprocess.run([str(MANAGER)], env=env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Active account: default', result.stdout)
+        self.assertIn('Signed in as: fixture@example.invalid', result.stdout)
+        self.assertIn('usage:', result.stdout)
+        self.assertIn('--status', result.stdout)
+        self.assertIn('gcody', result.stdout)
+        self.assertNotIn('fictional-secret-never-display', result.stdout + result.stderr)
+        self.assertNotIn(claims, result.stdout + result.stderr)
+        env['CODEX_ACCESS_TOKEN'] = 'fictional-env-secret'
+        result = subprocess.run([str(MANAGER)], env=env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('environment-provided credential', result.stdout)
+        self.assertNotIn('fictional-env-secret', result.stdout + result.stderr)
+        self.assertNotIn('fixture@example.invalid', result.stdout)
+
+    def test_no_arguments_when_not_configured_still_shows_usage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            env = {'PATH': os.environ['PATH'], 'HOME': temporary}
+            result = subprocess.run([str(MANAGER)], env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Active account: unmanaged', result.stdout)
+            self.assertIn('Signed in as: not signed in', result.stdout)
+            self.assertIn('usage:', result.stdout)
 
     def test_administrator_keyring_setting_blocks_file_swaps(self):
         policy = self.root / 'requirements.toml'

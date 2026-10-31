@@ -83,15 +83,17 @@ cody -g login
 cody -b login
 gcody resume
 bcody resume
-cody-account --status
+cody-account               ## current account and available options
+cody-account --status      ## current account and running process IDs
 ```
 
 The first use of an alternate account requires sign-in. Switching accounts or
 changing a login stops with a message when another Codex session or server may
 still use this home. Close those sessions and servers first; none are stopped
 automatically. Multiple `cody` sessions using the same account can run at once.
-The status command reports the selected label and relevant process IDs; it does
-not verify account identity. Inside Codex, use `/status` to check the login.
+The account command reports the selected label, login email when available, and
+relevant process IDs without printing tokens. The label describes the selected
+slot; inside Codex, `/status` can also be used to check the login.
 
 The installed CLI runs directly in embedded mode. Session locks and conservative
 process checks run only at launch; there is no background service or per-prompt
