@@ -71,10 +71,41 @@ node. Settings, authentication, and saved history remain in the original home.
 
 ### Account selection
 
-The former alternate-home account selection has been canceled. The `-g` and
-`-b` selectors and their `gcody` and `bcody` aliases are not configured and
-currently fail because those homes were removed. Normal `cody` continues to use
-its current Codex home. A shared-home account selector is under investigation.
+On the configured Linux work machines, `cody -g` or `gcody` selects the
+personal account, `cody -b` or `bcody` selects the business account, and plain
+`cody` selects the original default account. All three use the same `~/.codex`
+home, projects, sessions, and SQLite state. Inactive account credentials are
+kept as private files under `~/.codex/cody-accounts/`; the selected account uses
+`~/.codex/auth.json`, as in an ordinary Codex installation.
+
+```bash
+cody -g login
+cody -b login
+gcody resume
+bcody resume
+cody-account --status
+```
+
+The first use of an alternate account requires sign-in. Switching accounts or
+changing a login stops with a message when another Codex session or server may
+still use this home. Close those sessions and servers first; none are stopped
+automatically. Multiple `cody` sessions using the same account can run at once.
+The status command reports the selected label and relevant process IDs; it does
+not verify account identity. Inside Codex, use `/status` to check the login.
+
+The installed CLI runs directly in embedded mode. Session locks and conservative
+process checks run only at launch; there is no background service or per-prompt
+hook. A journal recovers an interrupted credential move without overwriting files.
+Use `cody` for launches sharing this home: a direct `codex` process does not
+participate in the lock, so a direct launch racing an account swap cannot be
+completely excluded. Existing direct sessions and servers are checked before a
+swap. Environment-provided credentials, non-file administrator settings, and
+credential-store overrides are rejected for managed launches.
+
+Switching changes the account for the whole local Codex home, so a session must
+end before it can be resumed under another account. Synthetic tests verify local
+cross-account resume and refreshed-token preservation. Real ChatGPT account or
+workspace behavior across a switch still requires verification after sign-in.
 
 ### Codex updates
 

@@ -63,11 +63,16 @@ async def main():
     print(stdout.decode().strip(), flush=True)
     with tempfile.TemporaryDirectory(prefix='cody-embedded-') as temporary:
         root = Path(temporary)
-        home, store, workspace = [root / name for name in ('home', 'codex', 'workspace')]
-        for path in (home, store, workspace):
-            path.mkdir()
+        home, workspace = root / 'home', root / 'workspace'
+        home.mkdir()
+        workspace.mkdir()
+        store = home / '.codex'
+        store.mkdir()
         env = {'PATH': os.environ['PATH'], 'HOME': str(home), 'CODEX_HOME': str(store),
                'TERM': 'xterm-256color', 'LANG': 'C.UTF-8', 'SHELL': '/bin/bash'}
+        manager = Path(__file__).resolve().parents[1] / 'cody-account'
+        initialized = await asyncio.create_subprocess_exec(str(manager), '--home', str(store), '--init', env=env)
+        assert await initialized.wait() == 0
         requests = []
         tool = None
         sequence = 0
@@ -192,6 +197,22 @@ trust_level = "trusted"
             await until(lambda: len(set(records()) - existing) == 1, 'fresh full-access thread')
             fresh = next(iter(set(records()) - existing))
             await until(lambda: has_text(fresh, 'fixture done'), 'fresh answer')
+            lock = os.open(store / 'cody-accounts/switch.lock', os.O_RDWR)
+            try:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pass
+                else:
+                    raise AssertionError('interactive Codex did not retain the account lock')
+            finally:
+                os.close(lock)
+            blocked = await asyncio.create_subprocess_exec(
+                str(Path(__file__).resolve().parents[1] / 'cody'), '--noupdate', '-g', 'login', 'status',
+                env=env, cwd=workspace, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            _, error = await blocked.communicate()
+            assert blocked.returncode != 0 and b'close it before' in error
+            print('PASS: interactive session holds the account lock and blocks a switch', flush=True)
             await write_probe(terminal, fresh, 'new')
             await terminal.send('/resume')
             await asyncio.sleep(1)

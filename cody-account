@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""Coordinate shared-home credential swaps without copying login tokens."""
+
+import argparse
+import fcntl
+import json
+import os
+import shutil
+import signal
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+
+ACCOUNTS = ('default', 'g', 'b')
+
+
+class AccountError(Exception):
+    pass
+
+
+def private_dir(home):
+    root = home / 'cody-accounts'
+    root.mkdir(mode=0o700, exist_ok=True)
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise AccountError('account directory must be an owned directory, not a symlink')
+    root.chmod(0o700)
+    if root.stat().st_dev != home.stat().st_dev:
+        raise AccountError('account directory must be on the same filesystem as the Codex home')
+    return root
+
+
+def regular(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise AccountError('credential path must be an owned regular file: ' + str(path))
+    if info.st_mode & 0o077:
+        raise AccountError('credential file must be private: ' + str(path))
+    return True
+
+
+def identity(path):
+    if not regular(path):
+        return None
+    info = path.stat()
+    return [info.st_dev, info.st_ino]
+
+
+def sync_dir(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_json(path, value):
+    # Replace metadata atomically; no authentication material enters this file.
+    fd, name = tempfile.mkstemp(prefix='.state-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            json.dump(value, handle, sort_keys=True)
+            handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(name, path)
+        sync_dir(path.parent)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def read_json(path):
+    if not regular(path):
+        raise AccountError('account state is missing: ' + str(path))
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError) as error:
+        raise AccountError('account state cannot be read: ' + str(error)) from error
+
+
+def state(root):
+    path = root / 'state.json'
+    if not regular(path):
+        raise AccountError('account state is missing; credentials were not changed')
+    value = read_json(path)
+    if not isinstance(value, dict) or set(value) != {'active'} or value['active'] not in ACCOUNTS:
+        raise AccountError('account state is invalid; credentials were not changed')
+    return value
+
+
+def move(source, destination):
+    # Both directories share a filesystem; refuse to overwrite any credential.
+    if regular(destination):
+        raise AccountError('credential destination already exists: ' + str(destination))
+    os.link(source, destination, follow_symlinks=False)
+    sync_dir(destination.parent)
+    os.unlink(source)
+    sync_dir(source.parent)
+
+
+def finish_move(source, destination):
+    source_exists, destination_exists = regular(source), regular(destination)
+    if source_exists and destination_exists:
+        # A crash after link and before unlink leaves two names for the same inode.
+        if not os.path.samefile(source, destination):
+            raise AccountError('conflicting credential files require manual recovery')
+        os.unlink(source)
+        sync_dir(source.parent)
+    elif source_exists:
+        move(source, destination)
+    elif not destination_exists:
+        raise AccountError('a credential file is missing; manual recovery is required')
+
+
+def recover(home, root):
+    journal_path = root / 'journal.json'
+    if not regular(journal_path):
+        return
+    journal = read_json(journal_path)
+    fields = {'from', 'to', 'source_id', 'target_id'}
+    def valid_identity(value):
+        return value is None or (isinstance(value, list) and len(value) == 2
+                                 and all(type(item) is int and item >= 0 for item in value))
+    if (not isinstance(journal, dict) or set(journal) != fields
+            or journal['from'] not in ACCOUNTS or journal['to'] not in ACCOUNTS
+            or journal['from'] == journal['to']
+            or not valid_identity(journal['source_id']) or not valid_identity(journal['target_id'])
+            or (journal['source_id'] is not None and journal['source_id'] == journal['target_id'])):
+        raise AccountError('swap journal is invalid; credentials were not changed')
+    current = state(root)['active']
+    if current not in (journal['from'], journal['to']):
+        raise AccountError('swap state conflicts with the journal; credentials were not changed')
+    auth = home / 'auth.json'
+    old_slot = root / (journal['from'] + '.json')
+    new_slot = root / (journal['to'] + '.json')
+    source_id, target_id = journal['source_id'], journal['target_id']
+    old_id, new_id, auth_id = identity(old_slot), identity(new_slot), identity(auth)
+    if ((old_id is not None and old_id != source_id)
+            or (new_id is not None and new_id != target_id)
+            or (auth_id is not None and auth_id not in (source_id, target_id))):
+        raise AccountError('credential identities changed; manual recovery is required')
+    if current == journal['to']:
+        # The state commit follows both moves; only cleanup remains.
+        if regular(old_slot) != (source_id is not None) or regular(new_slot):
+            raise AccountError('committed swap has conflicting credentials')
+        if regular(auth) != (target_id is not None):
+            raise AccountError('committed swap has a missing or unexpected credential')
+    else:
+        # Infer progress from existence and hardlink identity, including interrupted moves.
+        if (source_id is not None):
+            if regular(old_slot):
+                if regular(auth) and os.path.samefile(old_slot, auth):
+                    os.unlink(auth)
+                    sync_dir(home)
+            else:
+                if (target_id is not None) and not regular(new_slot):
+                    raise AccountError('target account credential is missing')
+                if not regular(auth):
+                    raise AccountError('previous account credential is missing')
+                move(auth, old_slot)
+        elif regular(old_slot):
+            raise AccountError('unexpected previous account credential')
+        if (target_id is not None):
+            finish_move(new_slot, auth)
+        elif regular(new_slot) or regular(auth):
+            raise AccountError('unexpected target account credential')
+        write_json(root / 'state.json', {'active': journal['to']})
+    journal_path.unlink()
+    sync_dir(root)
+
+
+def swap(home, root, current, desired):
+    auth = home / 'auth.json'
+    previous = root / (current + '.json')
+    following = root / (desired + '.json')
+    if regular(previous):
+        raise AccountError('active account has an unexpected saved credential; refusing to overwrite it')
+    journal = {'from': current, 'to': desired, 'source_id': identity(auth),
+               'target_id': identity(following)}
+    if journal['source_id'] is not None and journal['source_id'] == journal['target_id']:
+        raise AccountError('account credentials unexpectedly share a file')
+    write_json(root / 'journal.json', journal)
+    recover(home, root)
+
+
+def codex_processes(home):
+    # Inspect only process identity and home variables; never print environment or prompts.
+    wanted = home.resolve()
+    matches = []
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            if proc.stat().st_uid != os.getuid():
+                continue
+            process_state = (proc / 'stat').read_text().rsplit(')', 1)[1].split()[0]
+            if process_state in ('Z', 'X'):
+                continue
+            comm = (proc / 'comm').read_text().strip()
+            is_codex = comm.startswith('codex')
+            if comm in ('node', 'nodejs'):
+                argv = (proc / 'cmdline').read_bytes().split(b'\0')
+                is_codex = len(argv) > 1 and Path(os.fsdecode(argv[1])).name in ('codex', 'codex.js')
+            if not is_codex:
+                continue
+            environment = (proc / 'environ').read_bytes().split(b'\0')
+            values = {}
+            for item in environment:
+                key, sep, value = item.partition(b'=')
+                if sep and key in (b'HOME', b'CODEX_HOME'):
+                    values[key] = os.fsdecode(value)
+            raw = values.get(b'CODEX_HOME') or (str(Path(values[b'HOME']) / '.codex') if values.get(b'HOME') else None)
+            if raw is None or not Path(raw).is_absolute() or Path(raw).resolve() == wanted:
+                matches.append(proc.name)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except (OSError, ValueError, IndexError):
+            # Unreadable processes owned by this user must not be assumed harmless.
+            matches.append(proc.name)
+    return sorted(matches, key=int)
+
+
+def active_codex(home):
+    return bool(codex_processes(home))
+
+
+def require_file_store(paths=None):
+    # On Linux these administrator files can override CLI configuration.
+    import tomllib
+    paths = paths or (Path('/etc/codex/requirements.toml'), Path('/etc/codex/managed_config.toml'))
+    for path in paths:
+        try:
+            with path.open('rb') as handle:
+                value = tomllib.load(handle).get('cli_auth_credentials_store')
+        except FileNotFoundError:
+            continue
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise AccountError('cannot verify administrator credential settings: ' + str(error)) from error
+        if value not in (None, 'file'):
+            raise AccountError('administrator settings require a non-file credential store')
+
+
+def lockfile(root):
+    path = root / 'switch.lock'
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
+    fd = os.open(path, flags, 0o600)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        os.close(fd)
+        raise AccountError('account lock must be an owned regular file')
+    os.fchmod(fd, 0o600)
+    return fd
+
+
+def show_status(home):
+    root = home / 'cody-accounts'
+    if not root.is_dir() or root.is_symlink() or root.stat().st_uid != os.getuid():
+        raise AccountError('account switching is not configured for this home')
+    fd = lockfile(root)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise AccountError('an account change is in progress; try again') from None
+        print('Active account: ' + state(root)['active'])
+        if regular(root / 'journal.json'):
+            print('An interrupted account change needs recovery before another session starts.')
+        processes = codex_processes(home)
+        print('Codex processes using or possibly using this home: ' + (', '.join(processes) if processes else 'none'))
+    finally:
+        os.close(fd)
+
+
+def initialize(home):
+    if not home.is_dir() or home.is_symlink() or home.stat().st_uid != os.getuid():
+        raise AccountError('Codex home must be an owned directory, not a symlink')
+    root = private_dir(home)
+    fd = lockfile(root)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if regular(root / 'state.json'):
+            state(root)
+            return
+        if any(path.name != 'switch.lock' for path in root.iterdir()):
+            raise AccountError('existing account data has no state; refusing initialization')
+        write_json(root / 'state.json', {'active': 'default'})
+    finally:
+        os.close(fd)
+
+
+def native_command(command):
+    # The npm Node shim closes inherited descriptors, so use its installed ELF directly.
+    found = shutil.which(command[0])
+    if not found:
+        raise AccountError('Codex executable is not available')
+    executable = Path(found).resolve()
+    try:
+        with executable.open('rb') as handle:
+            elf = handle.read(4) == b'\x7fELF'
+    except OSError as error:
+        raise AccountError('cannot inspect the Codex executable: ' + str(error)) from error
+    if elf:
+        return [str(executable), *command[1:]]
+    if executable.name != 'codex.js' or executable.parent.name != 'bin':
+        raise AccountError('unsupported Codex launcher; refusing an unlocked account session')
+    package = executable.parent.parent
+    try:
+        wanted = json.loads((package / 'package.json').read_text())['version']
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise AccountError('cannot verify the npm Codex package: ' + str(error)) from error
+    if os.uname().machine != 'x86_64':
+        raise AccountError('account switching currently supports Linux x86_64')
+    platform = '@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl'
+    candidates = [package / 'node_modules' / platform, package.parent.parent / platform]
+    for root in candidates:
+        native = root / 'bin/codex'
+        try:
+            meta = json.loads((root / 'codex-package.json').read_text())
+            if meta.get('version') != wanted or not native.is_file():
+                continue
+            with native.open('rb') as handle:
+                if handle.read(4) != b'\x7fELF':
+                    continue
+            actual = subprocess.run([str(native), '--version'], capture_output=True,
+                                    text=True, timeout=5, check=True).stdout.split()
+            if not actual or actual[-1] != wanted:
+                continue
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            continue
+        for key in ('CODEX_MANAGED_BY_NPM', 'CODEX_MANAGED_BY_BUN',
+                    'CODEX_MANAGED_BY_PNPM', 'CODEX_MANAGED_BY_VITE_PLUS'):
+            os.environ.pop(key, None)
+        os.environ['CODEX_MANAGED_BY_NPM'] = '1'
+        os.environ['CODEX_MANAGED_PACKAGE_ROOT'] = str(package)
+        return [str(native), *command[1:]]
+    raise AccountError('cannot find the version-matched native Codex binary; refusing an unlocked session')
+
+
+def run(home, desired, mutates_auth, command):
+    if not command:
+        raise AccountError('no Codex command supplied')
+    if not home.is_dir() or home.is_symlink() or home.stat().st_uid != os.getuid():
+        raise AccountError('Codex home must be an owned directory, not a symlink')
+    require_file_store()
+    command = native_command(command)
+    root = private_dir(home)
+    fd = lockfile(root)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            exclusive = True
+        except BlockingIOError:
+            exclusive = False
+        if exclusive:
+            # Recovery and any credential change require all Codex processes to be gone.
+            pending = regular(root / 'journal.json')
+            before = state(root)['active']
+            if pending or before != desired or mutates_auth:
+                if active_codex(home):
+                    raise AccountError('another Codex session or server uses this home; close it before switching accounts')
+                recover(home, root)
+                current = state(root)['active']
+                if current != desired:
+                    swap(home, root, current, desired)
+            if not mutates_auth:
+                fcntl.flock(fd, fcntl.LOCK_SH)
+        else:
+            if mutates_auth or regular(root / 'journal.json'):
+                raise AccountError('another Codex session is using this home; close it before changing login')
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise AccountError('another account change is in progress; try again') from None
+            if state(root)['active'] != desired:
+                raise AccountError('another Codex session is using this home; close it before switching accounts')
+        os.set_inheritable(fd, True)
+        # Python ignores these signals; restore normal native CLI dispositions.
+        for name in ('SIGPIPE', 'SIGXFZ', 'SIGXFSZ'):
+            number = getattr(signal, name, None)
+            if number is not None:
+                signal.signal(number, signal.SIG_DFL)
+        os.execvp(command[0], command)
+    finally:
+        os.close(fd)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--home', type=Path, default=Path.home() / '.codex')
+    parser.add_argument('--account', choices=ACCOUNTS)
+    parser.add_argument('--init', action='store_true')
+    parser.add_argument('--status', action='store_true')
+    parser.add_argument('--mutates-auth', action='store_true')
+    parser.add_argument('command', nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    command = args.command[1:] if args.command[:1] == ['--'] else args.command
+    if args.status:
+        if args.init or args.account or command or args.mutates_auth:
+            raise AccountError('status does not accept an account or command')
+        show_status(args.home)
+    elif args.init:
+        if args.account or command or args.mutates_auth:
+            raise AccountError('initialization does not accept an account or command')
+        initialize(args.home)
+    else:
+        if not args.account:
+            raise AccountError('an account is required')
+        run(args.home, args.account, args.mutates_auth, command)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (AccountError, OSError) as error:
+        print('cody: ' + str(error), file=sys.stderr)
+        sys.exit(1)

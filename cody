@@ -44,7 +44,7 @@ resolve_codex_bin() {
   command -v codex
 }
 
-## explicit selectors choose a separate account and persisted history
+## explicit selectors choose a login for the shared Codex home
 account=''
 case "${0##*/}" in
   gcody) account=g ;;
@@ -75,16 +75,25 @@ if $skip_update && $update_only; then
   printf 'cody: --noupdate and --update cannot be combined\n' >&2
   exit 2
 fi
-if [[ -n "$account" ]]; then
-  if [[ -n "${CODEX_ACCESS_TOKEN:-}${CODEX_API_KEY:-}${OPENAI_IDENTITY_TOKEN_FILE:-}" ]]; then
+managed_account=false
+primary_home="$HOME/.codex"
+primary_selected=false
+if [[ -z "${CODEX_HOME:-}" || "${CODEX_HOME:-}" -ef "$primary_home" ]]; then
+  primary_selected=true
+fi
+if [[ -n "$account" ]] && ! $primary_selected; then
+  printf 'cody: account selection requires the primary Codex home\n' >&2
+  exit 2
+fi
+if [[ -n "$account" && ! -d "$primary_home/cody-accounts" ]]; then
+  printf 'cody: account switching is not configured on this machine\n' >&2
+  exit 1
+fi
+if [[ -d "$primary_home/cody-accounts" ]] && $primary_selected; then
+  managed_account=true
+  if [[ -n "${CODEX_ACCESS_TOKEN:-}${CODEX_API_KEY:-}${OPENAI_API_KEY:-}${OPENAI_IDENTITY_TOKEN_FILE:-}" ]]; then
     printf 'cody: unset environment-provided Codex credentials before selecting an account\n' >&2
     exit 2
-  fi
-  export CODEX_HOME="$HOME/.codex-$account"
-  export CODEX_SQLITE_HOME="$CODEX_HOME"
-  if [[ ! -d "$CODEX_HOME" || -L "$CODEX_HOME" ]]; then
-    printf 'cody: selected account home is not set up: %s\n' "$CODEX_HOME" >&2
-    exit 1
   fi
 fi
 
@@ -198,13 +207,13 @@ fi
 
 ## selected account storage cannot be redirected through a CLI override
 check_account_config() {
-  [[ -n "$account" && "$1" == *=* ]] || return 0
+  [[ "$managed_account" == true && "$1" == *=* ]] || return 0
   local key="${1%%=*}"
   key="${key#"${key%%[![:space:]]*}"}"
   key="${key%"${key##*[![:space:]]}"}"
   case "$key" in
     sqlite_home|cli_auth_credentials_store|\"sqlite_home\"|\"cli_auth_credentials_store\"|\'sqlite_home\'|\'cli_auth_credentials_store\')
-      printf 'cody: selected account requires its own SQLite and credential store\n' >&2
+      printf 'cody: account switching requires the shared SQLite and file credential store\n' >&2
       return 2 ;;
   esac
 }
@@ -214,6 +223,9 @@ interactive=true
 skip_value=false
 config_value=false
 command_seen=false
+command_name=''
+login_status=false
+help_requested=false
 has_no_daemon=false
 for arg in "$@"; do
   if $skip_value; then
@@ -236,11 +248,15 @@ for arg in "$@"; do
       skip_value=true ;;
     --no-daemon) has_no_daemon=true ;;
     --help|-h|--version|-V)
-      interactive=false ;;
+      interactive=false; help_requested=true ;;
     -*) ;;
     *)
-      if $command_seen; then continue; fi
+      if $command_seen; then
+        if [[ "$command_name" == login && "$arg" == status ]]; then login_status=true; fi
+        continue
+      fi
       command_seen=true
+      command_name="$arg"
       case "$arg" in
         resume|fork) ;;
         exec|e|review|login|logout|mcp|plugin|app-server|remote-control|completion|update|doctor|sandbox|debug|apply|cloud|exec-server|features|help|agents|queue|archive|a|delete|unarchive|migrate-rollouts|migrate-nfs-db)
@@ -288,11 +304,9 @@ if $interactive && ! $skip_update && [[ -t 0 && -t 1 && "${1:-}" != --help && "$
 fi
 
 declare -a codex_args=(--yolo)
-if [[ -n "$account" ]]; then
-  ## explicit overrides fence SQLite and login storage to the selected home
-  escaped_home="${CODEX_HOME//\\/\\\\}"
-  escaped_home="${escaped_home//\"/\\\"}"
-  codex_args+=(-c 'cli_auth_credentials_store="file"' -c "sqlite_home=\"$escaped_home\"")
+if $managed_account; then
+  ## force the file store that the account manager coordinates
+  codex_args+=(-c 'cli_auth_credentials_store="file"')
 fi
 if $interactive && ! $has_no_daemon; then
   codex_args+=(--no-daemon)
@@ -316,6 +330,23 @@ if $use_docs; then
 fi
 
 prepare_patch
+
+## coordinate only explicitly enrolled homes; all clients keep one Codex home
+if $managed_account && ! $help_requested; then
+  account="${account:-default}"
+  script_path="${BASH_SOURCE[0]}"
+  while [[ -L "$script_path" ]]; do
+    link="$(readlink -- "$script_path")"
+    if [[ "$link" = /* ]]; then script_path="$link"; else script_path="$(dirname -- "$script_path")/$link"; fi
+  done
+  manager="$(cd -- "$(dirname -- "$script_path")" && pwd)/cody-account"
+  [[ -x "$manager" ]] || { printf 'cody: account manager is missing\n' >&2; exit 1; }
+  declare -a manager_args=(--home "$primary_home" --account "$account")
+  if [[ "$command_name" == logout ]] || { [[ "$command_name" == login ]] && ! $login_status; }; then
+    manager_args+=(--mutates-auth)
+  fi
+  exec "$manager" "${manager_args[@]}" -- "$codex_bin" "${codex_args[@]}" "$@"
+fi
 
 ## exec directly so cwd, environment, exit status, and signals belong to this client
 exec "$codex_bin" "${codex_args[@]}" "$@"
