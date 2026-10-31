@@ -390,12 +390,14 @@ def native_command(command):
 
 
 def run(home, desired, mutates_auth, command):
-    if not command:
-        raise AccountError('no Codex command supplied')
     if not home.is_dir() or home.is_symlink() or home.stat().st_uid != os.getuid():
         raise AccountError('Codex home must be an owned directory, not a symlink')
     require_file_store()
-    command = native_command(command)
+    if command:
+        command = native_command(command)
+    elif any(os.environ.get(key) for key in ('CODEX_ACCESS_TOKEN', 'CODEX_API_KEY',
+                                              'OPENAI_API_KEY', 'OPENAI_IDENTITY_TOKEN_FILE')):
+        raise AccountError('unset environment-provided Codex credentials before selecting an account')
     root = private_dir(home)
     fd = lockfile(root)
     try:
@@ -408,12 +410,12 @@ def run(home, desired, mutates_auth, command):
             # Recovery and any credential change require all Codex processes to be gone.
             pending = regular(root / 'journal.json')
             before = state(root)['active']
-            if pending or before != desired or mutates_auth:
+            if pending or (desired is not None and before != desired) or mutates_auth:
                 if active_codex(home):
                     raise AccountError('another Codex session or server uses this home; close it before switching accounts')
                 recover(home, root)
                 current = state(root)['active']
-                if current != desired:
+                if desired is not None and current != desired:
                     swap(home, root, current, desired)
             if not mutates_auth:
                 fcntl.flock(fd, fcntl.LOCK_SH)
@@ -424,8 +426,11 @@ def run(home, desired, mutates_auth, command):
                 fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise AccountError('another account change is in progress; try again') from None
-            if state(root)['active'] != desired:
+            if desired is not None and state(root)['active'] != desired:
                 raise AccountError('another Codex session is using this home; close it before switching accounts')
+        if not command:
+            print('Active account: ' + state(root)['active'])
+            return
         os.set_inheritable(fd, True)
         # Python ignores these signals; restore normal native CLI dispositions.
         for name in ('SIGPIPE', 'SIGXFZ', 'SIGXFSZ'):
@@ -441,19 +446,24 @@ def main():
     parser = argparse.ArgumentParser(description='Show the current Codex account and manage account switching.')
     parser.add_argument('--home', type=Path, default=Path.home() / '.codex', help='Codex home (default: ~/.codex)')
     parser.add_argument('--status', action='store_true', help='show the current account and running Codex processes')
-    parser.add_argument('--account', choices=ACCOUNTS, help='account selection (used internally by cody)')
+    parser.add_argument('--account', choices=(*ACCOUNTS, 'w'), help='select an account (w is the original work account)')
     parser.add_argument('--init', action='store_true', help='initialize account metadata without changing login')
     parser.add_argument('--mutates-auth', action='store_true', help='require exclusive access for login or logout')
     parser.add_argument('command', nargs=argparse.REMAINDER, help='command to run (used internally by cody)')
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
+    if not args.account and len(command) == 1 and command[0] in (*ACCOUNTS, 'w'):
+        args.account, command = command[0], []
+    if args.account == 'w':
+        args.account = 'default'
     show_usage = not args.status and not args.init and not args.account and not args.mutates_auth and not command
     if args.status or show_usage:
         if args.init or args.account or command or args.mutates_auth:
             raise AccountError('status does not accept an account or command')
         show_status(args.home)
         if show_usage:
-            print('\nAccount commands: cody (default), gcody / cody -g, bcody / cody -b')
+            print('\nSwitch: cody-account w|g|b, wcody / cody -w, gcody / cody -g, bcody / cody -b')
+            print('Plain cody uses the currently selected account.')
             print('')
             parser.print_help()
     elif args.init:
@@ -461,8 +471,6 @@ def main():
             raise AccountError('initialization does not accept an account or command')
         initialize(args.home)
     else:
-        if not args.account:
-            raise AccountError('an account is required')
         run(args.home, args.account, args.mutates_auth, command)
 
 

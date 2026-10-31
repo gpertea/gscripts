@@ -64,15 +64,31 @@ int main(int argc, char **argv) {
             self.assertFalse((self.home / ('.codex-' + selector)).exists())
             state = json.loads((self.store / 'cody-accounts/state.json').read_text())
             self.assertEqual(state['active'], selector)
+            (self.store / 'auth.json').write_text('fictional-' + selector)
+            (self.store / 'auth.json').chmod(0o600)
         result = self.run_cody('resume')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads((self.store / 'cody-accounts/state.json').read_text())['active'], 'b')
+        self.assertEqual((self.store / 'auth.json').read_text(), 'fictional-b')
+        result = self.run_cody('-w', 'resume')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.store / 'auth.json').read_text(), 'fictional-work')
 
     def test_aliases_select_accounts(self):
-        for name, account in (('gcody', 'g'), ('bcody', 'b')):
+        for name, account in (('gcody', 'g'), ('bcody', 'b'), ('wcody', 'default')):
             alias = CODY.with_name(name)
             result = subprocess.run([str(alias), '--noupdate', 'resume'], env=self.env,
                                     capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads((self.store / 'cody-accounts/state.json').read_text())['active'], account)
+
+    def test_account_command_switches_and_plain_cody_keeps_selection(self):
+        for selector, account in (('b', 'b'), ('w', 'default'), ('g', 'g')):
+            result = subprocess.run([str(MANAGER), selector], env=self.env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Active account: ' + account, result.stdout)
+            result = self.run_cody('resume')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads((self.store / 'cody-accounts/state.json').read_text())['active'], account)
 

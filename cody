@@ -49,6 +49,7 @@ account=''
 case "${0##*/}" in
   gcody) account=g ;;
   bcody) account=b ;;
+  wcody) account=default ;;
 esac
 skip_update=false
 update_only=false
@@ -56,8 +57,9 @@ use_docs=false
 use_patch=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -g|-b)
+    -g|-b|-w)
       selected="${1#-}"
+      [[ "$selected" != w ]] || selected=default
       if [[ -n "$account" && "$account" != "$selected" ]]; then
         printf 'cody: choose only one account selector\n' >&2
         exit 2
@@ -333,7 +335,6 @@ prepare_patch
 
 ## coordinate only explicitly enrolled homes; all clients keep one Codex home
 if $managed_account && ! $help_requested; then
-  account="${account:-default}"
   script_path="${BASH_SOURCE[0]}"
   while [[ -L "$script_path" ]]; do
     link="$(readlink -- "$script_path")"
@@ -341,7 +342,8 @@ if $managed_account && ! $help_requested; then
   done
   manager="$(cd -- "$(dirname -- "$script_path")" && pwd)/cody-account"
   [[ -x "$manager" ]] || { printf 'cody: account manager is missing\n' >&2; exit 1; }
-  declare -a manager_args=(--home "$primary_home" --account "$account")
+  declare -a manager_args=(--home "$primary_home")
+  [[ -z "$account" ]] || manager_args+=(--account "$account")
   if [[ "$command_name" == logout ]] || { [[ "$command_name" == login ]] && ! $login_status; }; then
     manager_args+=(--mutates-auth)
   fi

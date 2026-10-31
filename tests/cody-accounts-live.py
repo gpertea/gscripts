@@ -138,7 +138,10 @@ requires_openai_auth = true
         _, error = process.communicate(timeout=30)
         assert process.returncode == 0, error
     Handler.hold = False
-    result = run('exec', 'resume', '--skip-git-repo-check', '--json', thread, 'fictional return')
+    result = run('exec', 'resume', '--skip-git-repo-check', '--json', thread, 'fictional current')
+    assert result.returncode == 0 and thread in result.stdout, result.stderr
+    assert Handler.authorizations[-1].endswith('sk-fictional-g')
+    result = run('-w', 'exec', 'resume', '--skip-git-repo-check', '--json', thread, 'fictional return')
     assert result.returncode == 0 and thread in result.stdout, result.stderr
     assert Handler.authorizations[-1].endswith('sk-fictional-work')
     assert (state / 'cody-accounts/g.json').is_file()
@@ -171,7 +174,7 @@ requires_openai_auth = true
         if process.poll() is None:
             process.terminate()
         process.wait(timeout=10)
-    result = run('login', 'status')
+    result = run('-w', 'login', 'status')
     assert result.returncode == 0, result.stderr
     assert (state / 'auth.json').read_bytes() == primary_before
     assert json.loads(alternate.read_text())['tokens']['refresh_token'] == 'fictional-rotated'

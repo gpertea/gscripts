@@ -72,8 +72,9 @@ node. Settings, authentication, and saved history remain in the original home.
 ### Account selection
 
 On the configured Linux work machines, `cody -g` or `gcody` selects the
-personal account, `cody -b` or `bcody` selects the business account, and plain
-`cody` selects the original default account. All three use the same `~/.codex`
+personal account, `cody -b` or `bcody` selects the business account, and
+`cody -w` or `wcody` selects the original work account. Plain `cody` keeps the
+currently selected account. All three use the same `~/.codex`
 home, projects, sessions, and SQLite state. Inactive account credentials are
 kept as private files under `~/.codex/cody-accounts/`; the selected account uses
 `~/.codex/auth.json`, as in an ordinary Codex installation.
@@ -83,6 +84,8 @@ cody -g login
 cody -b login
 gcody resume
 bcody resume
+wcody resume
+cody-account b             ## switch accounts without starting Codex; also g or w
 cody-account               ## current account and available options
 cody-account --status      ## current account and running process IDs
 ```

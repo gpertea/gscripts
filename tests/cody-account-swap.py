@@ -198,6 +198,10 @@ class RunningSessions(unittest.TestCase):
                 self.assertNotEqual(changed.returncode, 0)
                 self.assertIn('close it before switching', changed.stderr)
                 self.assertEqual((home / 'auth.json').read_text(), 'fictional-work')
+                changed = subprocess.run([str(MANAGER), '--home', str(home), 'g'],
+                                         capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(changed.returncode, 0)
+                self.assertIn('close it before switching', changed.stderr)
             finally:
                 first.terminate()
                 first.wait(timeout=5)
