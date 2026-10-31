@@ -17,9 +17,8 @@ independent behavior and tests.
 - All seven checkouts have the same reviewed wrapper bytes; code is pushed.
   Windows uses a small launcher exporting its trusted optional patch-helper root.
   Native Windows checks verify normal and opt-in behavior without the old wrapper.
-- One desktop has no terminal-visible cody/Codex commands. Its bundled CLI accepts
-  embedded mode and the updated wrapper passes with an explicit executable path;
-  terminal setup choice is pending. No Codex installation/update was performed.
+- Both Macs now expose `cody` and the same npm-installed Codex CLI version
+  through their normal login-shell paths. The app-bundled CLI remains independent.
 
 ## Works now
 
@@ -39,14 +38,11 @@ independent behavior and tests.
 
 ## Waiting on people
 
-1. Choose whether to expose the app-bundled CLI, install a standalone CLI, or
-   leave terminal PATH unchanged on the desktop lacking terminal commands.
+None.
 
 ## Next
 
-1. Apply the selected terminal setup on the desktop lacking terminal commands;
-   other source/launcher deployment checks are complete.
-2. Use fresh cody launches for embedded mode; existing processes keep their current
+1. Use fresh cody launches for embedded mode; existing processes keep their current
    mode until closed. Future CLI changes require rerunning the native fixture.
 
 ## Resuming

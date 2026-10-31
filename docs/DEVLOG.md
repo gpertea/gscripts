@@ -2,6 +2,32 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-10-31  Align Mac Codex CLI installations
+
+Branch: `master`. Source and previous fleet deployment: `fd115d7`; this round
+changed the installed CLI on one machine and did not change wrapper source.
+
+### Done
+
+- Installed the same global npm Codex CLI version on the second Mac using its
+  existing Homebrew Node/npm installation. Authentication and session storage were
+  not modified.
+
+### Measured
+
+- Fresh login shells on both Macs resolve `cody` from the scripts checkout and
+  `codex` from Homebrew's global npm installation. Both report CLI 0.164.0 through
+  `codex --version` and `cody --noupdate --version`; `--no-daemon --help` passes.
+
+### Not done
+
+- No real model turn or interactive resume was run in this round. Existing
+  sessions retain their launch mode until reopened.
+
+### Next
+
+- Use a fresh cody session on either Mac for embedded operation.
+
 ## 2026-10-31  Embedded cody and native resume
 
 Implementation: `c2e2635` and `fd115d7` on `master`. Source: `cody` and the three
@@ -35,9 +61,8 @@ remain under ignored `worklog/`.
 
 ### Not done
 
-- One desktop has no terminal-visible cody/Codex commands. Its existing bundled
-  CLI accepts embedded mode; native wrapper checks pass with the explicit binary
-  path. Terminal exposure or standalone installation awaits a preference.
+- At this round, one desktop lacked terminal-visible cody/Codex commands. A later
+  entry records its standalone CLI installation and login-shell verification.
 - Native Windows checks exercise installed CLI 0.160.0 help and isolated launcher
   routing, not full Windows TUI conversation switching. In-session switches were
   verified on Linux CLI 0.166.0; other installed CLI versions were not upgraded.
