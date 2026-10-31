@@ -2,6 +2,40 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-10-31  Shared-home credential switching
+
+Branch: `master`. Implementation: `a849a03`; the approved plan remains under
+ignored `worklog/`.
+
+### Done
+
+- Replaced alternate-home selection with private credential-file switching in
+  one Codex home. Preserved the installed CLI, project files, session history,
+  and SQLite state. Added session locks, process checks, a recovery journal, and
+  an account/process status command.
+- Initialized private account metadata on both work machines without changing
+  their existing auth files or stopping any session or server.
+
+### Measured
+
+- Synthetic native-CLI tests passed on versions 0.166.0 and 0.165.0 for shared
+  session resume, token refresh, switch blocking, lock lifetime, and database
+  integrity. Interactive fixtures passed native resume and in-session switching.
+- On both live homes, a switch was blocked while existing processes remained,
+  the original credential bytes were unchanged, and default login status worked.
+- A local fixture measured approximately 50 ms median for coordination and
+  75 ms for a switch; these are launch-time measurements, not prompt overhead.
+
+### Not done
+
+- Alternate account sign-in and real ChatGPT cross-account resume remain
+  unverified. Direct `codex` launches cannot be fully coordinated with `cody`.
+
+### Next
+
+- Close relevant sessions and servers when convenient, then sign in and verify
+  real cross-account resume on the desired work machines.
+
 ## 2026-10-31  Cancel alternate account homes
 
 Branch: `master`. Documentation: `6da5320`. Sources and tests for the installed
