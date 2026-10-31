@@ -2,3 +2,8 @@
 pg-backup.sh
 pg-restore.sh
 pg-backup-wal.py
+
+## local execution evidence and Python bytecode
+worklog/
+__pycache__/
+*.pyc
