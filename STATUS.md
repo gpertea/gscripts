@@ -6,7 +6,8 @@ independent behavior and tests.
 
 ## Current state
 
-- `cody` at `fd115d7` launches interactive new/resume/fork sessions directly with
+- `cody` at `659e170` on the two work machines and `fd115d7` elsewhere launches
+  interactive new/resume/fork sessions directly with
   `--no-daemon --yolo`. The display manager and resume proxy are removed.
 - Updates retain consent, offline fallback, and platform-specific installation;
   server version comparisons, process inspection, and restarts are removed.
@@ -32,7 +33,8 @@ independent behavior and tests.
   running sessions. Explicit remote/display-wrapper flags are retired.
 - `bash tests/cody-env.sh` passes; `python3 tests/cody-update.py` passes 26 tests.
   `python3 tests/cody-accounts.py` passes five selector/isolation tests; the
-  native `tests/cody-accounts-live.py` passes on both work machines.
+  native `tests/cody-accounts-live.py` at `3f1ba19` passes on both work machines,
+  including actual shared-instruction/skill loading and isolated session/SQLite writes.
 - `python3 tests/cody-embedded-live.py` passes against installed CLI 0.166.0 with
   isolated homes and a local Responses fixture. New, explicit resume, fork, and
   two actual in-session switches verify saved identities, permissions, and tool
@@ -48,7 +50,7 @@ independent behavior and tests.
 ## Waiting on people
 
 1. Sign in to the personal and business homes on each work machine as desired;
-   then verify the active account with `/status`.
+   then check the active account with `/status`.
 
 ## Next
 

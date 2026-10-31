@@ -2,6 +2,42 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-10-31  Account-home native verification follow-up
+
+Branch: `master`. Sources: `cody` at `659e170`, `tests/cody-accounts.py` at
+`659e170`, and `tests/cody-accounts-live.py` at `3f1ba19` in this repository.
+The approved plan and operational evidence remain under ignored `worklog/`.
+
+### Done
+
+- Hardened storage-override rejection for whitespace and quoted key variants.
+- Configured the selected homes with links to primary configuration, instructions,
+  skills, rules, and plugin cache. Codex credentials, session data, SQLite, and
+  plugin-local secret directories remain separate.
+- Enrolled both additional homes on each selected work machine in the existing
+  private Mesh catalog and backup boundary after explicit authorization.
+
+### Measured
+
+- Five selector tests, 26 update tests, and the environment test pass. The native
+  isolated fixture passes on both installed CLIs: login state and actual session/
+  SQLite writes stay in the selected home, while shared instructions and skills
+  reach the local fixture provider and config changes reach the shared target.
+- New history sources completed without errors; monitoring and synchronization
+  remained healthy. All four new account homes were signed out at verification.
+- A `profile` footer item displayed a selected profile label on CLI 0.166.0 in an
+  isolated TUI fixture; CLI 0.165.0 did not display it. This is a label, not proof
+  of which account is authenticated.
+
+### Not done
+
+- No user login or external model request was made. External connector credentials
+  can require separate authorization. No status-line settings were changed.
+
+### Next
+
+- Sign in to desired homes, verify identity with `/status`, and confirm connectors.
+
 ## 2026-10-31  Isolated account homes with shared settings
 
 Branch: `master`. Implementation: `b47d545`, documentation/native fixture:

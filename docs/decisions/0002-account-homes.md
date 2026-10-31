@@ -1,7 +1,7 @@
 # Decision 0002: separate Codex account homes
 
-Status: accepted, 2026-10-31. Source: `cody` at `b47d545`;
-`tests/cody-accounts-live.py` at `e5942e0`.
+Status: accepted, 2026-10-31. Source: `cody` at `659e170`;
+`tests/cody-accounts-live.py` at `3f1ba19`.
 
 The personal and business selectors use separate Codex homes, SQLite state,
 file-backed login credentials, and session histories. Conflicting selectors,
