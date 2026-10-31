@@ -69,6 +69,28 @@ workaround remain: when `~/.codex/tmp/arg0` is already linked to
 `/tmp/cody-codex-arg0-UID`, `cody` recreates that private directory on the current
 node. Settings, authentication, and saved history remain in the original home.
 
+### Alternate account homes
+
+On configured work machines, `cody -g` or `gcody` selects `~/.codex-g`, and
+`cody -b` or `bcody` selects `~/.codex-b`. These wrapper options precede Codex
+subcommands; they can be combined with `--noupdate` or `--docs`. The aliases are
+symlinks to the same wrapper. The selected home must already exist as a real
+private directory. Conflicting selectors fail instead of guessing.
+
+The wrapper keeps SQLite state and file-backed Codex credentials in the selected
+home. Environment-supplied Codex credentials and explicit overrides of these
+storage settings are rejected for account-selected launches. Sign in yourself:
+
+```bash
+cody -g login
+cody -b login
+cody -g resume
+```
+
+Settings, skills, and plugins are resolved from the selected home. Login, history,
+configuration, and other home contents are independent unless explicitly shared.
+The normal `cody` command continues honoring an existing `CODEX_HOME` unchanged.
+
 ### Codex updates
 
 Interactive launches check for a newer stable release and ask before installing.

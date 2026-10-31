@@ -44,6 +44,50 @@ resolve_codex_bin() {
   command -v codex
 }
 
+## explicit selectors choose a separate account and persisted history
+account=''
+case "${0##*/}" in
+  gcody) account=g ;;
+  bcody) account=b ;;
+esac
+skip_update=false
+update_only=false
+use_docs=false
+use_patch=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -g|-b)
+      selected="${1#-}"
+      if [[ -n "$account" && "$account" != "$selected" ]]; then
+        printf 'cody: choose only one account selector\n' >&2
+        exit 2
+      fi
+      account="$selected" ;;
+    --noupdate) skip_update=true ;;
+    --update) update_only=true ;;
+    --docs) use_docs=true ;;
+    --patch) use_patch=true ;;
+    *) break ;;
+  esac
+  shift
+done
+if $skip_update && $update_only; then
+  printf 'cody: --noupdate and --update cannot be combined\n' >&2
+  exit 2
+fi
+if [[ -n "$account" ]]; then
+  if [[ -n "${CODEX_ACCESS_TOKEN:-}${CODEX_API_KEY:-}${OPENAI_IDENTITY_TOKEN_FILE:-}" ]]; then
+    printf 'cody: unset environment-provided Codex credentials before selecting an account\n' >&2
+    exit 2
+  fi
+  export CODEX_HOME="$HOME/.codex-$account"
+  export CODEX_SQLITE_HOME="$CODEX_HOME"
+  if [[ ! -d "$CODEX_HOME" || -L "$CODEX_HOME" ]]; then
+    printf 'cody: selected account home is not set up: %s\n' "$CODEX_HOME" >&2
+    exit 1
+  fi
+fi
+
 ## if on JHPCE, load the npm module
 if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
   module load node
@@ -135,25 +179,6 @@ prepare_patch() {
   fi
 }
 
-skip_update=false
-update_only=false
-use_docs=false
-use_patch=false
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --noupdate) skip_update=true ;;
-    --update) update_only=true ;;
-    --docs) use_docs=true ;;
-    --patch) use_patch=true ;;
-    *) break ;;
-  esac
-  shift
-done
-if $skip_update && $update_only; then
-  printf 'cody: --noupdate and --update cannot be combined\n' >&2
-  exit 2
-fi
-
 if $use_patch; then
   if ! $is_windows_msys; then
     printf 'cody: --patch requires Windows MSYS2\n' >&2
@@ -174,16 +199,34 @@ fi
 ## distinguish interactive sessions from administrative subcommands
 interactive=true
 skip_value=false
+config_value=false
 command_seen=false
 has_no_daemon=false
 for arg in "$@"; do
-  if $skip_value; then skip_value=false; continue; fi
+  if $skip_value; then
+    if [[ -n "$account" ]] && $config_value; then
+      case "$arg" in
+        sqlite_home=*|sqlite_home[[:space:]]*=*|cli_auth_credentials_store=*|cli_auth_credentials_store[[:space:]]*=*)
+          printf 'cody: selected account requires its own SQLite and credential store\n' >&2
+          exit 2 ;;
+      esac
+    fi
+    skip_value=false
+    config_value=false
+    continue
+  fi
   case "$arg" in
     --) break ;;
     --remote|--remote=*|--remote-auth-token-env|--remote-auth-token-env=*|--attach|--attach=*|--server-status|--server-stop|--server-endpoint)
       printf 'cody: remote/display-server options are retired; sessions use --no-daemon\n' >&2
       exit 2 ;;
-    -c|--config|--enable|--disable|-m|--model|-i|--image|-C|--cd|-p|--profile|-s|--sandbox|-a|--ask-for-approval|--add-dir|--local-provider)
+    -c|--config) skip_value=true; config_value=true ;;
+    --config=sqlite_home=*|--config=sqlite_home[[:space:]]*=*|--config=cli_auth_credentials_store=*|--config=cli_auth_credentials_store[[:space:]]*=*|-csqlite_home=*|-csqlite_home[[:space:]]*=*|-ccli_auth_credentials_store=*|-ccli_auth_credentials_store[[:space:]]*=*)
+      if [[ -n "$account" ]]; then
+        printf 'cody: selected account requires its own SQLite and credential store\n' >&2
+        exit 2
+      fi ;;
+    --enable|--disable|-m|--model|-i|--image|-C|--cd|-p|--profile|-s|--sandbox|-a|--ask-for-approval|--add-dir|--local-provider)
       skip_value=true ;;
     --no-daemon) has_no_daemon=true ;;
     --help|-h|--version|-V)
@@ -239,6 +282,12 @@ if $interactive && ! $skip_update && [[ -t 0 && -t 1 && "${1:-}" != --help && "$
 fi
 
 declare -a codex_args=(--yolo)
+if [[ -n "$account" ]]; then
+  ## explicit overrides fence SQLite and login storage to the selected home
+  escaped_home="${CODEX_HOME//\\/\\\\}"
+  escaped_home="${escaped_home//\"/\\\"}"
+  codex_args+=(-c 'cli_auth_credentials_store="file"' -c "sqlite_home=\"$escaped_home\"")
+fi
 if $interactive && ! $has_no_daemon; then
   codex_args+=(--no-daemon)
 fi
