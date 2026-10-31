@@ -44,131 +44,69 @@ commands without executing jobs. Regression checks:
 python3 tests/arx-concurrency.py
 ```
 
-## Codex sessions by display
+## Codex embedded sessions
 
-On Linux, `cody` recognizes numeric displays such as `:1`, `:2`, and `:2.0`.
-It preserves the terminal's existing `TERM`, `COLORTERM`, and color-control
-variables, while exporting the matching `LIN_BROWSER_USE_AUTH_DISPLAY` for
-browser tools. It also supplies missing Xauthority and runtime bus defaults.
+`cody` launches interactive Codex directly with `--no-daemon --yolo`. New sessions,
+`cody resume`, `cody fork`, and in-session `/resume` use the local engine. There is
+no display server, Unix socket manager, remote client, or permission-restoration
+proxy. The old `--attach`, `--server-status`, `--server-endpoint`, and `--server-stop`
+wrapper options are retired. Use the normal resume picker or a session ID.
+Explicit remote connection options are rejected; administrative Codex commands
+pass through without adding `--no-daemon`.
 
-With a local numeric display, `cody` starts or reuses one app-server per live
-X/VNC session. `cody --attach :2` attaches to an existing display server;
-`--server-status`, `--server-endpoint`, and `--server-stop` manage it.
+The CLI inherits the caller's working directory, `CODEX_HOME`, and environment.
+Explicit directory options retain native Codex behavior. On Linux numeric displays
+such as `:1` or `:2.0`, the wrapper sets `LIN_BROWSER_USE_AUTH_DISPLAY` to that
+display and supplies missing Xauthority/runtime-bus defaults for browser tools.
+It preserves terminal color settings and explicit browser-display, Xauthority,
+and D-Bus choices.
+With no local display, it creates no desktop setup. Independent embedded processes
+inherit their own display environment, so changing displays does not require
+restarting a shared server.
 
-New managed sessions use the caller's current directory, including when the
-display server started in another folder. The wrapper supplies `--cd "$PWD"`
-unless you provide `-C` or `--cd` explicitly. This applies to plain cody,
-launches with an initial prompt, and `cody --attach :N` new sessions.
-Explicit relative directory options are converted to absolute paths using the
-client's working directory before connecting to the server.
-
-Managed clients use a private `cody-resume` proxy throughout their lifetime.
-Each newly selected thread receives the named Full Access profile with approvals
-disabled, even if it was saved with restricted access. This covers new sessions,
-forks, the resume picker, explicit thread IDs, `--last`, `--all`,
-`--attach :N resume`, and later in-session `/resume` selections. Current-directory
-filtering and explicit directory options retain their normal behavior.
-
-Codex's remote CLI rejects launch-time permission overrides on resume/fork.
-For resumed and persisted forked threads, the proxy holds the response, updates
-that thread through the app-server API, and reads back its effective permissions.
-For new threads and ephemeral `/side` forks, it supplies the profile in the
-creation request and verifies the returned settings. Ephemeral threads have no
-saved rollout and cannot use `thread/resume` for verification. Experimental
-prediction forks require inherited configuration; the proxy verifies their
-returned permissions without adding forbidden overrides. Rejection, inconsistent
-readback, timeout, or disconnect fails the selection visibly, preserving server
-readback errors. Unselected threads are unaffected.
-
-A thread receives this default once per cody process. Later permission choices
-made through settings or turn overrides pass through unchanged; reconnecting or
-reselecting that thread within the same client does not reset them. Exiting and
-starting cody again reapplies the Full Access default. The proxy does not force
-permissions on every turn or restart shared servers.
-
-Regression checks: `python3 tests/cody-resume.py`,
-`bash tests/cody-display-env.sh`, and `python3 tests/cody-update.py`.
-`python3 tests/cody-resume-live.py` additionally exercises the installed CLI and
-an isolated app-server with a local Responses fixture. It checks warm-thread
-restoration, a deliberate restriction across reconnect, and a cold saved-thread
-TUI resume followed by actual `git add` and an outside-workspace write. It also
-checks ephemeral forks and the actual TUI `/side` command followed by a side tool
-performing those writes. It uses
-no account credentials or remote model requests. Launcher option routing and
-failure cases use protocol doubles; account switching is not reproduced.
-
-After updating the proxy, exit and resume existing cody clients to load the new
-code. The shared app-server does not need a restart.
-
-Keep `cody`, `cody-display`, and `cody-resume` together on Linux. Both Python
-helpers use only the Python 3.9+ standard library. The temporary resume proxy
-connects to the existing display server and exits with its client.
-
-With `DISPLAY` unset or empty, `cody` starts the regular Codex CLI after its
-usual update check. This path uses normal default app-server behavior and
-requires no display manager, VNC, Xauthority, or desktop runtime setup. On
-JHPCE compute and transfer nodes, it still loads the node module and puts
-`~/.local/bin` first on PATH. Display-server reminders are omitted.
-
-JHPCE's NFS home can prevent Codex from removing temporary helpers while
-their lock files are open. For the installed workaround,
-`~/.codex/tmp/arg0` links to `/tmp/cody-codex-arg0-UID` (the numeric user ID).
-`cody` recreates this private directory on each node when that link is present.
-`CODEX_HOME`, settings, authentication, and session history stay in home.
+On cluster compute and transfer hosts, the existing node module and local helper
+workaround remain: when `~/.codex/tmp/arg0` is already linked to
+`/tmp/cody-codex-arg0-UID`, `cody` recreates that private directory on the current
+node. Settings, authentication, and saved history remain in the original home.
 
 ### Codex updates
 
-Interactive `cody` launches check for a newer stable release before opening
-the UI and ask before installing it. The check uses npm on Unix and
-PowerShell on Windows, with a five-second request timeout. An unavailable
-check still permits launching the installed CLI. When cody handles the
-check, it disables Codex's duplicate startup update prompt for that launch.
+Interactive launches check for a newer stable release and ask before installing.
+The check uses npm on Unix and PowerShell on Windows with a five-second request
+timeout. Failed checks still launch the installed CLI. `--noupdate` disables both
+the wrapper check and Codex's startup check; `--update` updates explicitly and exits.
+Help, version, administrative commands, and noninteractive launches do not perform
+an automatic wrapper check. `--docs` enables the developer-docs MCP for that launch.
 
-On Windows/MSYS2, `cody` prefers the standalone CLI at
+After updating, `cody` reports only the installed CLI version. It does not inspect,
+compare, update, or restart app-server packages or running processes. Existing
+sessions continue using their loaded executable; the next launch uses the updated
+CLI. No wrapper app-server version-mismatch warning remains.
+
+On Windows/MSYS2, `cody` prefers the standalone CLI under
 `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe` and updates it with
-OpenAI's Windows installer. The npm executable on PATH is only a fallback;
-its version can differ from the CLI that `cody` launches. A successful check
-is silent when the selected CLI is current. `--help` and `--version` skip
-the automatic check, as do launches without terminal stdin and stdout.
-
-Windows CLI launches enable unified execution for direct MSYS2 Bash selection,
-disable login-shell execution, select inline mode for terminal scrollback,
-and bind F10 to return from async questions. Interactive mintty launches set
-`FORCE_COLOR=3` when neither `NO_COLOR` nor `FORCE_COLOR` is explicitly set.
-The native CLI is executed directly, including in mintty, without winpty.
-The Codex keymap includes `ctrl-enter` as a newline alias because Windows
-ConPTY represents LF input as Ctrl+Enter in console records. The configuration
-and input-path evidence are documented in `win-config/codex-cli/README.md`.
-These overrides are passed to the CLI, rather than written to desktop settings.
-The CLI inherits the MSYS2 tool PATH. Only the Windows installer receives a
-Windows-first PATH for native `tar`; native PowerShell calls clear inherited
+OpenAI's Windows installer, falling back to the npm CLI if necessary. CLI launches
+preserve the MSYS2 tool PATH, unified execution, disabled login shells, inline
+terminal mode, and F10 question navigation. Interactive mintty sets `FORCE_COLOR=3`
+only when no explicit color choice exists. Only the Windows installer receives a
+Windows-first PATH for native tar. Native PowerShell calls clear inherited
 `PSModulePath` for their own process.
 
 ```bash
-cody                       ## check, ask to update if newer, then launch
-cody --noupdate             ## skip both wrapper and Codex startup checks
-cody --update               ## update explicitly, report versions, then exit
-cody --noupdate --docs      ## combine with other leading wrapper options
+cody                        ## embedded session with update check
+cody --noupdate resume       ## embedded saved-session picker
+cody --noupdate resume --last
+cody --update               ## update CLI, report its version, exit
+cody --noupdate --docs       ## enable developer docs for one launch
 ```
 
-After a successful update, cody reports the installed CLI version, running
-app-server version/status, daemon package version, and running Linux Codex
-process versions. Executables already running before an installation can
-remain older; their versions are read through `/proc`, not inferred from the
-installed package.
+Regression checks: `bash tests/cody-env.sh`, `python3 tests/cody-update.py`, and
+`python3 tests/cody-embedded-live.py`. The live test uses the installed CLI with an
+isolated home and loopback Responses fixture, without account credentials or
+external model calls. It verifies actual embedded new/resume/fork and in-session
+`/resume` selection, persisted thread identity, Full Access, and real tool writes.
 
-If an app-server is running, cody offers to update its package to the installed
-CLI and restart it. The default answer is no. Accepting stops the server,
-pins the current CLI package with `app-server daemon update --from-cli --yes`,
-and starts the updated server; active server work is interrupted. The version
-report is then repeated. If package replacement fails, cody leaves the server
-stopped and returns the error instead of starting an uncertain version.
-
-An absent server is not started. Interactive CLI sessions are never killed.
-Noninteractive launches do not run the wrapper's automatic check; explicit
-noninteractive `--update` reports versions without restarting a server.
-Remote clients can subsequently start a server again after `killall codex`;
-stopping processes does not disconnect those clients.
+Project records: [STATUS.md](STATUS.md) and [docs/DEVLOG.md](docs/DEVLOG.md).
 
 ## Named VNC sessions
 
