@@ -128,14 +128,23 @@ newer_version() {
   return 1
 }
 
+prepare_patch() {
+  if $use_patch; then
+    ## helper owns cached-build selection/fallback; cody owns all CLI updates.
+    cody_windows_patch_prepare || true
+  fi
+}
+
 skip_update=false
 update_only=false
 use_docs=false
+use_patch=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --noupdate) skip_update=true ;;
     --update) update_only=true ;;
     --docs) use_docs=true ;;
+    --patch) use_patch=true ;;
     *) break ;;
   esac
   shift
@@ -143,6 +152,23 @@ done
 if $skip_update && $update_only; then
   printf 'cody: --noupdate and --update cannot be combined\n' >&2
   exit 2
+fi
+
+if $use_patch; then
+  if ! $is_windows_msys; then
+    printf 'cody: --patch requires Windows MSYS2\n' >&2
+    exit 2
+  fi
+  cody_patch_root="${CODY_WINDOWS_PATCH_ROOT:-}"
+  if [[ -z "$cody_patch_root" || ! -r "$cody_patch_root/cody-windows-patch.sh" ]]; then
+    printf 'cody: --patch requires CODY_WINDOWS_PATCH_ROOT with its trusted helper\n' >&2
+    exit 2
+  fi
+  source "$cody_patch_root/cody-windows-patch.sh"
+  if ! declare -F cody_windows_patch_prepare >/dev/null; then
+    printf 'cody: configured patch helper lacks cody_windows_patch_prepare\n' >&2
+    exit 2
+  fi
 fi
 
 ## distinguish interactive sessions from administrative subcommands
@@ -179,6 +205,7 @@ done
 codex_bin="$(resolve_codex_bin || true)"
 if $update_only; then
   update_codex
+  prepare_patch
   exit 0
 fi
 if [[ -z "$codex_bin" ]]; then
@@ -232,6 +259,8 @@ fi
 if $use_docs; then
   codex_args+=(-c 'mcp_servers.openaiDeveloperDocs.enabled=true')
 fi
+
+prepare_patch
 
 ## exec directly so cwd, environment, exit status, and signals belong to this client
 exec "$codex_bin" "${codex_args[@]}" "$@"

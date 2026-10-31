@@ -92,6 +92,11 @@ only when no explicit color choice exists. Only the Windows installer receives a
 Windows-first PATH for native tar. Native PowerShell calls clear inherited
 `PSModulePath` for their own process.
 
+Windows can retain the explicit `--patch` mintty background-color build through an
+existing trusted `cody-windows-patch.sh` helper selected by
+`CODY_WINDOWS_PATCH_ROOT`. Only `--patch` loads that helper. CLI updates still use
+the canonical server-free updater; normal launches never prepare a patched build.
+
 ```bash
 cody                        ## embedded session with update check
 cody --noupdate resume       ## embedded saved-session picker

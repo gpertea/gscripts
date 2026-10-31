@@ -35,7 +35,8 @@ class CodyUpdateTests(unittest.TestCase):
         self.environment.update(PATH=f"{self.bin}:/usr/bin:/bin", HOME=str(self.root),
             HOSTNAME="fictional-client", CODY_TEST_ROOT=str(self.root), CODY_TEST_LATEST="0.159.3")
         for key in ("DISPLAY", "CODEX_HOME", "LIN_BROWSER_USE_AUTH_DISPLAY", "XAUTHORITY",
-                    "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "FORCE_COLOR", "NO_COLOR"):
+                    "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "FORCE_COLOR", "NO_COLOR",
+                    "CODEX_TUI_BACKGROUND", "CODY_WINDOWS_PATCH_ROOT", "CODY_TEST_PATCH_FAIL"):
             self.environment.pop(key, None)
         self.write_double("uname", "uname", "print(os.environ.get('CODY_TEST_OS', 'Linux'))")
         self.write_double("module", "module", "")
@@ -58,7 +59,7 @@ else:
     def tearDown(self):
         self.assertFalse([row for row in self.calls() if row['name'].startswith('FORBIDDEN-')])
         for row in self.calls():
-            if row['name'] in ('codex', 'standalone'):
+            if row['name'] in ('codex', 'standalone', 'patched'):
                 self.assertNotEqual(row['args'][:1], ['app-server'])
 
     def write_double(self, name, label, body):
@@ -68,7 +69,7 @@ else:
 import json,os,sys
 from pathlib import Path
 root=Path(os.environ['CODY_TEST_ROOT']);args=sys.argv[1:]
-fields=('PATH','PSModulePath','DISPLAY','LIN_BROWSER_USE_AUTH_DISPLAY','XAUTHORITY',
+fields=('PATH','PSModulePath','CODEX_TUI_BACKGROUND','DISPLAY','LIN_BROWSER_USE_AUTH_DISPLAY','XAUTHORITY',
         'XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS','FORCE_COLOR','NO_COLOR')
 with (root/'calls').open('a') as stream:
     stream.write(json.dumps({{'name':{label!r},'args':args,'cwd':os.getcwd(),
@@ -167,7 +168,7 @@ else:
         return rows if name is None else [row for row in rows if row['name'] == name]
 
     def launches(self):
-        return [row for row in self.calls() if row['name'] in ('codex', 'standalone') and row['args'] != ['--version']]
+        return [row for row in self.calls() if row['name'] in ('codex', 'standalone', 'patched') and row['args'] != ['--version']]
 
     def assert_embedded(self, launch):
         self.assertEqual(launch['args'][:2], ['--yolo', '--no-daemon'])
@@ -377,6 +378,87 @@ else:
         self.assertEqual(code, 0, output)
         self.assertEqual(self.launches()[0]['name'], 'codex')
         self.assertIsNone(self.launches()[0]['environment']['LIN_BROWSER_USE_AUTH_DISPLAY'])
+
+    def patch_helper(self):
+        helper_root = self.root / 'patch helper'
+        helper_root.mkdir()
+        self.environment['CODY_WINDOWS_PATCH_ROOT'] = str(helper_root)
+        self.write_double('patch-record', 'patch-helper', "(root/'patch-version').write_text((root/'version').read_text())")
+        self.write_codex(self.root / 'patched.exe', 'patched')
+        (helper_root / 'cody-windows-patch.sh').write_text('''cody_windows_patch_prepare() {
+  "$CODY_TEST_ROOT/bin/patch-record" "$codex_bin"
+  [[ ${CODY_TEST_PATCH_FAIL:-false} != true ]] || return 7
+  codex_bin="$CODY_TEST_ROOT/patched.exe"
+  export CODEX_TUI_BACKGROUND="${CODEX_TUI_BACKGROUND-000000}"
+}
+''')
+        return helper_root
+
+    def test_windows_patch_helper_is_never_loaded_by_default(self):
+        self.windows()
+        helper = self.patch_helper() / 'cody-windows-patch.sh'
+        helper.write_text('exit 98\n')
+        code, output = self.run_cody(('--noupdate',))
+        self.assertEqual(code, 0, output)
+        self.assertFalse(self.calls('patch-helper'))
+        self.assertEqual(self.launches()[0]['name'], 'standalone')
+
+    def test_patch_preflight_rejects_posix_and_missing_or_invalid_helper_before_updates(self):
+        code, output = self.run_cody(('--patch', '--update'))
+        self.assertEqual(code, 2, output)
+        self.assertIn('requires Windows MSYS2', output)
+        self.assertFalse(self.calls('npm'))
+        self.windows()
+        code, output = self.run_cody(('--patch', '--update'))
+        self.assertEqual(code, 2, output)
+        self.assertIn('requires CODY_WINDOWS_PATCH_ROOT', output)
+        helper = self.patch_helper() / 'cody-windows-patch.sh'
+        helper.write_text('true\n')
+        code, output = self.run_cody(('--patch', '--update'))
+        self.assertEqual(code, 2, output)
+        self.assertIn('lacks cody_windows_patch_prepare', output)
+        self.assertFalse(self.calls('powershell'))
+        self.assertFalse(self.launches())
+
+    def test_windows_patch_uses_canonical_update_and_launches_embedded(self):
+        self.windows(); self.patch_helper()
+        code, output = self.run_cody(('--patch',), answers=b'y\n')
+        self.assertEqual(code, 0, output)
+        calls = self.calls()
+        installer = next(i for i, row in enumerate(calls) if row['name'] == 'powershell' and 'install.ps1' in row['args'][-1])
+        prepared = next(i for i, row in enumerate(calls) if row['name'] == 'patch-helper')
+        self.assertLess(installer, prepared)
+        self.assertEqual((self.root / 'patch-version').read_text(), '0.159.3')
+        self.assertEqual(self.calls('patch-helper')[0]['args'], [str(self.native_cli)])
+        self.assertEqual(self.launches()[0]['name'], 'patched')
+        self.assert_embedded(self.launches()[0])
+        self.assertEqual(self.launches()[0]['environment']['CODEX_TUI_BACKGROUND'], '000000')
+        self.assertEqual(output.count('[y/N]'), 1)
+
+    def test_windows_patch_explicit_update_prepares_after_install_without_launch(self):
+        self.windows(); self.patch_helper()
+        code, output = self.run_cody(('--patch', '--update'), interactive=False)
+        self.assertEqual(code, 0, output)
+        self.assertEqual((self.root / 'patch-version').read_text(), '0.159.3')
+        self.assertEqual(len(self.calls('patch-helper')), 1)
+        self.assertEqual(len([r for r in self.calls('powershell') if 'install.ps1' in r['args'][-1]]), 1)
+        self.assertFalse(self.launches())
+        self.assertNotIn('[y/N]', output)
+
+    def test_windows_patch_preserves_background_override_and_official_fallback(self):
+        self.windows(); self.patch_helper()
+        self.environment['CODEX_TUI_BACKGROUND'] = '123456'
+        code, output = self.run_cody(('--noupdate', '--patch', 'resume'))
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.launches()[0]['environment']['CODEX_TUI_BACKGROUND'], '123456')
+        self.assert_embedded(self.launches()[0])
+        self.log.unlink()
+        self.environment['CODY_TEST_PATCH_FAIL'] = 'true'
+        code, output = self.run_cody(('--noupdate', '--patch', 'resume'))
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.launches()[0]['name'], 'standalone')
+        self.assert_embedded(self.launches()[0])
+        self.assertFalse(self.calls('powershell'))
 
     def test_jhpce_displayless_update_prefers_user_cli(self):
         for hostname, display in (('transfer-01.cm.cluster', None), ('compute-001', '')):
