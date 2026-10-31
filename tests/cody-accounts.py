@@ -78,6 +78,8 @@ with open(os.environ['TEST_RECORD'],'w') as out:
                      ('--config', 'cli_auth_credentials_store="keyring"'),
                      ('--config=sqlite_home="/fictional/other"',),
                      ('--config=sqlite_home = "/fictional/other"',),
+                     ('--config=  sqlite_home = "/fictional/other"',),
+                     ('-c', ' "sqlite_home" = "/fictional/other"'),
                      ('-ccli_auth_credentials_store="keyring"',)]:
             with self.subTest(args=args):
                 r, data = self.call('gcody', '--noupdate', *args)

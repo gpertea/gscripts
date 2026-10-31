@@ -196,6 +196,19 @@ if $use_patch; then
   fi
 fi
 
+## selected account storage cannot be redirected through a CLI override
+check_account_config() {
+  [[ -n "$account" && "$1" == *=* ]] || return 0
+  local key="${1%%=*}"
+  key="${key#"${key%%[![:space:]]*}"}"
+  key="${key%"${key##*[![:space:]]}"}"
+  case "$key" in
+    sqlite_home|cli_auth_credentials_store|\"sqlite_home\"|\"cli_auth_credentials_store\"|\'sqlite_home\'|\'cli_auth_credentials_store\')
+      printf 'cody: selected account requires its own SQLite and credential store\n' >&2
+      return 2 ;;
+  esac
+}
+
 ## distinguish interactive sessions from administrative subcommands
 interactive=true
 skip_value=false
@@ -204,12 +217,8 @@ command_seen=false
 has_no_daemon=false
 for arg in "$@"; do
   if $skip_value; then
-    if [[ -n "$account" ]] && $config_value; then
-      case "$arg" in
-        sqlite_home=*|sqlite_home[[:space:]]*=*|cli_auth_credentials_store=*|cli_auth_credentials_store[[:space:]]*=*)
-          printf 'cody: selected account requires its own SQLite and credential store\n' >&2
-          exit 2 ;;
-      esac
+    if $config_value; then
+      check_account_config "$arg" || exit "$?"
     fi
     skip_value=false
     config_value=false
@@ -221,11 +230,8 @@ for arg in "$@"; do
       printf 'cody: remote/display-server options are retired; sessions use --no-daemon\n' >&2
       exit 2 ;;
     -c|--config) skip_value=true; config_value=true ;;
-    --config=sqlite_home=*|--config=sqlite_home[[:space:]]*=*|--config=cli_auth_credentials_store=*|--config=cli_auth_credentials_store[[:space:]]*=*|-csqlite_home=*|-csqlite_home[[:space:]]*=*|-ccli_auth_credentials_store=*|-ccli_auth_credentials_store[[:space:]]*=*)
-      if [[ -n "$account" ]]; then
-        printf 'cody: selected account requires its own SQLite and credential store\n' >&2
-        exit 2
-      fi ;;
+    --config=*) check_account_config "${arg#--config=}" || exit "$?" ;;
+    -c?*) check_account_config "${arg#-c}" || exit "$?" ;;
     --enable|--disable|-m|--model|-i|--image|-C|--cd|-p|--profile|-s|--sandbox|-a|--ask-for-approval|--add-dir|--local-provider)
       skip_value=true ;;
     --no-daemon) has_no_daemon=true ;;
