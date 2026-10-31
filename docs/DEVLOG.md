@@ -2,6 +2,32 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-10-31  Retain the selected account
+
+Branch: `master`. Implementation: `bdac018`.
+
+### Done
+
+- Plain `cody` retains the active account; `wcody` and `cody -w` select the
+  original work slot. `cody-account w`, `g`, or `b` switches without launching
+  Codex and uses the same locks and process checks as session launches.
+
+### Measured
+
+- Selector and credential-swap fixtures passed 23 tests; display and argument
+  routing checks passed. Fixtures cover retained selection, all shortcuts,
+  explicit switches, and blocking a switch while a session holds the lock.
+
+### Not done
+
+- The installed-CLI loopback fixture was blocked at its initial login by
+  conservative process detection; the updated native path was not verified.
+
+### Next
+
+- Recheck the installed-CLI fixture when process detection permits it, and
+  verify real cross-account resume when practical.
+
 ## 2026-10-31  Account status and usage
 
 Branch: `master`. Implementation: `4393dba`.

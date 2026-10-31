@@ -9,9 +9,9 @@ behavior and tests.
 - `cody` at `a849a03` uses the unmodified installed CLI in embedded mode. On two
   configured Linux work machines, account selection swaps private credentials in
   the same Codex home and preserves sessions, projects, and SQLite state.
-- `cody` selects the original default account; `gcody`/`cody -g` and
-  `bcody`/`cody -b` select the alternate accounts. `cody-account` reports the
-  selected label, available login email, process IDs, and usage.
+- Plain `cody` uses the selected account. `wcody`/`cody -w` selects the original
+  work account; `gcody`/`cody -g` and `bcody`/`cody -b` select alternates.
+  `cody-account` reports status and `cody-account w`, `g`, or `b` switches.
 - Account changes and login mutations stop when other sessions or servers may
   use the home; they do not stop those processes.
 - Session locks, conservative process detection, and a private recovery journal
@@ -29,16 +29,18 @@ behavior and tests.
 
 - `cody`, `cody --noupdate resume`, `cody fork`, `cody-account`, and
   `cody-account --status`.
-- `cody -g login`, `cody -b login`, `gcody resume`, and `bcody resume` are
+- `cody -g login`, `cody -b login`, `wcody resume`, and `bcody resume` are
   available once other Codex sessions and servers using that home are closed.
 - Unit checks cover file-move recovery, process detection, locks, signal and
   native-package handling, and selector/environment behavior. Existing display
   and 26 update tests pass.
-- Isolated installed-CLI fixtures passed on versions 0.166.0 and 0.165.0:
+- Previously, isolated installed-CLI fixtures passed on versions 0.166.0 and 0.165.0:
   shared-session resume, refresh preservation, blocking an active-session swap,
   lock lifetime, and SQLite integrity. Interactive fixtures passed native resume,
   fork, two in-session `/resume` switches, and actual fixture tool writes.
   These used fictional credentials and no external model requests.
+- The updated installed-CLI fixture was blocked at login by conservative
+  process detection and has not completed in this round.
 - A blocked real-home alternate switch and an ordinary login-status query were
   verified on each work machine without changing its live credential file.
 
