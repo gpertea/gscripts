@@ -2,6 +2,51 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-11-05  Process context in account status
+
+Branch: `master`. Implementation: `57008a1`.
+[Private plan](../worklog/plan_26-11-05_07-17_master.md) remains ignored.
+
+### Done
+
+- `cody-account` default output and `--status` now show each detected PID's
+  working directory and verified tmux session/window/pane plus socket, including
+  unmanaged homes. The conservative process detector and switch guards are unchanged.
+- Existing local Mesh schema-2 catalogs and schema-1 registries supply cached
+  project labels through read-only queries. Matching uses the nearest cwd ancestor
+  and filters catalog projects to the local node. Schema sources are identified
+  in README at codex-mesh revision `459f32f`.
+- Metadata failures retain process rows with unavailable context. Queries are
+  bounded, and terminal controls in paths and project labels are escaped.
+
+### Measured
+
+- Reproduced PID-only managed output and missing unmanaged process output before
+  implementation with fictional live processes.
+- `python3 tests/cody-account-status.py`: 15 tests passed. These cover default,
+  explicit and unmanaged status, real tmux with a private socket, live renaming,
+  shell ancestry, unrelated/stale pane hints, missing/timed-out tmux, both Mesh
+  schemas, catalog precedence, local-node filtering, nearest-directory matching,
+  environment/default discovery, unchanged database bytes, control escaping,
+  absent processes, other homes, and locked/unreadable/malformed/future databases.
+- `python3 tests/cody-account-swap.py`: 12 tests passed.
+  `python3 tests/cody-accounts.py`: 11 tests passed.
+  `python3 tests/cody-update.py`: 26 tests passed.
+  `bash tests/cody-env.sh` passed display, argument, and environment checks.
+- Local read-only `cody-account --status` displayed live cwd/tmux context and
+  cached Mesh labels without starting Codex or invoking a model.
+
+### Not done
+
+- Cached cwd/project matches do not establish native session/project bindings.
+  This change queries local state only; remote inventory is not queried.
+- The installed-CLI loopback and real cross-account resume checks were not
+  repeated for this status-only change; their previous limitations remain.
+
+### Next
+
+- Retain the existing cross-account verification tasks in STATUS.md.
+
 ## 2026-10-31  Retain the selected account
 
 Branch: `master`. Implementation: `bdac018`.
