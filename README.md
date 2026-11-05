@@ -87,7 +87,7 @@ bcody resume
 wcody resume
 cody-account b             ## switch accounts without starting Codex; also g or w
 cody-account               ## current account and available options
-cody-account --status      ## current account and running process IDs
+cody-account --status      ## account, process working directories, tmux, Mesh projects
 ```
 
 The first use of an alternate account requires sign-in. Switching accounts or
@@ -95,8 +95,24 @@ changing a login stops with a message when another Codex session or server may
 still use this home. Close those sessions and servers first; none are stopped
 automatically. Multiple `cody` sessions using the same account can run at once.
 The account command reports the selected label, login email when available, and
-relevant process IDs without printing tokens. The label describes the selected
-slot; inside Codex, `/status` can also be used to check the login.
+relevant processes without printing tokens. Both the default output and `--status`
+include each PID's live working directory and tmux session/window/pane plus socket
+when verified through process ancestry. A dash means no inherited tmux context;
+`unavailable` means the metadata could not be verified. This also works for an
+unmanaged home. The label describes the selected slot; inside Codex, `/status`
+can also be used to check the login.
+
+When existing local codex-mesh state is found, a `MESH PROJECT (CWD)` column
+shows the nearest registered ancestor of each working directory. Discovery uses
+`MESH_STATE_DIR`, then `$XDG_STATE_HOME/codex-mesh`, then
+`~/.local/state/codex-mesh`. It queries schema-2 `catalog.sqlite` and schema-1
+`registry.sqlite` directly through read-only SQLite connections; no Mesh install
+or running service is required. Catalog labels win ties with the legacy registry.
+These are cached directory matches, not verified native session/project bindings.
+Missing state omits the column; unreadable or unsupported databases are reported
+without hiding processes. No scan, refresh, migration, or remote query runs.
+Schema references, relative to the codex-mesh repository root at `459f32f`, are
+`src/codex_mesh/catalog.py` and `src/codex_mesh/registry.py`.
 
 The installed CLI runs directly in embedded mode. Session locks and conservative
 process checks run only at launch; there is no background service or per-prompt
@@ -148,8 +164,11 @@ cody --update               ## update CLI, report its version, exit
 cody --noupdate --docs       ## enable developer docs for one launch
 ```
 
-Regression checks: `bash tests/cody-env.sh`, `python3 tests/cody-update.py`, and
-`python3 tests/cody-embedded-live.py`. The live test uses the installed CLI with an
+Regression checks: `bash tests/cody-env.sh`, `python3 tests/cody-update.py`,
+`python3 tests/cody-account-swap.py`, `python3 tests/cody-accounts.py`,
+`python3 tests/cody-account-status.py`, and `python3 tests/cody-embedded-live.py`.
+The status tests use fictional processes, private tmux sockets, and local SQLite
+fixtures. The live test uses the installed CLI with an
 isolated home and loopback Responses fixture, without account credentials or
 external model calls. It verifies actual embedded new/resume/fork and in-session
 `/resume` selection, persisted thread identity, Full Access, and real tool writes.
