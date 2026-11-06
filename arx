@@ -20,10 +20,11 @@ Usage:
 
  Use -D for a "dry run" showing the commands that would be run.
  
- The concurency (maximum number of tasks to be executed at the same time) 
- should be set with -j or using %concurency suffix for -a/--array (as in SLURM)
- If not given, the default concurrency is set to 6 for local (parallel) runs and 
- 20 for SLURM jobs.
+ Concurrency (maximum number of tasks executing at the same time) can be
+ limited with -j or a %limit suffix for -a/--array (as in SLURM).
+ Without either limit, SLURM arrays have no arx concurrency cap; cluster
+ scheduling limits still apply. Local (GNU parallel) runs default to 6.
+ With -C and no -a, all command-file lines are selected; -a 1- does the same.
 };
 
 ## double-dash recognized options for SLURM (anything else is just passed to sbatch)
@@ -147,11 +148,10 @@ if ($cmd eq 'status') {
    if ($cmdfile) { # -C option : execute commands from file
       $cmdfile=shift(@ARGV);
       die("Error: command file $cmdfile not found!") unless $cmdfile && -f $cmdfile;
-      unless($JARR) {
-        $nlines=`wc -l < $cmdfile`;
-        chomp($nlines);
-        $JARR='1-'.$nlines;
-      }
+      ## explicit open-ended arrays also need the command-file line count.
+      $nlines=`wc -l < $cmdfile`;
+      chomp($nlines);
+      $JARR='1-'.$nlines unless $JARR;
       @args=("$HOME/gscripts/task_linecmd.sh", $cmdfile);
    } else {
      die("Error: submit command requires a target script!\n") unless @ARGV>0;
@@ -162,8 +162,6 @@ if ($cmd eq 'status') {
      }
    }
    if ($JARR) {
-     # default concurrency limit : how many tasks can run at the same time
-     my $pdef=$JGRID eq 'par' ? 6: 20;
      my $plimit;
      if ($JARR=~s/%(\d+)$// ) {
        $plimit=$1;
@@ -173,8 +171,9 @@ if ($cmd eq 'status') {
          die("Number of lines not determined.\n") unless $nlines;
          $JARR.=$nlines;
      }
-     $plimit=$pdef unless $plimit;
-     $JARR.='%'.$plimit if $plimit<$nlines;
+     ## only local runs have an implicit cap; Slurm uses explicit limits only.
+     $plimit=6 if $JGRID eq 'par' && !$plimit;
+     $JARR.='%'.$plimit if $plimit && (!$nlines || $plimit<$nlines);
    }
    ## whatever the case $args[0] must be a path to a script to submit
    if ( ! -f $args[0] ) {
