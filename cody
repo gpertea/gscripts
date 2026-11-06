@@ -8,8 +8,8 @@ case "$(uname -s)" in
   Linux) is_linux=true ;;
 esac
 
-# Resolve native PowerShell without putting Windows tools ahead of MSYS2 tools
-# in agent command shells. The installer receives its own Windows-first PATH.
+## resolve native PowerShell without putting Windows tools ahead of MSYS2 tools
+## in agent command shells. The installer receives its own Windows-first PATH.
 if $is_windows_msys; then
   windows_system32="$(cygpath -u "${SystemRoot:-${SYSTEMROOT:-C:\\Windows}}")/System32"
   windows_powershell="$windows_system32/WindowsPowerShell/v1.0/powershell.exe"
@@ -44,6 +44,61 @@ resolve_codex_bin() {
   command -v codex
 }
 
+## explicit selectors choose a login for the shared Codex home
+account=''
+case "${0##*/}" in
+  gcody) account=g ;;
+  bcody) account=b ;;
+  wcody) account=default ;;
+esac
+skip_update=false
+update_only=false
+use_docs=false
+use_patch=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -g|-b|-w)
+      selected="${1#-}"
+      [[ "$selected" != w ]] || selected=default
+      if [[ -n "$account" && "$account" != "$selected" ]]; then
+        printf 'cody: choose only one account selector\n' >&2
+        exit 2
+      fi
+      account="$selected" ;;
+    --noupdate) skip_update=true ;;
+    --update) update_only=true ;;
+    --docs) use_docs=true ;;
+    --patch) use_patch=true ;;
+    *) break ;;
+  esac
+  shift
+done
+if $skip_update && $update_only; then
+  printf 'cody: --noupdate and --update cannot be combined\n' >&2
+  exit 2
+fi
+managed_account=false
+primary_home="$HOME/.codex"
+primary_selected=false
+if [[ -z "${CODEX_HOME:-}" || "${CODEX_HOME:-}" -ef "$primary_home" ]]; then
+  primary_selected=true
+fi
+if [[ -n "$account" ]] && ! $primary_selected; then
+  printf 'cody: account selection requires the primary Codex home\n' >&2
+  exit 2
+fi
+if [[ -n "$account" && ! -d "$primary_home/cody-accounts" ]]; then
+  printf 'cody: account switching is not configured on this machine\n' >&2
+  exit 1
+fi
+if [[ -d "$primary_home/cody-accounts" ]] && $primary_selected; then
+  managed_account=true
+  if [[ -n "${CODEX_ACCESS_TOKEN:-}${CODEX_API_KEY:-}${OPENAI_API_KEY:-}${OPENAI_IDENTITY_TOKEN_FILE:-}" ]]; then
+    printf 'cody: unset environment-provided Codex credentials before selecting an account\n' >&2
+    exit 2
+  fi
+fi
+
 ## if on JHPCE, load the npm module
 if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
   module load node
@@ -64,15 +119,12 @@ if [[ $HOSTNAME == compute-* || $HOSTNAME == transfer-* ]]; then
   fi
 fi
 
-## without a local display, keep the regular CLI and default daemon behavior
-has_local_display=false
+## direct sessions inherit their terminal display; supply browser-tool defaults only
 if $is_linux && [[ "${DISPLAY:-}" =~ ^:([0-9]+)(\.[0-9]+)?$ ]]; then
-  has_local_display=true
-  display_number="${BASH_REMATCH[1]}"
   export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
-  export LIN_BROWSER_USE_AUTH_DISPLAY=":${display_number}"
+  export LIN_BROWSER_USE_AUTH_DISPLAY="${LIN_BROWSER_USE_AUTH_DISPLAY:-:${BASH_REMATCH[1]}}"
 fi
 
 confirm() {
@@ -85,45 +137,8 @@ codex_version() {
   "$codex_bin" --version | awk '{print $NF}'
 }
 
-report_versions() {
-  local installed_version daemon_info pid process_args process_version
-  installed_version="$(codex_version)"
-  printf 'Installed CLI: %s (%s)\n' "$installed_version" "$codex_bin"
-  daemon_running=false
-  if daemon_info="$("$codex_bin" app-server daemon version 2>/dev/null)"; then
-    ## use the server's control socket, not the executable currently on disk
-    if command -v python3 >/dev/null 2>&1; then
-      python3 -c 'import json, sys
-info = json.loads(sys.argv[1])
-print("App-server status:", info.get("status", "unknown"))
-print("Running app-server:", info.get("appServerVersion") or "none")
-print("Daemon package:", info.get("managedCodexVersion") or "not installed/unknown")' "$daemon_info" || printf '%s\n' "$daemon_info"
-    else
-      printf 'App-server: %s\n' "$daemon_info"
-    fi
-    if grep -Eq '"status"[[:space:]]*:[[:space:]]*"running"' <<< "$daemon_info"; then
-      daemon_running=true
-    fi
-  else
-    printf 'App-server status: unavailable (no reachable default daemon)\n'
-  fi
-
-  if $is_linux && command -v pgrep >/dev/null 2>&1; then
-    printf 'Running Codex processes:\n'
-    ## /proc retains the actual executable even after npm replaces its file
-    for pid in $(pgrep -u "$(id -u)" -x codex || true); do
-      process_version="$("/proc/$pid/exe" --version 2>/dev/null | awk '{print $NF}')" || continue
-      process_args="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" || continue
-      local kind=CLI note=''
-      [[ "$process_args" != *'app-server'* ]] || kind=app-server
-      [[ "$process_args" != *'app-server proxy'* ]] || kind=proxy
-      [[ "$process_version" == "$installed_version" ]] || note=' (different version)'
-      printf '  PID %-8s %-10s %s%s\n' "$pid" "$kind" "$process_version" "$note"
-    done
-  fi
-}
-
 update_codex() {
+  local installed_version
   printf 'Updating Codex CLI...\n'
   if $is_windows_msys; then
     if [[ ! -x "$windows_powershell" ]]; then
@@ -131,7 +146,7 @@ update_codex() {
       exit 127
     fi
 
-    ## The Windows installer requires native tar and PowerShell 5.1 modules.
+    ## the Windows installer requires native tar and PowerShell 5.1 modules.
     env -u PSModulePath PATH="$windows_system32:$windows_system32/WindowsPowerShell/v1.0:$PATH" \
       "$windows_powershell" -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \
       '$ErrorActionPreference = "Stop"; $env:CODEX_NON_INTERACTIVE = "1"; Invoke-RestMethod "https://chatgpt.com/codex/install.ps1" | Invoke-Expression' || return "$?"
@@ -150,23 +165,8 @@ update_codex() {
     exit 127
   fi
 
-  report_versions
-  if $daemon_running; then
-    if [[ -t 0 && -t 1 ]] && confirm 'Update the app-server package to this CLI and restart it? This interrupts its active work.'; then
-      ## stop first so package replacement cannot restart the old server twice
-      "$codex_bin" app-server daemon stop || return "$?"
-      "$codex_bin" app-server daemon update --from-cli --yes || return "$?"
-      "$codex_bin" app-server daemon start || return "$?"
-      report_versions
-    else
-      printf 'App-server left running at its reported version.\n'
-    fi
-  else
-    printf 'No running default app-server to restart; no server was started.\n'
-  fi
-  if $has_local_display; then
-    printf 'Display servers retain their running version; use cody --server-stop when ready to replace one.\n'
-  fi
+  installed_version="$(codex_version)" || return "$?"
+  printf 'Installed CLI: %s (%s)\n' "$installed_version" "$codex_bin"
 }
 
 newer_version() {
@@ -183,44 +183,96 @@ newer_version() {
   return 1
 }
 
-skip_update=false
-update_only=false
-use_docs=false
-display_action=local
-attach_display=
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --noupdate) skip_update=true ;;
-    --update) update_only=true ;;
-    --docs) use_docs=true ;;
-    --attach)
-      [[ "$display_action" == local ]] || { printf 'cody: choose one display-server action\n' >&2; exit 2; }
-      [[ $# -ge 2 ]] || { printf 'cody: --attach requires a DISPLAY such as :3\n' >&2; exit 2; }
-      display_action=attach
-      attach_display="$2"
-      skip_update=true
-      shift ;;
-    --server-status|--server-stop|--server-endpoint)
-      [[ "$display_action" == local ]] || { printf 'cody: choose one display-server action\n' >&2; exit 2; }
-      display_action="${1#--server-}"
-      skip_update=true
-      if [[ "${2:-}" =~ ^:[0-9]+(\.[0-9]+)?$ ]]; then
-        attach_display="$2"
-        shift
-      fi ;;
-    *) break ;;
-  esac
-  shift
-done
-if $skip_update && $update_only; then
-  printf 'cody: --noupdate and --update cannot be combined\n' >&2
-  exit 2
+prepare_patch() {
+  if $use_patch; then
+    ## helper owns cached-build selection/fallback; cody owns all CLI updates.
+    cody_windows_patch_prepare || true
+  fi
+}
+
+if $use_patch; then
+  if ! $is_windows_msys; then
+    printf 'cody: --patch requires Windows MSYS2\n' >&2
+    exit 2
+  fi
+  cody_patch_root="${CODY_WINDOWS_PATCH_ROOT:-}"
+  if [[ -z "$cody_patch_root" || ! -r "$cody_patch_root/cody-windows-patch.sh" ]]; then
+    printf 'cody: --patch requires CODY_WINDOWS_PATCH_ROOT with its trusted helper\n' >&2
+    exit 2
+  fi
+  source "$cody_patch_root/cody-windows-patch.sh"
+  if ! declare -F cody_windows_patch_prepare >/dev/null; then
+    printf 'cody: configured patch helper lacks cody_windows_patch_prepare\n' >&2
+    exit 2
+  fi
 fi
+
+## selected account storage cannot be redirected through a CLI override
+check_account_config() {
+  [[ "$managed_account" == true && "$1" == *=* ]] || return 0
+  local key="${1%%=*}"
+  key="${key#"${key%%[![:space:]]*}"}"
+  key="${key%"${key##*[![:space:]]}"}"
+  case "$key" in
+    sqlite_home|cli_auth_credentials_store|\"sqlite_home\"|\"cli_auth_credentials_store\"|\'sqlite_home\'|\'cli_auth_credentials_store\')
+      printf 'cody: account switching requires the shared SQLite and file credential store\n' >&2
+      return 2 ;;
+  esac
+}
+
+## distinguish interactive sessions from administrative subcommands
+interactive=true
+skip_value=false
+config_value=false
+command_seen=false
+command_name=''
+login_status=false
+help_requested=false
+has_no_daemon=false
+for arg in "$@"; do
+  if $skip_value; then
+    if $config_value; then
+      check_account_config "$arg" || exit "$?"
+    fi
+    skip_value=false
+    config_value=false
+    continue
+  fi
+  case "$arg" in
+    --) break ;;
+    --remote|--remote=*|--remote-auth-token-env|--remote-auth-token-env=*|--attach|--attach=*|--server-status|--server-stop|--server-endpoint)
+      printf 'cody: remote/display-server options are retired; sessions use --no-daemon\n' >&2
+      exit 2 ;;
+    -c|--config) skip_value=true; config_value=true ;;
+    --config=*) check_account_config "${arg#--config=}" || exit "$?" ;;
+    -c?*) check_account_config "${arg#-c}" || exit "$?" ;;
+    --enable|--disable|-m|--model|-i|--image|-C|--cd|-p|--profile|-s|--sandbox|-a|--ask-for-approval|--add-dir|--local-provider)
+      skip_value=true ;;
+    --no-daemon) has_no_daemon=true ;;
+    --help|-h|--version|-V)
+      interactive=false; help_requested=true ;;
+    -*) ;;
+    *)
+      if $command_seen; then
+        if [[ "$command_name" == login && "$arg" == status ]]; then login_status=true; fi
+        continue
+      fi
+      command_seen=true
+      command_name="$arg"
+      case "$arg" in
+        resume|fork) ;;
+        exec|e|review|login|logout|mcp|plugin|app-server|remote-control|completion|update|doctor|sandbox|debug|apply|cloud|exec-server|features|help|agents|queue|archive|a|delete|unarchive|migrate-rollouts|migrate-nfs-db)
+          interactive=false ;;
+      esac
+      ;;
+  esac
+done
 
 ## resolve the CLI again after any update, then exec for signal handling
 codex_bin="$(resolve_codex_bin || true)"
 if $update_only; then
   update_codex
+  prepare_patch
   exit 0
 fi
 if [[ -z "$codex_bin" ]]; then
@@ -229,7 +281,7 @@ if [[ -z "$codex_bin" ]]; then
 fi
 
 checked_updates=false
-if ! $skip_update && [[ -t 0 && -t 1 && "${1:-}" != --help && "${1:-}" != --version ]]; then
+if $interactive && ! $skip_update && [[ -t 0 && -t 1 && "${1:-}" != --help && "${1:-}" != --version ]]; then
   latest_version=''
   if $is_windows_msys && [[ -x "$windows_powershell" ]]; then
     checked_updates=true
@@ -253,33 +305,25 @@ if ! $skip_update && [[ -t 0 && -t 1 && "${1:-}" != --help && "${1:-}" != --vers
   fi
 fi
 
-## display clients share one backend; administrative CLI commands pass through
-use_display_server=false
-if $is_linux; then
-  if [[ "$display_action" != local ]] || $has_local_display; then
-    use_display_server=true
-    if [[ "$display_action" == local ]]; then
-      case "${1:-}" in
-        --help|-h|--version|-V|exec|e|review|login|logout|mcp|plugin|app-server|remote-control|completion|update|doctor|sandbox|debug|apply|cloud|exec-server|features|help)
-          use_display_server=false ;;
-      esac
-    fi
-  fi
-fi
-
-## configuration overrides apply to the shared server on its first launch
 declare -a codex_args=(--yolo)
+if $managed_account; then
+  ## force the file store that the account manager coordinates
+  codex_args+=(-c 'cli_auth_credentials_store="file"')
+fi
+if $interactive && ! $has_no_daemon; then
+  codex_args+=(--no-daemon)
+fi
 if $is_windows_msys; then
-  ## Expose direct MSYS2 Bash selection without changing desktop settings.
+  ## expose direct MSYS2 Bash selection without changing desktop settings.
   codex_args+=(--no-alt-screen -c 'features.unified_exec=true' -c 'allow_login_shell=false'
     -c 'tui.keymap.chat.prompt_stack_back=["f10","alt-down"]')
-  ## Mintty supports truecolor; avoid a native Windows TTY detection downgrade.
-  ## Preserve explicit color settings and leave redirected output alone.
+  ## mintty supports truecolor; avoid a native Windows TTY detection downgrade.
+  ## preserve explicit color settings and leave redirected output alone.
   if [[ ${TERM_PROGRAM:-} == mintty && -t 1 && -z ${NO_COLOR+x} && -z ${FORCE_COLOR+x} ]]; then
     export FORCE_COLOR=3
   fi
 fi
-if [[ "$display_action" == local ]] && { $skip_update || $checked_updates; }; then
+if $skip_update || $checked_updates; then
   ## cody owns this launch's update prompt; --noupdate disables both checks
   codex_args+=(-c 'check_for_update_on_startup=false')
 fi
@@ -287,20 +331,24 @@ if $use_docs; then
   codex_args+=(-c 'mcp_servers.openaiDeveloperDocs.enabled=true')
 fi
 
-if $use_display_server; then
-  ## keep the manager beside cody so the gscripts checkout remains portable
-  display_manager="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cody-display"
-  [[ -x "$display_manager" ]] || { printf 'cody: missing display manager: %s\n' "$display_manager" >&2; exit 127; }
-  if [[ "$display_action" == attach ]]; then
-    exec "$display_manager" attach --display "$attach_display" -- "${codex_args[@]}" "$@"
-  elif [[ "$display_action" != local ]]; then
-    [[ $# -eq 0 ]] || { printf 'cody: unexpected arguments to display-server management\n' >&2; exit 2; }
-    exec "$display_manager" "$display_action" --display "${attach_display:-${DISPLAY:-}}"
+prepare_patch
+
+## coordinate only explicitly enrolled homes; all clients keep one Codex home
+if $managed_account && ! $help_requested; then
+  script_path="${BASH_SOURCE[0]}"
+  while [[ -L "$script_path" ]]; do
+    link="$(readlink -- "$script_path")"
+    if [[ "$link" = /* ]]; then script_path="$link"; else script_path="$(dirname -- "$script_path")/$link"; fi
+  done
+  manager="$(cd -- "$(dirname -- "$script_path")" && pwd)/cody-account"
+  [[ -x "$manager" ]] || { printf 'cody: account manager is missing\n' >&2; exit 1; }
+  declare -a manager_args=(--home "$primary_home")
+  [[ -z "$account" ]] || manager_args+=(--account "$account")
+  if [[ "$command_name" == logout ]] || { [[ "$command_name" == login ]] && ! $login_status; }; then
+    manager_args+=(--mutates-auth)
   fi
-  exec "$display_manager" local -- "${codex_args[@]}" "$@"
+  exec "$manager" "${manager_args[@]}" -- "$codex_bin" "${codex_args[@]}" "$@"
 fi
-if [[ "$display_action" != local ]]; then
-  printf 'cody: display server management requires Linux\n' >&2
-  exit 2
-fi
+
+## exec directly so cwd, environment, exit status, and signals belong to this client
 exec "$codex_bin" "${codex_args[@]}" "$@"

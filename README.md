@@ -1,82 +1,179 @@
 # gscripts
 This is a mishmash of utility scripts I have been using in my Genomics/Bioinformatics work.  Many of them may not make much sense outside of my work environment, some of them were project specific and I probably already forgot why I wrote them.. 
 
-## Codex sessions by display
+## arx array concurrency
 
-On Linux, `cody` recognizes numeric displays such as `:1`, `:2`, and `:2.0`.
-It preserves the terminal's existing `TERM`, `COLORTERM`, and color-control
-variables, while exporting the matching `LIN_BROWSER_USE_AUTH_DISPLAY` for
-browser tools. It also supplies missing Xauthority and runtime bus defaults.
+For SLURM, omitting `-j` and any `%limit` suffix submits an array with no
+arx concurrency throttle. Cluster scheduling and account/QOS limits still
+apply. With `-C commands.txt`, omitting `-a` selects all command-file lines;
+`-a 1-` selects the same range. Without `-C` or `-a`, arx submits one script
+job rather than constructing an array.
 
-With a local numeric display, `cody` starts or reuses one app-server per live
-X/VNC session. `cody --attach :2` attaches to an existing display server;
-`--server-status`, `--server-endpoint`, and `--server-stop` manage it.
+```bash
+arx sub -D -C commands.txt           ## all lines, no array throttle
+arx sub -D -a1- -C commands.txt      ## same selection, no array throttle
+arx sub -D -j 10 -C commands.txt     ## at most ten simultaneous tasks
+arx sub -D -a '1-%10' -C commands.txt
+```
 
-With `DISPLAY` unset or empty, `cody` starts the regular Codex CLI after its
-usual update check. This path uses normal default app-server behavior and
-requires no display manager, VNC, Xauthority, or desktop runtime setup. On
-JHPCE compute and transfer nodes, it still loads the node module and puts
-`~/.local/bin` first on PATH. Display-server reminders are omitted.
+Without `-C`, specify the array and pass the data file as the script's first
+argument:
 
-JHPCE's NFS home can prevent Codex from removing temporary helpers while
-their lock files are open. For the installed workaround,
-`~/.codex/tmp/arg0` links to `/tmp/cody-codex-arg0-UID` (the numeric user ID).
-`cody` recreates this private directory on each node when that link is present.
-`CODEX_HOME`, settings, authentication, and session history stay in home.
+```bash
+arx sub -D -a1- -p katun -c1 -m1G -t 00:05:00 task.sh samples.txt
+```
+
+For a data file with N lines, arx uses `linix` to index/count the lines and
+submits `sbatch ... -a 1-N task.sh samples.txt`, without a `%` throttle.
+Explicit ranges such as `-a 10-50` also work without `-j`. Each task receives
+the same script arguments; the script selects its row, for example:
+
+```bash
+row=$(linix "$1" "$SLURM_ARRAY_TASK_ID")
+```
+
+Array indexes address physical lines, including any header; use a headerless
+file or choose a range that skips the header. Omitting `-a` in this mode
+submits one ordinary script job, even when a data-file argument is present.
+
+When both `-j` and `%limit` are supplied, the smaller limit wins. Local GNU
+parallel runs (`-P`) retain a default of six simultaneous tasks. `-D` previews
+commands without executing jobs. Regression checks:
+
+```bash
+python3 tests/arx-concurrency.py
+```
+
+## Codex embedded sessions
+
+`cody` launches interactive Codex directly with `--no-daemon --yolo`. New sessions,
+`cody resume`, `cody fork`, and in-session `/resume` use the local engine. There is
+no display server, Unix socket manager, remote client, or permission-restoration
+proxy. The old `--attach`, `--server-status`, `--server-endpoint`, and `--server-stop`
+wrapper options are retired. Use the normal resume picker or a session ID.
+Explicit remote connection options are rejected; administrative Codex commands
+pass through without adding `--no-daemon`.
+
+The CLI inherits the caller's working directory, `CODEX_HOME`, and environment.
+Explicit directory options retain native Codex behavior. On Linux numeric displays
+such as `:1` or `:2.0`, the wrapper sets `LIN_BROWSER_USE_AUTH_DISPLAY` to that
+display and supplies missing Xauthority/runtime-bus defaults for browser tools.
+It preserves terminal color settings and explicit browser-display, Xauthority,
+and D-Bus choices.
+With no local display, it creates no desktop setup. Independent embedded processes
+inherit their own display environment, so changing displays does not require
+restarting a shared server.
+
+On cluster compute and transfer hosts, the existing node module and local helper
+workaround remain: when `~/.codex/tmp/arg0` is already linked to
+`/tmp/cody-codex-arg0-UID`, `cody` recreates that private directory on the current
+node. Settings, authentication, and saved history remain in the original home.
+
+### Account selection
+
+On the configured Linux work machines, `cody -g` or `gcody` selects the
+personal account, `cody -b` or `bcody` selects the business account, and
+`cody -w` or `wcody` selects the original work account. Plain `cody` keeps the
+currently selected account. All three use the same `~/.codex`
+home, projects, sessions, and SQLite state. Inactive account credentials are
+kept as private files under `~/.codex/cody-accounts/`; the selected account uses
+`~/.codex/auth.json`, as in an ordinary Codex installation.
+
+```bash
+cody -g login
+cody -b login
+gcody resume
+bcody resume
+wcody resume
+cody-account b             ## switch accounts without starting Codex; also g or w
+cody-account               ## current account and available options
+cody-account --status      ## account, process working directories, tmux, Mesh projects
+```
+
+The first use of an alternate account requires sign-in. Switching accounts or
+changing a login stops with a message when another Codex session or server may
+still use this home. Close those sessions and servers first; none are stopped
+automatically. Multiple `cody` sessions using the same account can run at once.
+The account command reports the selected label, login email when available, and
+relevant processes without printing tokens. Both the default output and `--status`
+include each PID's live working directory and tmux session/window/pane plus socket
+when verified through process ancestry. A dash means no inherited tmux context;
+`unavailable` means the metadata could not be verified. This also works for an
+unmanaged home. The label describes the selected slot; inside Codex, `/status`
+can also be used to check the login.
+
+When existing local codex-mesh state is found, a `MESH PROJECT (CWD)` column
+shows the nearest registered ancestor of each working directory. Discovery uses
+`MESH_STATE_DIR`, then `$XDG_STATE_HOME/codex-mesh`, then
+`~/.local/state/codex-mesh`. It queries schema-2 `catalog.sqlite` and schema-1
+`registry.sqlite` directly through read-only SQLite connections; no Mesh install
+or running service is required. Catalog labels win ties with the legacy registry.
+These are cached directory matches, not verified native session/project bindings.
+Missing state omits the column; unreadable or unsupported databases are reported
+without hiding processes. No scan, refresh, migration, or remote query runs.
+Schema references, relative to the codex-mesh repository root at `459f32f`, are
+`src/codex_mesh/catalog.py` and `src/codex_mesh/registry.py`.
+
+The installed CLI runs directly in embedded mode. Session locks and conservative
+process checks run only at launch; there is no background service or per-prompt
+hook. A journal recovers an interrupted credential move without overwriting files.
+Use `cody` for launches sharing this home: a direct `codex` process does not
+participate in the lock, so a direct launch racing an account swap cannot be
+completely excluded. Existing direct sessions and servers are checked before a
+swap. Environment-provided credentials, non-file administrator settings, and
+credential-store overrides are rejected for managed launches.
+
+Switching changes the account for the whole local Codex home, so a session must
+end before it can be resumed under another account. Synthetic tests verify local
+cross-account resume and refreshed-token preservation. Real ChatGPT account or
+workspace behavior across a switch still requires verification after sign-in.
 
 ### Codex updates
 
-Interactive `cody` launches check for a newer stable release before opening
-the UI and ask before installing it. The check uses npm on Unix and
-PowerShell on Windows, with a five-second request timeout. An unavailable
-check still permits launching the installed CLI. When cody handles the
-check, it disables Codex's duplicate startup update prompt for that launch.
+Interactive launches check for a newer stable release and ask before installing.
+The check uses npm on Unix and PowerShell on Windows with a five-second request
+timeout. Failed checks still launch the installed CLI. `--noupdate` disables both
+the wrapper check and Codex's startup check; `--update` updates explicitly and exits.
+Help, version, administrative commands, and noninteractive launches do not perform
+an automatic wrapper check. `--docs` enables the developer-docs MCP for that launch.
 
-On Windows/MSYS2, `cody` prefers the standalone CLI at
+After updating, `cody` reports only the installed CLI version. It does not inspect,
+compare, update, or restart app-server packages or running processes. Existing
+sessions continue using their loaded executable; the next launch uses the updated
+CLI. No wrapper app-server version-mismatch warning remains.
+
+On Windows/MSYS2, `cody` prefers the standalone CLI under
 `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe` and updates it with
-OpenAI's Windows installer. The npm executable on PATH is only a fallback;
-its version can differ from the CLI that `cody` launches. A successful check
-is silent when the selected CLI is current. `--help` and `--version` skip
-the automatic check, as do launches without terminal stdin and stdout.
-
-Windows CLI launches enable unified execution for direct MSYS2 Bash selection,
-disable login-shell execution, select inline mode for terminal scrollback,
-and bind F10 to return from async questions. Interactive mintty launches set
-`FORCE_COLOR=3` when neither `NO_COLOR` nor `FORCE_COLOR` is explicitly set.
-The native CLI is executed directly, including in mintty, without winpty.
-The Codex keymap includes `ctrl-enter` as a newline alias because Windows
-ConPTY represents LF input as Ctrl+Enter in console records. The configuration
-and input-path evidence are documented in `win-config/codex-cli/README.md`.
-These overrides are passed to the CLI, rather than written to desktop settings.
-The CLI inherits the MSYS2 tool PATH. Only the Windows installer receives a
-Windows-first PATH for native `tar`; native PowerShell calls clear inherited
+OpenAI's Windows installer, falling back to the npm CLI if necessary. CLI launches
+preserve the MSYS2 tool PATH, unified execution, disabled login shells, inline
+terminal mode, and F10 question navigation. Interactive mintty sets `FORCE_COLOR=3`
+only when no explicit color choice exists. Only the Windows installer receives a
+Windows-first PATH for native tar. Native PowerShell calls clear inherited
 `PSModulePath` for their own process.
 
+Windows can retain the explicit `--patch` mintty background-color build through an
+existing trusted `cody-windows-patch.sh` helper selected by
+`CODY_WINDOWS_PATCH_ROOT`. Only `--patch` loads that helper. CLI updates still use
+the canonical server-free updater; normal launches never prepare a patched build.
+
 ```bash
-cody                       ## check, ask to update if newer, then launch
-cody --noupdate             ## skip both wrapper and Codex startup checks
-cody --update               ## update explicitly, report versions, then exit
-cody --noupdate --docs      ## combine with other leading wrapper options
+cody                        ## embedded session with update check
+cody --noupdate resume       ## embedded saved-session picker
+cody --noupdate resume --last
+cody --update               ## update CLI, report its version, exit
+cody --noupdate --docs       ## enable developer docs for one launch
 ```
 
-After a successful update, cody reports the installed CLI version, running
-app-server version/status, daemon package version, and running Linux Codex
-process versions. Executables already running before an installation can
-remain older; their versions are read through `/proc`, not inferred from the
-installed package.
+Regression checks: `bash tests/cody-env.sh`, `python3 tests/cody-update.py`,
+`python3 tests/cody-account-swap.py`, `python3 tests/cody-accounts.py`,
+`python3 tests/cody-account-status.py`, and `python3 tests/cody-embedded-live.py`.
+The status tests use fictional processes, private tmux sockets, and local SQLite
+fixtures. The live test uses the installed CLI with an
+isolated home and loopback Responses fixture, without account credentials or
+external model calls. It verifies actual embedded new/resume/fork and in-session
+`/resume` selection, persisted thread identity, Full Access, and real tool writes.
 
-If an app-server is running, cody offers to update its package to the installed
-CLI and restart it. The default answer is no. Accepting stops the server,
-pins the current CLI package with `app-server daemon update --from-cli --yes`,
-and starts the updated server; active server work is interrupted. The version
-report is then repeated. If package replacement fails, cody leaves the server
-stopped and returns the error instead of starting an uncertain version.
-
-An absent server is not started. Interactive CLI sessions are never killed.
-Noninteractive launches do not run the wrapper's automatic check; explicit
-noninteractive `--update` reports versions without restarting a server.
-Remote clients can subsequently start a server again after `killall codex`;
-stopping processes does not disconnect those clients.
+Project records: [STATUS.md](STATUS.md) and [docs/DEVLOG.md](docs/DEVLOG.md).
 
 ## Named VNC sessions
 
@@ -100,7 +197,7 @@ in `~/bin`.
 nothing. Installation moves an existing regular managed file into
 `${VNC_BRU_BACKUP_DIR:-~/.local/state/vnc-bru-setup/backups/<run>}/<absolute path>`
 before replacing it, prints each `>>> BACKUP:` path, and appends it to the
-`MANIFEST` file there. `lin-config/browser-use/install-vnc-bru.sh` sets
+`MANIFEST` file there. `lin-config/install-managed-sessions.sh` sets
 `VNC_BRU_BACKUP_DIR` so one run keeps all backups together. Replaced symlinks
 are reported with their previous target. It does not alter host-specific
 `vnc-HOST` commands.
@@ -193,8 +290,10 @@ higher. Existing copied wrappers therefore continue working after the remote
 host installs these tools.
 
 To replace copied wrappers with one maintained implementation, link
-`vnc-HOST` to `vnc-host`. Linux and macOS default to an SSH tunnel and display
-`:1`; Windows retains the legacy direct-LAN default.
+`vnc-HOST` to `vnc-host` on Linux and Windows, or to `vnc-lan` on macOS.
+All use the shared host-alias parser and default to display `:1`. Linux defaults
+to an SSH tunnel; macOS selects an available direct route before falling back
+to SSH forwarding; Windows retains the legacy direct-LAN default.
 
 ```bash
 mv ~/bin/vnc-srv16 ~/bin/vnc-srv16.legacy
@@ -312,10 +411,50 @@ Linux tunnel management requires `perl` (core `IO::Socket::INET`), `flock`,
 `timeout`, and `/proc`. Locks, PID records, and socket cleanup are scoped to
 the SSH endpoint and display. New tunnels use SSH server keepalives.
 
-On macOS, `vnc-lan linwks34 --session browser-a` creates an SSH tunnel and
-opens TurboVNC. Legacy direct-LAN usage remains
-`vnc-lan linwks34 [vnc-host] [geometry]`.
-The macOS tunnel port policy is unchanged by the Linux update.
+On macOS, `vnc-lan` uses the same remote `vnc-session ensure` commands for
+exact displays and named sessions, while retaining TurboVNC-specific viewer
+options (`-DesktopSize Server`, `VNC_SCALE`, and the default `tvncviewer`).
+`VNC_VIEWER` can select another compatible TurboVNC launcher;
+`VNC_SESSION_PASSWORD_FILE` overrides `~/.vnc/passwd`.
+
+Create device-local aliases in `~/bin`; add one symlink per configured SSH
+host. Existing links need no reinstall when the checkout updates:
+
+```bash
+mkdir -p ~/bin
+ln -s ~/gscripts/vnc-lan ~/bin/vnc-lan # skip if already installed
+ln -s vnc-lan ~/bin/vnc-srv16
+ln -s vnc-lan ~/bin/vnc-srv16-alice # example SSH account
+
+vnc-srv16                    # ensure srv16 display :1, then connect
+vnc-srv16 :2                 # ensure exactly :2, then connect
+vnc-srv16 3                  # numeric form also accepted
+vnc-srv16 --direct :2        # explicit direct LAN connection
+vnc-srv16-alice              # discover or allocate a desktop as alice
+vnc-srv16-alice --list
+```
+
+`vnc-lan srv16:2` and `vnc-lan srv16 --session browser-a` are also supported.
+Automatic route selection is the default for both host aliases and plain
+`vnc-lan`. Device-specific endpoints belong in private SSH configuration;
+see `vnc-lan --help` for the optional companion-alias convention.
+Availability is checked on every launch. Running desktops keep their listener
+configuration, with SSH forwarding used when direct VNC is unavailable.
+New or stopped desktops are started in direct mode by automatic selection.
+`--direct` ensures the remote LAN listener through the same guarded server
+command as Linux; changing a running loopback listener still requires
+`--force-restart`. Explicit `--direct`/`--tunnel` options take precedence;
+`--auto` restores automatic route selection.
+
+The older `vnc-lan SSH_HOST [VNC_HOST] [GEOMETRY]` form remains supported.
+`VNC_TUNNEL=always` forwards a separately supplied VNC host
+as reached from the SSH host. `VNC_TUNNEL=never` selects direct LAN mode.
+`VNC_TUNNEL=auto` (the default) probes configured direct endpoints before
+falling back to SSH forwarding. Named and exact-display targets use the same
+route-selection policy.
+The Mac local display defaults to remote display + 10; use
+`VNC_LOCAL_DISPLAY` (or `VNC_SESSION_LOCAL_DISPLAY`) to override an occupied
+local port.
 
 On Windows/MSYS2, `vnc-win-lan` now accepts the same host/session target form
 as `vnc-session-view` while retaining the established
@@ -386,13 +525,57 @@ Regression checks:
 bash tests/vnc-win-title.sh
 bash tests/vnc-win-tunnel.sh
 bash tests/vnc-session-view-tunnel.sh
+python3 tests/vnc-lan-tunnel.py
 ```
 
-`vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin and to
-`vnc-session-view` elsewhere. Its platform default follows that viewer:
-direct LAN on Windows and an SSH tunnel elsewhere. Small host wrappers can set
+`vnc-host` automatically dispatches to `vnc-win-lan` under MSYS2/Cygwin,
+`vnc-lan` on macOS, and `vnc-session-view` on Linux. Its platform default follows that viewer:
+direct LAN on Windows, automatic route selection on macOS, and an SSH tunnel
+on Linux. Small host wrappers can set
 `VNC_HOST_ALIAS` or override the default with `VNC_HOST_DEFAULT_TRANSPORT`.
 Explicit `--direct` or `--tunnel` arguments always take precedence.
+
+An alias `vnc-HOST-USER` selects an explicit SSH account. The last
+hyphen-separated token is the username; earlier tokens form the hostname.
+With no explicit display/session argument, user-specific connections list
+desktops as that SSH account and select its lowest-numbered running display.
+If none is running, they restart its lowest-numbered retained stopped display.
+If no desktop exists, the server ensures the retained name `self`, allocating
+the next free display using its existing allocator. This internal name does
+not invoke the `vnc-self` command. User aliases use automatic route selection
+on macOS and default to an SSH tunnel elsewhere. They never assume that
+display `:1` belongs to that account.
+Explicit display/session arguments skip discovery:
+
+```bash
+ln -s ~/gscripts/vnc-host ~/bin/vnc-srv16-alice
+vnc-srv16-alice               # first owned desktop, tunnel
+vnc-srv16-alice --status
+vnc-srv16-alice --list
+vnc-srv16-alice 3             # explicit display :3 under alice
+vnc-host alice@srv16          # same default without an alias
+```
+
+Keep the updated viewer helpers beside `vnc-host` on each client. Remote
+accounts need `~/bin/vnc-session` and their own VNC password/configuration.
+Host-only aliases retain their existing platform defaults and display `:1`.
+For a literal hyphenated SSH hostname, use `vnc-host lab-server` or set
+`VNC_HOST_ALIAS=lab-server` in a small wrapper. Explicit `user@host` targets
+also support usernames that contain hyphens.
+
+The SSH account selects whose session manager runs. If `srv16` logs in as
+`bob`, `vnc-srv16 3` refuses while display `:3` belongs to `alice`; it
+does not switch accounts. Programs inside a connected desktop always run as
+that desktop's owner. VNC itself authenticates using its password rather than
+the SSH username, so a manually forwarded port can still be accessed with a
+shared VNC password. The manager's ownership guard prevents accidental
+cross-account attachment; it is not a security boundary between accounts with
+shared passwords or administrative privileges.
+
+```bash
+bash tests/vnc-host-cli.sh
+bash tests/vnc-host-user.sh
+```
 
 ### Diagnose and recover VNC input
 

@@ -450,7 +450,7 @@ start_session() {
     -SecurityTypes VncAuth \
     -PasswordFile "$password_file" \
     -autokill yes \
-    -desktop "vnc-${name}" \
+    -desktop "${machine_id}:${requested_display}-$(id -un)" \
     -xstartup "$script_path"
 
   for ((attempt = 0; attempt < 50; attempt++)); do

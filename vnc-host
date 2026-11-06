@@ -4,21 +4,32 @@ set -euo pipefail
 program="$(basename -- "$0")"
 case "${OSTYPE:-$(uname -s)}" in
   msys*|cygwin*|MINGW*|MSYS*|CYGWIN*) default_transport="--direct" ;;
+  darwin*) default_transport="--auto" ;;
   *) default_transport="--tunnel" ;;
 esac
+user_default_transport="--tunnel"
+[[ "$default_transport" != --auto ]] || user_default_transport="--auto"
 transport="${VNC_HOST_DEFAULT_TRANSPORT:-$default_transport}"
+transport_explicit="${VNC_HOST_DEFAULT_TRANSPORT:+true}"
 force_restart=""
 force_stop=""
 action=""
+user_default="false"
 
 usage() {
   printf '%s\n' \
     "Usage:" \
     "  vnc-host [--direct|--tunnel] [--force-restart] HOST[:DISPLAY|:NAME]" \
     "  vnc-HOST [--direct|--tunnel] [--force-restart] [DISPLAY|NAME]" \
+    "  vnc-HOST-USER [--direct|--tunnel] [--force-restart] [DISPLAY|NAME]" \
+    "  vnc-host -l|--list HOST" \
+    "  vnc-HOST -l|--list" \
     "  vnc-HOST --status [DISPLAY|NAME]" \
     "  vnc-HOST --stop [--force] [DISPLAY|NAME]" \
-    "Default transport: ${default_transport} (overridable by VNC_HOST_DEFAULT_TRANSPORT); default display: :1"
+    "Host-only default: ${default_transport}, display :1; user-specific default: ${user_default_transport}, first owned session" \
+    "The final alias token is USER; use vnc-host HOST for a literal hyphenated hostname." \
+    "VNC_HOST_ALIAS and VNC_HOST_DEFAULT_TRANSPORT override alias and transport defaults."
+  [[ "$default_transport" != --auto ]] || printf '%s\n' 'macOS --auto (default): direct LAN, direct tailnet, then SSH tunnel.'
 }
 
 die() {
@@ -26,48 +37,97 @@ die() {
   exit 1
 }
 
-while [[ "${1:-}" == --* ]]; do
+while [[ "${1:-}" == -* ]]; do
   case "$1" in
-    --direct|--tunnel) transport="$1" ;;
+    --auto|--direct|--tunnel) transport="$1"; transport_explicit=true ;;
     --force-restart) force_restart="$1" ;;
     --force) force_stop="$1" ;;
     --status|--stop) action="$1" ;;
+    -l|--list) action="--list" ;;
     --help|-h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
   shift
 done
 
-if [[ -n "${VNC_HOST_ALIAS:-}" ]]; then
-  host="$VNC_HOST_ALIAS"
-  [[ $# -le 1 ]] || { usage >&2; exit 1; }
-  suffix="${1:-1}"
-  suffix="${suffix#:}"
-  target="${host}:${suffix}"
-elif [[ "$program" == "vnc-host" ]]; then
+if [[ "$program" == "vnc-host" && -z "${VNC_HOST_ALIAS:-}" ]]; then
   [[ $# -eq 1 ]] || { usage >&2; exit 1; }
   target="$1"
+  if [[ "$target" == *@* && "$target" != *:* ]]; then
+    user_default="true"
+    target="${target}:self"
+  fi
 else
-  host="${program#vnc-}"
-  [[ -n "$host" && "$host" != "$program" ]] || die "cannot derive host from $program"
+  host="${VNC_HOST_ALIAS:-${program#vnc-}}"
+  [[ -n "$host" && ( -n "${VNC_HOST_ALIAS:-}" || "$host" != "$program" ) ]] || die "cannot derive host from $program"
+  if [[ -z "${VNC_HOST_ALIAS:-}" && "$host" == *-* ]]; then
+    ## the final token selects the account; earlier hyphens belong to the host
+    remote_user="${host##*-}"
+    host="${host%-*}"
+    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ &&
+       "$remote_user" =~ ^[A-Za-z0-9_][A-Za-z0-9_.]*$ ]] || die "invalid host/user alias: $program"
+    host="${remote_user}@${host}"
+  fi
   [[ $# -le 1 ]] || { usage >&2; exit 1; }
-  suffix="${1:-1}"
+  default_suffix=1
+  if [[ "$host" == *@* ]]; then
+    default_suffix=self
+    [[ $# -ne 0 ]] || user_default="true"
+  fi
+  suffix="${1:-$default_suffix}"
   suffix="${suffix#:}"
   target="${host}:${suffix}"
 fi
 
+## user desktops have their own display assignment and stay behind SSH by default
+if [[ "${target%%:*}" == *@* && "$transport_explicit" != true && "$default_transport" != --auto ]]; then
+  transport=--tunnel
+fi
+
 case "$transport" in
   --direct|--tunnel) ;;
+  --auto) [[ "$default_transport" == --auto ]] || die "--auto is only supported on macOS" ;;
   *) die "invalid VNC_HOST_DEFAULT_TRANSPORT: $transport" ;;
 esac
 
-script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+  script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+  script_path="$(readlink "$script_path")"
+  [[ "$script_path" == /* ]] || script_path="${script_dir}/${script_path}"
+done
 script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
 case "${OSTYPE:-$(uname -s)}" in
   msys*|cygwin*|MINGW*|MSYS*|CYGWIN*) viewer_helper="${script_dir}/vnc-win-lan" ;;
+  darwin*) viewer_helper="${script_dir}/vnc-lan" ;;
   *) viewer_helper="${script_dir}/vnc-session-view" ;;
 esac
 [[ -x "$viewer_helper" ]] || die "viewer helper is missing or not executable: $viewer_helper"
+
+resolution_host="${target%%:*}"
+if [[ "$viewer_helper" == */vnc-lan ]]; then
+  # shellcheck source=vnc-mac-route
+  source "${script_dir}/vnc-mac-route"
+  vnc_mac_route "$resolution_host"
+  resolution_host="$VNC_MAC_SSH_HOST"
+fi
+
+if [[ "$user_default" == "true" && "$action" != --list ]]; then
+  remote_host="${target%%:*}"
+  sessions="$(ssh -n "$resolution_host" '"$HOME/bin/vnc-session"' list)" || \
+    die "could not list VNC sessions for $remote_host"
+  ## The server lists only this account's desktops. Prefer a running desktop;
+  ## otherwise restart the lowest retained display before allocating self.
+  first_display="$(awk '
+    $2 ~ /^:[1-9][0-9]*$/ {
+      display = substr($2, 2) + 0
+      if ($3 == "running" && (!running || display < running)) running = display
+      if ($3 == "stopped" && (!stopped || display < stopped)) stopped = display
+    }
+    END { if (running) print running; else if (stopped) print stopped }
+  ' <<< "$sessions")"
+  target="${remote_host}:${first_display:-self}"
+fi
 
 if [[ -n "$action" ]]; then
   [[ -z "$force_restart" ]] || die "--force-restart is not valid with $action"
