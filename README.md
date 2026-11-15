@@ -638,3 +638,8 @@ claudy --noupdate          ## skip the wrapper update check
 claudy --update            ## update explicitly, report versions, then exit
 claudy -c                  ## other arguments pass through to claude
 ```
+
+## PostgreSQL helper
+
+[dbPg.md](docs/dbPg.md) documents legacy-compatible connections, peer/socket
+authentication, read-only mode, parameter binding and hash-row queries.

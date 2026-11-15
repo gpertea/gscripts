@@ -7,13 +7,16 @@ use DBD::Pg qw(:pg_types);
 
 =head1 NAME
 
-dbSession - a DBI wrapper with various db helpers and utils
+dbPg - a DBI wrapper with various db helpers and utils
 
 =cut
 
 =head1 SYNOPSIS
 
   use dbPg;
+  dbLogin({host=>'/var/run/postgresql',dbname=>'rse',user=>'gpertea',
+           autocommit=>1,read_only=>1});
+  my $rows=dbQueryHash('SELECT id FROM subjects WHERE brnum=?','Br0001');
 
 =head1 DESCRIPTION
 
@@ -22,9 +25,10 @@ A wrapper module for DBI, with various helper subroutines
 =cut
 
 our ($VERSION, @ISA, @EXPORT);
+$VERSION='0.2';
 @ISA = qw(Exporter);
 @EXPORT = qw( dbErr dbLogin dbQuery dbPrep dbFetch dbFetchAll 
-              dbExec dbExecPrep dbFetchPrep dbDo dbRun dbPrint dbDrop dbLogout);
+              dbQueryHash dbExec dbExecPrep dbFetchPrep dbDo dbRun dbPrint dbDrop dbLogout);
 
 #------------ subroutines -----
 ## see: https://docs.mojolicious.org/DBD/Pg
@@ -66,63 +70,58 @@ sub dbErr {
 # $dbExitSub=$_[0];
 #}
 
-sub parseDbSpec { #parses: [user@]server[:port]/database
-  my $cstr=shift(@_);
-  my ($server, $db, $user);
-  if (index($cstr, '@')>=0) {
-    ($user)=(m/^([^@]+)@/);
-    $cstr=~s/^([^@]+)//;
-  }
-  if (index($cstr, '/')>=0) {
-    ($server, $db)=split(/\//, $cstr);
-  } else {  $db=$cstr }
-  return ($server, $db, $user);
+sub parseDbSpec { ## [user@]host[:port]/database; socket paths use hash options
+  my ($spec)=@_;
+  my ($user,$server,$db);
+  $user=$1 if $spec=~s/^([^@\/]+)@//;
+  if ($spec=~m{^([^/]*)/([^/]+)$}) { ($server,$db)=($1,$2) }
+  else { $db=$spec }
+  return ($server,$db,$user);
 }
 
-# $pg_dbh_ =  global database handler
-sub dbLogin {  
-  my ($server, $db, $user)= @_;
-  if (index($server,'/')>=0 && length($db)==0) {
-    ($server, $db, $user)=parseDbSpec($server);
+sub dbLogin {
+  my ($server,$db,$user)=@_;
+  my %opt;
+  if (ref($server) eq 'HASH') {
+    %opt=%$server;
+    ($server,$db,$user)=@opt{qw(host dbname user)};
+    $db=$opt{database} unless defined($db);
+  } else {
+    if (@_==1) { ($server,$db,$user)=parseDbSpec($server) }
+    $server='localhost' unless defined($server) && length($server);
+    $user='ruser' unless defined($user) && length($user);
+    $opt{autocommit}=0;
+    $opt{port}=5432;
   }
-  die("Error database required!\n") unless $db;
-
-  $server='localhost' unless $server;  
-  $user='ruser' unless $user;
-  my $port=5432;
-  my @sp=split(/:/, $server);
-  ($server, $port)=@sp[0,1] if (@sp>1);
-  #hostname:port:database:username:password
-  my ($pass);
-  open(PGPASS, "$ENV{HOME}/.pgpass") || die("Error opening $ENV{HOME}.pgpass\n");
-  while (<PGPASS>) {
-    chomp;
-    next if m/^#/;
-    my ($host,$port,$d,$u,$p)=split(/:/);
-    if ($host eq $server && $user eq $u) {
-       $pass=$p;
-       last;
-    }
+  die "Error: database required!\n" unless defined($db) && length($db);
+  my $port=$opt{port};
+  ## only TCP host:port is split; Unix socket directory names stay intact
+  if (defined($server) && $server=~s/^([^:\/]+):(\d+)$/$1/) { $port=$2 }
+  my %dsn=(dbname=>$db,host=>$server,port=>$port,service=>$opt{service});
+  $dsn{options}='--default_transaction_read_only=on' if $opt{read_only};
+  my @parts;
+  for my $key (qw(dbname host port service options)) {
+    next unless defined($dsn{$key}) && length($dsn{$key});
+    die "Invalid connection parameter $key\n" if $dsn{$key}=~/[;\r\n\0]/;
+    push @parts,"$key=$dsn{$key}";
   }
-  close(PGPASS);
-  die("Error: could not retrieve pass for user $user on $server\n") unless $pass;
-  $pg_dbh_ = DBI -> connect("dbi:Pg:dbname=$db;host=$server;port=$port",
-                            $user, $pass,
-                            {AutoCommit => 0, RaiseError => 1,
-                             pg_server_prepare => 1 }
-                         ) or die $DBI::errstr;
-  # The AutoCommit attribute should always be explicitly set
-  #return ($server.':'.$port, $db, $user);
+  ## libpq handles peer auth, PGPASSFILE, escaped entries and all matching fields
+  $pg_dbh_=DBI->connect('dbi:Pg:'.join(';',@parts),$user,$opt{password},
+      {AutoCommit=>($opt{autocommit}//0),RaiseError=>1,PrintError=>0,
+       pg_server_prepare=>1,pg_enable_utf8=>1}) or die $DBI::errstr;
   return $pg_dbh_;
 }
 
 sub dbQuery {
- #Execute a query and returns ALL the results as reference to an array 
- # of references to field value lists
- my ($query)=@_;
- my $aref=$pg_dbh_->selectall_arrayref($query) 
-      || dbErr("Select all failed for:\n$query"); 
- return $aref;
+  my ($query,@bind)=@_;
+  return $pg_dbh_->selectall_arrayref($query,undef,@bind)
+      || dbErr("Select all failed");
+}
+
+sub dbQueryHash {
+  my ($query,@bind)=@_;
+  return $pg_dbh_->selectall_arrayref($query,{Slice=>{}},@bind)
+      || dbErr("Select hashes failed");
 }
 
 sub dbPrep {
