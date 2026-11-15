@@ -1,8 +1,19 @@
 # Project status
 
-Updated: 2026-11-05. Paths are relative to the gscripts repository.
-These records cover Codex-wrapper maintenance; other utilities retain independent
-behavior and tests.
+Updated: 2026-11-15. Paths are relative to the gscripts repository.
+These records cover Codex-wrapper maintenance and the independent dbPg helper.
+Wrapper verification below remains dated 2026-11-05; no wrapper code changed
+in the dbPg round.
+
+## dbPg utility
+
+- Version 0.2, implementation 2a059ed: legacy connection defaults remain;
+  explicit options add peer/socket access, read-only mode and autocommit.
+- Password selection delegates to libpq. dbQuery binds values; dbQueryHash
+  returns named fields. Prepared-statement helpers remain unchanged.
+- `DBPG_LIVE_TEST=1 prove tests/dbPg.t` passes all 14 checks, including an
+  actual read-only rse connection. Existing pg_db.pl/get_br_demo.pl compile.
+- Usage: [docs/dbPg.md](docs/dbPg.md). No pending helper implementation work.
 
 ## Current state
 

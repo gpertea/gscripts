@@ -2,6 +2,24 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-11-15  dbPg support for genotype checks
+
+Branch: master. Implementation: 2a059ed. The operational plan remains ignored
+under worklog/plan_26-11-15_brain-genotype.md.
+
+Done: added explicit socket/peer and read-only connection options, preserved
+legacy host/user/port/transaction defaults, delegated credential lookup to
+libpq, and added bound-value queries and hash-row results. Added helper docs.
+
+Measured: all 14 focused/mock/live checks pass; the live connection reports
+server-enforced read-only mode and returns literal SQL-like bound text safely.
+Existing pg_db.pl and get_br_demo.pl compile. The RNA genotype workflow uses
+this helper in its tested read-only rse queries.
+
+Not done: no Codex-wrapper implementation or credentials were changed.
+
+Next: none for the completed database helper.
+
 ## 2026-11-05  Process context in account status
 
 Branch: `master`. Implementation: `57008a1`.
