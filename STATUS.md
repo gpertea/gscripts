@@ -7,7 +7,7 @@ in the dbPg round.
 
 ## dbPg utility
 
-- Version 0.2, implementation 2a059ed: legacy connection defaults remain;
+- Version 0.2, implementation 31d4b6e: legacy connection defaults remain;
   explicit options add peer/socket access, read-only mode and autocommit.
 - Password selection delegates to libpq. dbQuery binds values; dbQueryHash
   returns named fields. Prepared-statement helpers remain unchanged.

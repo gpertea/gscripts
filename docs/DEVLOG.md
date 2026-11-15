@@ -2,6 +2,15 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-11-15  dbPg workflow reference relocation
+
+Branch master. Rebased implementation:31d4b6e; helper status:328edd8.
+Done:updated the helper's external workflow reference to
+imputation_pipeline/rna-check. RNA code/data remain outside gscripts.
+Measured:all14 helper checks still pass after integration with upstream master.
+Not done:no unrelated utility or genotype data changes.
+Next:none for this documentation update.
+
 ## 2026-11-15  dbPg support for genotype checks
 
 Branch: master. Implementation: 2a059ed. The operational plan remains ignored
