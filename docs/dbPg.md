@@ -39,4 +39,4 @@ DBPG_LIVE_TEST=1 prove tests/dbPg.t
 The optional live checks only query rse, testing placeholders and the server's
 read-only setting. Other tests use a mocked DBI connection and need no
 credentials. Workflow usage is documented in the RNA genotype collection at
-`/dbdata/cdb/genotyping/rnaseq/docs/brain-genotype.md`.
+`/dbdata/cdb/genotyping/imputation_pipeline/rna-check/docs/brain-genotype.md`.
