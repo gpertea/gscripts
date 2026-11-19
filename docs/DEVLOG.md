@@ -2,6 +2,31 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-11-19  Background Linux VNC viewers
+
+Branch: master. Implementation: dfedc9f.
+
+Done: `vnc-session-view` launches Linux viewers with nohup and redirected I/O
+after foreground session/tunnel setup. This covers direct and tunneled viewing
+through all `vnc-HOST` aliases. Viewer output is appended to
+`${XDG_STATE_HOME:-$HOME/.local/state}/vnc-session/viewer.log`. README and help
+describe the behavior. Existing installed symlinks use the change immediately.
+
+Measured: before implementation, the background regression reproduced blocking
+for srv16, srv05, and futurehost in both transports. All three tests now pass,
+covering those six combinations, SIGHUP survival, I/O redirection, visible setup
+failures, and foreground list/status/stop. SSH/viewer are test doubles and SSH
+PID discovery is stubbed. Existing tests/vnc-session-view-tunnel.sh,
+tests/vnc-host-cli.sh, tests/vnc-host-user.sh, tests/vnc-win-title.sh, and
+tests/vnc-win-tunnel.sh pass, as do all 30 tests/vnc-lan-tunnel.py cases.
+Bash syntax passes. ShellCheck has only the same pre-existing SC2155/SC2015
+findings as the parent revision; excluding those codes passes.
+
+Not done: no live GUI/network test or remote rollout. Existing desktops and
+unrelated worktree files were untouched. No changes in lin-config or codex-kit.
+
+Next: none for this viewer change; retain the unrelated tasks in STATUS.md.
+
 ## 2026-11-15  dbPg workflow reference relocation
 
 Branch master. Rebased implementation:31d4b6e; helper status:328edd8.

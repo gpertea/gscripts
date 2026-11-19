@@ -1,7 +1,7 @@
 # Project status
 
-Updated: 2026-11-15. Paths are relative to the gscripts repository.
-These records cover Codex-wrapper maintenance and the independent dbPg helper.
+Updated: 2026-11-19. Paths are relative to the gscripts repository.
+These records cover Codex-wrapper maintenance, dbPg, and Linux VNC viewers.
 Wrapper verification below remains dated 2026-11-05; no wrapper code changed
 in the dbPg round.
 
@@ -17,6 +17,12 @@ in the dbPg round.
 
 ## Current state
 
+- Linux `vnc-session-view` backgrounds its viewer after session/tunnel setup
+  (dfedc9f). All `vnc-HOST` aliases use this helper, including direct mode.
+  Output goes to `${XDG_STATE_HOME:-$HOME/.local/state}/vnc-session/viewer.log`.
+  Setup errors and management commands remain foreground operations. Installed
+  helpers on this workstation are symlinks to this checkout; no reinstall is
+  needed. VNC servers, lin-config, codex-kit, and other platforms are untouched.
 - `cody` uses the unmodified installed CLI in embedded mode. Shared-home
   switching was implemented at `a849a03`, retained account selection at `bdac018`,
   and status context at `57008a1`. On two
@@ -45,6 +51,13 @@ in the dbPg round.
 
 ## Works now
 
+- `python3 tests/vnc-viewer-background.py`: three tests pass, including six
+  alias/transport combinations, viewer survival after SIGHUP, redirected I/O,
+  setup failure propagation, and foreground list/status/stop. SSH and viewer
+  are test doubles; SSH PID discovery is stubbed. No live GUI was opened.
+- Existing VNC tunnel, host CLI, user-alias, Windows title/tunnel shell suites
+  and all 30 macOS routing fixtures pass. `bash -n vnc-session-view` passes;
+  ShellCheck passes with only existing SC2155/SC2015 findings excluded.
 - `cody`, `cody --noupdate resume`, `cody fork`, `cody-account`, and
   `cody-account --status`.
 - `cody -g login`, `cody -b login`, `wcody resume`, and `bcody resume` are
@@ -94,3 +107,4 @@ Read this file, DEVLOG, and the account section in README. The private plan and
 operational evidence remain under ignored worklog. Preserve unrelated scripts,
 credentials, existing sessions, and local work.
 Status regression command: `python3 tests/cody-account-status.py`.
+VNC viewer regression command: `python3 tests/vnc-viewer-background.py`.
