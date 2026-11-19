@@ -9,7 +9,8 @@ usage() {
     "       vnc-session-view --status SSH_HOST[:DISPLAY|:NAME]" \
     "       vnc-session-view --stop [--force] SSH_HOST[:DISPLAY|:NAME]" \
     "Default transport: --tunnel; default target: display :1" \
-    "Linux allocates local ports automatically; VNC_SESSION_LOCAL_DISPLAY requests a fixed local display."
+    "Linux allocates local ports automatically; VNC_SESSION_LOCAL_DISPLAY requests a fixed local display." \
+    "Linux viewers run in the background; setup and management commands remain in the foreground."
 }
 
 die() {
@@ -66,6 +67,16 @@ fi
 
 remote_vnc() {
   ssh -n "$remote_host" '"$HOME/bin/vnc-session"' "$@"
+}
+
+launch_viewer() {
+  [[ "$client_os" == Linux ]] || exec "$viewer" "$@"
+  local log_dir="${XDG_STATE_HOME:-${HOME}/.local/state}/vnc-session"
+  umask 077
+  mkdir -p "$log_dir"
+  ## detach only the GUI; SSH prompts and setup failures stay in the terminal
+  nohup "$viewer" "$@" </dev/null >>"${log_dir}/viewer.log" 2>&1 &
+  printf 'Viewer log: %s/viewer.log\n' "$log_dir"
 }
 
 ensure_remote_target() {
@@ -301,7 +312,8 @@ if [[ "$transport" == "direct" ]]; then
     flock -u 9
     exec 9>&-
   fi
-  exec "$viewer" "passwd=${password_file}" "${direct_host}:${remote_display}"
+  launch_viewer "passwd=${password_file}" "${direct_host}:${remote_display}"
+  exit 0
 fi
 
 if [[ "$client_os" != Linux ]]; then
@@ -331,4 +343,4 @@ printf 'Opening %s %s (:%s) on local port %s\n' \
 flock -u 9
 exec 9>&-
 ## Double colon is an explicit TCP port, not a VNC display number.
-exec "$viewer" "passwd=${password_file}" "localhost::${local_port}"
+launch_viewer "passwd=${password_file}" "localhost::${local_port}"

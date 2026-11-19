@@ -403,6 +403,14 @@ concurrently. Existing tunnels reuse the port from the verified SSH process
 arguments, including tunnels created by older versions of the helper.
 The viewer receives `localhost::PORT`, which specifies a TCP port explicitly.
 
+Linux viewers open in the background for both tunneled and direct connections,
+including every `vnc-HOST` alias. The terminal returns after session/tunnel
+setup; no trailing `&` is needed. Closing the terminal leaves the viewer open.
+Viewer output is appended to
+`${XDG_STATE_HOME:-$HOME/.local/state}/vnc-session/viewer.log`.
+SSH prompts and setup errors remain in the terminal; list, status, and stop
+commands still finish in the foreground.
+
 `VNC_SESSION_LOCAL_DISPLAY` remains an optional fixed local display: `11`
 requests port `5911`. A conflicting override or occupied fixed port produces
 an error without replacing an active tunnel. Automatic allocation retries up
@@ -525,6 +533,7 @@ Regression checks:
 bash tests/vnc-win-title.sh
 bash tests/vnc-win-tunnel.sh
 bash tests/vnc-session-view-tunnel.sh
+python3 tests/vnc-viewer-background.py
 python3 tests/vnc-lan-tunnel.py
 ```
 
