@@ -21,4 +21,5 @@
   <Key mask="A" key="F4">close</Key>
   <Key mask="CA" key="T">exec:urxvt</Key>
   <Key mask="4" key="T">exec:urxvt</Key>
+  <Key mask="4S" key="4">exec:flameshot-vnc gui</Key>
 </JWM>
