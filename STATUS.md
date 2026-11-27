@@ -1,6 +1,6 @@
 # Project status
 
-Updated: 2026-11-19. Paths are relative to the gscripts repository.
+Updated: 2026-11-27. Paths are relative to the gscripts repository.
 These records cover Codex-wrapper maintenance, dbPg, and Linux VNC viewers.
 Wrapper verification below remains dated 2026-11-05; no wrapper code changed
 in the dbPg round.
@@ -17,6 +17,9 @@ in the dbPg round.
 
 ## Current state
 
+- The fallback `jwm-vnc-session.xml` binds Super+Shift+4 to
+  `flameshot-vnc gui` (d6a10b4). The shortcut opened Flameshot in an isolated X
+  session and in the active VNC desktops on gvlin and gglin.
 - Linux `vnc-session-view` backgrounds its viewer after session/tunnel setup
   (dfedc9f). All `vnc-HOST` aliases use this helper, including direct mode.
   Output goes to `${XDG_STATE_HOME:-$HOME/.local/state}/vnc-session/viewer.log`.

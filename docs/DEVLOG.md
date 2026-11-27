@@ -2,6 +2,13 @@
 
 Newest round first. Paths are relative to the gscripts repository root.
 
+## 2026-11-27  Flameshot shortcut in the JWM fallback
+
+Implementation: d6a10b4. The fallback binds Super+Shift+4 to `flameshot-vnc gui`.
+An isolated X session using the fallback opened the Flameshot overlay. Verified
+the shortcut on gvlin `:1` after adding the binding and restarting JWM, and on
+gglin `:1` and `:2` using the existing binding.
+
 ## 2026-11-19  Background Linux VNC viewers
 
 Branch: master. Implementation: dfedc9f.
